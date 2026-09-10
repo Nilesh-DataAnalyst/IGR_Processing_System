@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Data Processing Pipeline Dashboard | Sogaon Real Estate</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <div class="app-container">
+    <!-- TOP HEADER -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="brand-logo">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">Data Processing Pipeline</h1>
+          <p class="brand-subtitle">20-Step Automated Ingestion, Standardization, RERA Matching, Parquet & Database Upload</p>
+        </div>
+      </div>
+      <div class="header-status">
+        <div class="status-indicator online" id="server-status">
+          <span class="status-dot"></span>
+          <span class="status-text">Server Ready</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- MAIN DASHBOARD CONTENT -->
+    <main class="dashboard-main">
+      <!-- CONFIGURATION SECTION -->
+      <section class="card config-card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="card-icon">⚙️</span>
+            <div>
+              <h2 class="card-title">Pipeline Configuration</h2>
+              <p class="card-desc">Select execution mode and provide file paths</p>
+            </div>
+          </div>
+          <div class="mode-switch-group">
+            <label class="mode-pill active" id="mode1-label">
+              <input type="radio" name="pipeline-mode" value="1" checked id="mode1-radio">
+              <span>Mode 1: Start (Steps 1 → 20)</span>
+            </label>
+            <label class="mode-pill" id="mode2-label">
+              <input type="radio" name="pipeline-mode" value="2" id="mode2-radio">
+              <span>Mode 2: Resume (Step 7 → 20)</span>
+            </label>
+            <label class="mode-pill" id="mode3-label">
+              <input type="radio" name="pipeline-mode" value="3" id="mode3-radio">
+              <span>Mode 3: Parquet (Step 19 → 20)</span>
+            </label>
+          </div>
+        </div>
+
+        <form id="pipeline-form" class="config-grid">
+          <!-- Mode 1 Input -->
+          <div class="form-group" id="input-file-group">
+            <div class="label-with-badge">
+              <label for="input-file-path">Input File from Google Drive (.xlsx) <span class="req">*</span></label>
+              <a href="https://drive.google.com/drive/folders/1i-dPwAQce86kR552YF03XcvLHsOoDjb-?usp=drive_link" target="_blank" class="drive-external-link" title="Open Google Drive Folder">🌐 Open Drive Folder ↗</a>
+            </div>
+
+            <!-- Quick pick location from Drive -->
+            <div class="drive-picker-container" id="input-drive-picker-container">
+              <div class="drive-picker-header">
+                <span class="picker-label">📁 Location Folder in Drive (2. LLM Processed Data):</span>
+                <button type="button" class="picker-refresh-btn" id="btn-refresh-input-locs" title="Refresh Drive Folders">🔄 Refresh</button>
+              </div>
+              <div class="input-with-icon">
+                <span class="input-icon">📍</span>
+                <select id="drive-input-location-select">
+                  <option value="" disabled selected>Scanning location folders from Google Drive...</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="input-with-icon" style="margin-top: 8px;">
+              <span class="input-icon">📄</span>
+              <input type="text" id="input-file-path"
+                placeholder="Select a location above or enter Drive/local file path" required autocomplete="off">
+            </div>
+            <small class="form-hint">Fetched directly from Google Drive <code>2. LLM Processed Data</code>. You can switch location using the dropdown above.</small>
+          </div>
+
+          <!-- Mode 2 Input (Hidden initially) -->
+          <div class="form-group hidden" id="manual-file-group">
+            <div class="label-with-badge">
+              <label for="manual-file-path">Manual Corrected Excel File (.xlsx) <span class="req">*</span></label>
+              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (3. Manually Corrected)</span>
+            </div>
+
+            <!-- Quick pick location from Drive for Mode 2 -->
+            <div class="drive-picker-container" id="manual-drive-picker-container">
+              <div class="drive-picker-header">
+                <span class="picker-label">📁 Pick Location from Google Drive:</span>
+                <button type="button" class="picker-refresh-btn" id="btn-refresh-manual-locs" title="Refresh Drive Folders">🔄 Refresh</button>
+              </div>
+              <div class="input-with-icon">
+                <span class="input-icon">📍</span>
+                <select id="drive-manual-location-select">
+                  <option value="" disabled selected>Scanning location folders from Drive...</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="input-with-icon" style="margin-top: 8px;">
+              <span class="input-icon">📑</span>
+              <input type="text" id="manual-file-path"
+                placeholder="Select a location above or enter manual corrected file path">
+            </div>
+            <small class="form-hint">Resume processing after manual project name verification.</small>
+          </div>
+
+          <!-- Mode 3 Input (Hidden initially) -->
+          <div class="form-group hidden" id="final-file-group">
+            <div class="label-with-badge">
+              <label for="final-file-path">Final Processed Excel File (.xlsx) <span class="req">*</span></label>
+              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (4. Final processed file)</span>
+            </div>
+
+            <!-- Quick pick location from Drive for Mode 3 -->
+            <div class="drive-picker-container" id="final-drive-picker-container">
+              <div class="drive-picker-header">
+                <span class="picker-label">📁 Pick Location from Google Drive:</span>
+                <button type="button" class="picker-refresh-btn" id="btn-refresh-final-locs" title="Refresh Drive Folders">🔄 Refresh</button>
+              </div>
+              <div class="input-with-icon">
+                <span class="input-icon">📍</span>
+                <select id="drive-final-location-select">
+                  <option value="" disabled selected>Scanning location folders from Drive...</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="input-with-icon" style="margin-top: 8px;">
+              <span class="input-icon">📊</span>
+              <input type="text" id="final-file-path"
+                placeholder="Select a location above or enter final processed file path">
+            </div>
+            <small class="form-hint">Direct Parquet conversion on a final processed file from Google Drive.</small>
+          </div>
+
+          <!-- Target City (dim_city) -->
+          <div class="form-group">
+            <div class="label-with-badge">
+              <label for="city-id">Target City (dim_city) <span class="req">*</span></label>
+              <span class="badge-autodetect hidden" id="city-detect-badge">✨ Auto-detected</span>
+            </div>
+            <div class="input-with-icon">
+              <span class="input-icon">🏙️</span>
+              <select id="city-id" required>
+                <optgroup label="Supported Cities (Google Drive & Custom Divisors)">
+                  <option value="9" selected>Pune (ID: 9) — Divisor: 1.35</option>
+                  <option value="8">Mumbai (ID: 8) — Divisor: 1.45</option>
+                  <option value="12">Thane (ID: 12) — Divisor: 1.40</option>
+                </optgroup>
+                <optgroup label="Other Database Cities (dim_city)">
+                  <option value="2">Ahmedabad (ID: 2)</option>
+                  <option value="3">Banglore (ID: 3)</option>
+                  <option value="6">Hyderabad (ID: 6)</option>
+                  <option value="5">Ghaziabad (ID: 5)</option>
+                  <option value="7">Medchal_Malkajgiri (ID: 7)</option>
+                  <option value="10">Rangareddy (ID: 10)</option>
+                  <option value="11">Sangareddy (ID: 11)</option>
+                  <option value="13">Yadadri_Bhuvanagiri (ID: 13)</option>
+                  <option value="1">Abu_Dhabi (ID: 1)</option>
+                  <option value="15">Dubai (ID: 15)</option>
+                </optgroup>
+              </select>
+            </div>
+            <small class="form-hint">Fetched from public.dim_city. Configures NR sequences & location coordinates.</small>
+          </div>
+
+          <!-- Output Path -->
+          <div class="form-group full-width">
+            <label for="output-path">Final Output Save Path (.xlsx) <span class="badge-optional" style="color: #60a5fa; font-weight: 500; font-size: 0.85em;">[Optional — Defaults to Google Drive]</span></label>
+            <div class="input-with-icon">
+              <span class="input-icon">☁️</span>
+              <input type="text" id="output-path"
+                placeholder="Leave blank to save to Google Drive (4. Final processed file), or enter filename/path">
+            </div>
+            <small class="form-hint" id="drive-target-hint">☁️ Google Drive Target: Automatically saved to the selected city's <code>4. Final processed file\&lt;location_name&gt;</code> folder.</small>
+          </div>
+
+          <!-- Step 15 Geocoding Toggle (Commented out / Optional) -->
+          <div class="form-group full-width" style="margin-top: 4px;">
+            <label class="checkbox-label">
+              <input type="checkbox" id="include-geocoding">
+              <span>Enable Step 15: Project Coordinates (Google Places API) <em style="color: #94a3b8;">[Disabled by default — temporarily commented out in main.py]</em></span>
+            </label>
+          </div>
+
+          <!-- Step 20 Database Upload Toggle -->
+          <div class="form-group full-width">
+            <label class="checkbox-label">
+              <input type="checkbox" id="auto-upload" checked>
+              <span>Auto-trigger Database Upload Pipeline (Step 20) <em>[Launches final_code.py interactive terminal upon completion]</em></span>
+            </label>
+          </div>
+
+          <div class="form-actions full-width">
+            <button type="submit" id="btn-run" class="btn btn-primary">
+              <span class="btn-icon">🚀</span>
+              <span class="btn-text">Execute Pipeline</span>
+            </button>
+            <button type="button" id="btn-stop" class="btn btn-danger hidden" disabled>
+              <span class="btn-icon">⏹</span>
+              <span class="btn-text">Stop Pipeline</span>
+            </button>
+            <button type="button" id="btn-launch-upload-manual" class="btn btn-secondary">
+              <span class="btn-icon">⚡</span>
+              <span class="btn-text">Launch final_code.py</span>
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <!-- STEP 7 PAUSE CARD (Appears when Step 6 finishes in Mode 1) -->
+      <section class="card pause-card hidden" id="pause-card">
+        <div class="pause-content">
+          <div class="pause-badge">⏸️ Step 6 Complete — Paused at Step 7</div>
+          <h3 class="pause-title">Manual Project Name Verification Required</h3>
+          <p class="pause-desc">
+            Step 6 saved to Google Drive: <code id="pause-v1-path">_for_manual.xlsx</code>
+            <a href="https://drive.google.com/drive/folders/1oQ3JQ_v9shWZQlW4JYDpLPXKFOEdAqRW?usp=drive_link" target="_blank" class="drive-external-link" title="Open Google Drive Folder">🌐 Open Drive Folder ↗</a>
+          </p>
+          <p class="pause-instructions">
+            Review/correct project names in the file above. You can optionally share this file with team members, or pick another location file from Google Drive below before resuming:
+          </p>
+
+          <!-- Optional Share Section -->
+          <div class="pause-share-section">
+            <div class="share-header-toggle" id="toggle-share-panel">
+              <span class="share-icon">📧</span>
+              <span class="share-toggle-title">Optional: Share Correction File with Team</span>
+              <span class="share-toggle-arrow" id="share-arrow">▾</span>
+            </div>
+            <div class="share-panel hidden" id="share-panel">
+              <div class="quick-contacts-row">
+                <span class="contact-label">Quick Recipient:</span>
+                <button type="button" class="contact-pill" data-email="pankaj@sigmavalue.co.in">
+                  👤 Pankaj Binnar (pankaj@sigmavalue.co.in)
+                </button>
+                <button type="button" class="contact-pill" data-email="sarvesh@sigmavalue.co.in">
+                  👤 Sarvesh (sarvesh@sigmavalue.co.in)
+                </button>
+                <button type="button" class="contact-pill" data-email="aditi@sigmavalue.co.in">
+                  👤 Aditi (aditi@sigmavalue.co.in)
+                </button>
+              </div>
+
+              <!-- Calendar & Clock Deadline Picker -->
+              <div class="share-deadline-row">
+                <div class="deadline-input-group">
+                  <label for="share-email-deadline" class="deadline-label">
+                    <span class="deadline-icon">📅 ⏰</span>
+                    <span>Correction Deadline:</span>
+                  </label>
+                  <input type="datetime-local" id="share-email-deadline" class="deadline-input" title="Select completion deadline (calendar & clock)">
+                </div>
+                <div class="deadline-quick-presets">
+                  <span class="preset-label">Quick:</span>
+                  <button type="button" class="deadline-preset-btn" data-hours="2">+2h</button>
+                  <button type="button" class="deadline-preset-btn" data-hours="4">+4h</button>
+                  <button type="button" class="deadline-preset-btn" data-preset="today-eod">Today 6 PM</button>
+                  <button type="button" class="deadline-preset-btn" data-preset="tomorrow-12pm">Tomorrow 12 PM</button>
+                  <button type="button" class="deadline-preset-btn" data-preset="tomorrow-eod">Tomorrow 6 PM</button>
+                  <button type="button" class="deadline-preset-btn clear-btn" id="btn-clear-deadline" title="Clear deadline">✕</button>
+                </div>
+              </div>
+
+              <div class="share-input-row">
+                <input type="text" id="share-email-recipients" placeholder="Recipient email address (e.g. pankaj@sigmavalue.co.in)">
+                <button type="button" id="btn-send-share-email" class="btn btn-secondary">
+                  <span class="btn-icon">📤</span>
+                  <span class="btn-text">Send Email</span>
+                </button>
+              </div>
+              <div class="share-status-msg hidden" id="share-status-msg"></div>
+            </div>
+          </div>
+
+          <!-- Location selection from 3. Manually Corrected -->
+          <div class="pause-location-selector">
+            <div class="drive-picker-header">
+              <span class="picker-label" style="color: #fbbf24; font-size: 0.84rem;">📂 Available Location Folders in Google Drive (3. Manually Corrected):</span>
+              <button type="button" class="picker-refresh-btn" id="btn-refresh-pause-locs" title="Refresh Drive Folders">🔄 Refresh Folders</button>
+            </div>
+            
+            <!-- Quick folder chips / buttons -->
+            <div class="pause-location-chips" id="pause-location-chips">
+              <!-- Dynamically populated with location folders: e.g. Mohmadwadi, etc. -->
+            </div>
+
+            <div class="input-with-icon" style="margin-top: 6px;">
+              <span class="input-icon">📍</span>
+              <select id="pause-location-select">
+                <option value="">Scanning location folders from 3. Manually Corrected...</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- File path input & Resume button -->
+          <div class="pause-input-row" style="margin-top: 14px;">
+            <input type="text" id="resume-file-path" placeholder="Path to manual corrected file (.xlsx)">
+            <button type="button" id="btn-resume" class="btn btn-primary">
+              <span class="btn-icon">▶</span>
+              <span class="btn-text">Resume (Steps 7 → 20)</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 19 PARQUET VERIFICATION PAUSE CARD (Appears before Step 19) -->
+      <section class="card pause-card parquet-pause-card hidden" id="parquet-pause-card">
+        <div class="pause-content">
+          <div class="pause-badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border-color: rgba(16, 185, 129, 0.45);">
+            ⏸️ Step 18 Complete — Parquet Conversion Review
+          </div>
+          <h3 class="pause-title" style="color: #ecfdf5;">Is the Final Processed File Correct?</h3>
+          <p class="pause-desc">
+            Final processed dataset saved to Google Drive:
+            <code id="parquet-verify-path">..._final_processed.xlsx</code>
+            <a href="https://drive.google.com/drive/folders/1l-HFh36Yk8pSs-NmoSK60if6cP2cjztM" target="_blank" class="drive-external-link" title="Open Google Drive Folder">🌐 Open 4. Final processed file ↗</a>
+          </p>
+          <p class="pause-instructions">
+            Please verify if the final processed file is correct before proceeding to Parquet conversion. If correct, click <strong>Yes, Convert to Parquet</strong>. You can also pick an alternate file from Google Drive below or skip conversion.
+          </p>
+
+          <!-- Location selection from 4. Final processed file -->
+          <div class="pause-location-selector" style="margin-top: 10px;">
+            <div class="drive-picker-header">
+              <span class="picker-label" style="color: #34d399; font-size: 0.84rem;">📂 Or Pick Location File from Google Drive (4. Final processed file):</span>
+              <button type="button" class="picker-refresh-btn" id="btn-refresh-parquet-locs" title="Refresh Drive Folders">🔄 Refresh Folders</button>
+            </div>
+            
+            <div class="input-with-icon" style="margin-top: 6px;">
+              <span class="input-icon">📍</span>
+              <select id="parquet-verify-location-select">
+                <option value="">Scanning location folders from 4. Final processed file...</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- File path input & Action buttons -->
+          <div class="pause-input-row" style="margin-top: 14px;">
+            <input type="text" id="parquet-confirm-file-path" placeholder="Final processed file path (.xlsx)">
+            <button type="button" id="btn-confirm-parquet" class="btn btn-primary" style="background: linear-gradient(135deg, #059669, #10b981); border: none; font-weight: 600;">
+              <span class="btn-icon">✓</span>
+              <span class="btn-text">Yes, Convert to Parquet</span>
+            </button>
+            <button type="button" id="btn-skip-parquet" class="btn btn-secondary" style="background: #374151; color: #f3f4f6;">
+              <span class="btn-icon">⏩</span>
+              <span class="btn-text">Skip Parquet</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- LIVE PROGRESS & METRICS BANNER -->
+      <section class="card progress-banner">
+        <div class="progress-info">
+          <div class="progress-label-group">
+            <span class="current-step-label" id="current-step-text">Ready to Start</span>
+            <span class="progress-percent" id="progress-percent">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progress-bar" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <div class="metrics-strip">
+          <div class="metric-card">
+            <span class="metric-label">Total Rows</span>
+            <span class="metric-val" id="metric-rows">-</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">RERA Matched</span>
+            <span class="metric-val" id="metric-rera">-</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">NR Assigned</span>
+            <span class="metric-val" id="metric-nr">-</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Elapsed Time</span>
+            <span class="metric-val" id="metric-time">00:00</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 20-STEP PIPELINE VISUALIZATION GRID -->
+      <section class="steps-section">
+        <div class="section-title-bar">
+          <h2 class="section-title">Pipeline Execution Steps (1 to 20)</h2>
+          <span class="steps-count-badge" id="steps-status-summary">0 / 20 Completed</span>
+        </div>
+
+        <div class="steps-grid" id="steps-grid">
+          <!-- Step cards injected dynamically via app.js -->
+        </div>
+      </section>
+
+      <!-- LIVE TERMINAL CONSOLE -->
+      <section class="card console-card">
+        <div class="console-header">
+          <div class="console-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+            <span class="console-title">Live Execution Console</span>
+          </div>
+          <div class="console-tools">
+            <label class="autoscroll-toggle">
+              <input type="checkbox" id="autoscroll-cb" checked>
+              <span>Auto-scroll</span>
+            </label>
+            <button class="btn-clear" id="btn-clear-console">Clear</button>
+          </div>
+        </div>
+        <div class="console-body" id="console-output">
+          <div class="console-line info">[System] Dashboard initialized. Waiting for pipeline execution to start...
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="app-footer">
+      <p>Sogaon Processing Pipeline • Built with HTML5, Vanilla CSS & JavaScript • Connected to PostgreSQL & Google
+        Places API</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
