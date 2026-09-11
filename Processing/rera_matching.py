@@ -343,7 +343,12 @@ def assign_bhk_range_fallback(village_df: pd.DataFrame,
             print("[WARN] No phase data — skipping range fallback")
             return village_df
 
-        df_expanded = pd.concat(df2.apply(_reshape_bhk_row, axis=1).dropna().tolist(), ignore_index=True)
+        reshaped_list = df2.apply(_reshape_bhk_row, axis=1).dropna().tolist()
+        if not reshaped_list:
+            print("[WARN] No reshaped BHK rows — skipping range fallback")
+            return village_df
+
+        df_expanded = pd.concat(reshaped_list, ignore_index=True)
 
         df_expanded["BHK"] = df_expanded["BHK"].str.replace(" ", "").str.upper()
         rera_keywords["Keywords"] = rera_keywords["Keywords"].str.replace(" ", "")
@@ -430,23 +435,52 @@ def process_rera_matching(
     df = df.copy()
     base_dir = os.path.dirname(os.path.abspath(__file__))
     if rera_grand_path is None:
-        rera_grand_path = os.path.join(base_dir, "Pune RERA GRAND EXCEL VERSION 9.xlsx")
-        if not os.path.exists(rera_grand_path):
-            rera_grand_path = r"D:\Nilesh\Task\Sogaon\processing\required_files\Pune RERA GRAND EXCEL VERSION 9.xlsx"
+        try:
+            from city_config import resolve_rera_grand_path
+            rera_grand_path = resolve_rera_grand_path(city)
+        except Exception:
+            pass
+
+    if rera_grand_path is None or not os.path.exists(rera_grand_path):
+        raise FileNotFoundError(
+            f"RERA Grand dataset not found for city '{city}'. "
+            f"Please ensure 'rera_grand_file' is configured in city_config.py or placed in {base_dir}"
+        )
 
     if rera_keywords_path is None:
-        rera_keywords_path = os.path.join(base_dir, "RERA_All_Keywords_BHK_Prop_Type.xlsx")
-        if not os.path.exists(rera_keywords_path):
-            rera_keywords_path = r"D:\Nilesh\Task\Sogaon\processing\required_files\RERA_All_Keywords_BHK_Prop_Type.xlsx"
+        candidate = os.path.join(base_dir, "RERA_All_Keywords_BHK_Prop_Type.xlsx")
+        rera_keywords_path = candidate if os.path.exists(candidate) else "RERA_All_Keywords_BHK_Prop_Type.xlsx"
 
-    print("[RERA] Reading RERA grand reference dataset...")
+    print(f"[RERA] Reading RERA grand reference dataset: {os.path.basename(rera_grand_path)}...")
     rera_grand = pd.read_excel(rera_grand_path)
+
+    # Standardize column names (strip whitespace)
+    rera_grand.columns = [c.strip() if isinstance(c, str) else c for c in rera_grand.columns]
+
     rera_grand = rera_grand[[
         'index', 'modified_project_name', 'rera_location_v1',
         'rera_location', 'project_lat', 'project_lng',
         'bhk_wise_ca', 'carpet_wise_total_sold_units', 'project_type'
     ]]
     rera_grand = rera_grand[rera_grand['modified_project_name'] != 0]
+
+    # Defensive coordinate cleaning (handles strings with comma e.g. "19.08, 72.90")
+    def _clean_coord(v):
+        if pd.isna(v):
+            return np.nan
+        if isinstance(v, str) and ',' in v:
+            parts = v.split(',')
+            try:
+                return float(parts[0].strip())
+            except Exception:
+                return np.nan
+        try:
+            return float(v)
+        except Exception:
+            return np.nan
+
+    rera_grand['project_lat'] = rera_grand['project_lat'].apply(_clean_coord)
+    rera_grand['project_lng'] = rera_grand['project_lng'].apply(_clean_coord)
 
     merged_df = assign_rera_index(df, rera_grand, city)
     print("Total  Index found in merged df ", merged_df['index'].unique())

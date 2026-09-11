@@ -1245,6 +1245,40 @@ select:focus {
   border: 1px solid rgba(239, 68, 68, 0.25);
 }
 
+/* CC Pills & Container */
+.share-cc-container {
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+}
+
+.cc-quick-pills {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.contact-pill.cc-pill {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: #94a3b8;
+}
+
+.contact-pill.cc-pill.active {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.5);
+  color: #34d399;
+}
+
+.contact-pill.cc-pill:hover {
+  background: rgba(99, 102, 241, 0.25);
+  border-color: #818cf8;
+  color: #fff;
+}
+
 .pause-location-selector {
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(255, 255, 255, 0.08);

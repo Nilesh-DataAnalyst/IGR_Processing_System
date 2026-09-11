@@ -29,7 +29,7 @@ RESET = "\033[0m"
 # ============================================================
 
 from divisor import SALEABLE_TO_CARPET_DIVISOR_BY_CITY
-from city_config import CITY_CONFIG, get_city_config, extract_folder_id
+from city_config import CITY_CONFIG, get_city_config, extract_folder_id, get_manual_correction_drive_url
 
 BUILDUP_TO_CARPET_DIVISOR = 1.2
 
@@ -41,21 +41,21 @@ DB_PARAMS = {
     "password": "nilesh",
 }
 
-# Initial default city configuration (Pune)
-CURRENT_CITY_CONFIG = get_city_config("pune")
-CURRENT_CITY_KEY = "pune"
+# Active city configuration (initialized to None; set dynamically upon city selection)
+CURRENT_CITY_CONFIG = None
+CURRENT_CITY_KEY = None
 
-DEFAULT_DRIVE_FOLDER_URL = CURRENT_CITY_CONFIG["final_drive_url"]
-DEFAULT_DRIVE_FOLDER_ID = CURRENT_CITY_CONFIG["final_drive_id"]
+DEFAULT_DRIVE_FOLDER_URL = None
+DEFAULT_DRIVE_FOLDER_ID = None
 
-DEFAULT_INPUT_DRIVE_FOLDER_URL = CURRENT_CITY_CONFIG["input_drive_url"]
-DEFAULT_INPUT_DRIVE_FOLDER_ID = CURRENT_CITY_CONFIG["input_drive_id"]
+DEFAULT_INPUT_DRIVE_FOLDER_URL = None
+DEFAULT_INPUT_DRIVE_FOLDER_ID = None
 
-DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL = CURRENT_CITY_CONFIG["manual_correction_drive_url"]
-DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_ID = CURRENT_CITY_CONFIG["manual_correction_drive_id"]
+DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL = None
+DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_ID = None
 
 
-def set_active_city(city_key_or_id: str | int = "pune") -> dict:
+def set_active_city(city_key_or_id: str | int) -> dict:
     """
     Sets the active city and dynamically configures:
     1. Input, Manual Correction, and Final Google Drive URLs and IDs
@@ -84,9 +84,10 @@ def set_active_city(city_key_or_id: str | int = "pune") -> dict:
 
 
 
-def resolve_drive_directory(drive_target: str = DEFAULT_DRIVE_FOLDER_URL) -> str:
+def resolve_drive_directory(drive_target: str = None) -> str:
     """Resolves a Google Drive folder URL, folder ID, or local Drive path to a writable local directory on G:."""
-    if not drive_target or not str(drive_target).strip():
+    target = drive_target or (DEFAULT_DRIVE_FOLDER_URL if "DEFAULT_DRIVE_FOLDER_URL" in globals() else None)
+    if not target or not str(target).strip():
         return None
 
     # If it is already an existing directory, test write access
@@ -136,17 +137,18 @@ def resolve_drive_directory(drive_target: str = DEFAULT_DRIVE_FOLDER_URL) -> str
 
 
 def resolve_manual_correction_directory(
-    drive_target: str = DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL,
+    drive_target: str = None,
     location_name: str = None,
 ) -> str:
     """
     Resolves the Google Drive folder for Manually Corrected files.
     If location_name is given, ensures a subfolder for that location is created and returned.
     """
-    if not drive_target or not str(drive_target).strip():
+    target = drive_target or (DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL if "DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL" in globals() else None)
+    if not target or not str(target).strip():
         return None
 
-    clean_target = str(drive_target).strip()
+    clean_target = str(target).strip()
     match = re.search(r"folders/([a-zA-Z0-9_-]+)", clean_target)
     folder_id = match.group(1) if match else clean_target
 
@@ -170,8 +172,8 @@ def resolve_manual_correction_directory(
             manual_root = sub_items[0]
         elif not manual_root:
             manual_root = base_shortcut_path
-    elif os.path.isdir(str(drive_target)):
-        manual_root = drive_target
+    elif os.path.isdir(str(clean_target)):
+        manual_root = clean_target
 
     if not manual_root or not os.path.exists(manual_root):
         return None
@@ -186,7 +188,7 @@ def resolve_manual_correction_directory(
 
 def get_manual_corrected_file(
     default_file: str = None,
-    drive_url: str = DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL,
+    drive_url: str = None,
 ) -> tuple:
     """
     Lists available location folders in Google Drive '3. Manually Corrected' directory,
@@ -194,8 +196,17 @@ def get_manual_corrected_file(
     Also supports custom manual file path entry.
     """
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 7/20] Loading Manually Corrected File...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 7/19] Loading Manually Corrected File...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+
+    if not drive_url:
+        drive_url = (
+            get_manual_correction_drive_url(
+                city_identifier=CURRENT_CITY_KEY if "CURRENT_CITY_KEY" in globals() else None,
+                file_path=default_file,
+            )
+            or (DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL if "DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL" in globals() else "")
+        )
 
     clean_target = str(drive_url).strip() if drive_url else ""
     match = re.search(r"folders/([a-zA-Z0-9_-]+)", clean_target)
@@ -317,13 +328,13 @@ def get_manual_corrected_file(
 
     print(f"\n  {CYAN}📖 Loading:{RESET} {selected_file}")
     df = pd.read_excel(selected_file, engine="openpyxl")
-    print(f"{GREEN}✓ [STEP 7/20] Loaded {len(df)} rows from manual corrected file.{RESET}")
+    print(f"{GREEN}✓ [STEP 7/19] Loaded {len(df)} rows from manual corrected file.{RESET}")
     return selected_file, df
 
 
 def get_final_processed_file(
     default_file: str = None,
-    drive_url: str = DEFAULT_DRIVE_FOLDER_URL,
+    drive_url: str = None,
 ) -> str:
     """
     Lists available location folders in Google Drive '4. Final processed file' directory,
@@ -331,9 +342,10 @@ def get_final_processed_file(
     Also supports custom manual file path entry.
     """
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 19/20] Loading Final Processed File for Parquet Conversion...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 18/19] Loading Final Processed File for Parquet Conversion...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
+    drive_url = drive_url or (DEFAULT_DRIVE_FOLDER_URL if "DEFAULT_DRIVE_FOLDER_URL" in globals() else None)
     clean_target = str(drive_url).strip() if drive_url else ""
     match = re.search(r"folders/([a-zA-Z0-9_-]+)", clean_target)
     folder_id = match.group(1) if match else clean_target
@@ -464,15 +476,187 @@ def get_final_processed_file(
 
 
 
+def build_correction_email_content(
+    loc_intro: str,
+    file_name: str,
+    drive_url: str,
+    file_path: str,
+    deadline_body: str = "",
+    formatted_dl: str = None,
+    is_attachment: bool = True,
+) -> tuple:
+    """Builds both plain-text and HTML versions of the manual correction email with bold formatting."""
+    delivery_note_plain = "Please find the file attached with this email." if is_attachment else "Please access the file directly from Google Drive using the link above."
+    delivery_note_html = "📎 <strong>Please find the file attached with this email.</strong>" if is_attachment else "🌐 <strong>Please access the file directly from Google Drive using the link above.</strong>"
+
+    deadline_banner_html = ""
+    if formatted_dl:
+        deadline_banner_html = f"""
+        <div style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 10px 14px; margin: 14px 0; border-radius: 4px; font-size: 13.5px;">
+            <strong style="color: #b45309;">⏰ Expected Deadline:</strong> <span style="color: #92400e; font-weight: 600;">{formatted_dl}</span>
+        </div>
+        """
+
+    plain_text = f"""Hello,
+
+{loc_intro} is ready for review.{deadline_body}
+📄 File: {file_name}
+🌐 Google Drive Folder: {drive_url}
+📂 Local / Drive Path: {file_path}
+
+{delivery_note_plain}
+
+Please review and correct the following fields:
+
+Project Name :-
+• Keep the project name clean and consistent with the original Property Details.
+• Remove unnecessary suffixes such as CHS, Building, Phase, etc.
+• Do not use English-translated names generated by the LLM. For example, if the Property Details mention “Swapnapoorti”, retain “Swapnapoorti” instead of “Dream Fulfillment.”
+• Remove values such as Shop No., Room No., Gat No., Survey No., etc., if they have been incorrectly captured as the project name.
+
+Net Carpet Area :-
+• Review net_carpet_area only for Sale transactions.
+• Where multiple areas are mentioned, such as Total Land Area, Owner’s Share, or Sold Portion, select the actual transacted/sold area.
+• If multiple flats/shops are included in the same transaction, add their individual areas and use the total area.
+• Please manually verify records where:
+  - the area unit is not mentioned,
+  - the mentioned unit appears incorrect, or
+  - there is confusion in identifying the correct carpet/transacted area.
+  In such cases, refer carefully to the original Property Details before finalizing the area.
+
+Unit Number & Floor Number :-
+• Review unit_number and floor_number against the original Property Details.
+• unit_number should contain only the actual Flat No., Shop No., Room No., Unit No., etc.
+• floor_number should contain only the actual floor information, such as Ground Floor, 1st Floor, 2nd Floor, etc.
+• Do not consider project/building names, Gat No., Survey No., road names, or other location details as unit or floor numbers.
+
+Example:
+Shop No: Shop No - B 402, Floor No: Prisma L, Building Name: Gat No - 79, Block Sector: Moshi 412105, Road: Borhadewadi, City: Moshi, District: Pune
+In this case, B 402 should be captured as the unit_number. Prisma L should not be considered the floor_number if it represents a building/project name. If the actual floor is not mentioned, keep the floor_number blank.
+
+For better understanding and reference, please refer to the following sheet:
+https://docs.google.com/spreadsheets/d/1q_HORd89098vHCav494NeFej8zHVWyDHWkvkE-B6mmE/edit?gid=1073436546#gid=1073436546
+
+Please complete the review and corrections accordingly.
+
+Best regards,
+Nilesh K.
+"""
+
+    html_text = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1f2937; margin: 0; padding: 16px; background-color: #f9fafb;">
+  <div style="max-width: 680px; margin: 0 auto; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+    
+    <p style="margin-top: 0; font-size: 15px;">Hello,</p>
+    <p style="font-size: 15px;"><strong>{loc_intro}</strong> is ready for review.</p>
+    
+    {deadline_banner_html}
+
+    <div style="background-color: #f3f4f6; border-left: 4px solid #4f46e5; padding: 12px 16px; margin: 14px 0; border-radius: 4px; font-size: 13.5px;">
+      <p style="margin: 3px 0;"><strong>📄 File:</strong> {file_name}</p>
+      <p style="margin: 3px 0;"><strong>🌐 Google Drive Folder:</strong> <a href="{drive_url}" target="_blank" style="color: #2563eb; text-decoration: underline; word-break: break-all;">{drive_url}</a></p>
+      <p style="margin: 3px 0; color: #4b5563;"><strong>📂 Local / Drive Path:</strong> <code style="background: #e5e7eb; padding: 2px 4px; border-radius: 3px; font-size: 12.5px;">{file_path}</code></p>
+    </div>
+
+    <p style="font-size: 14px; color: #374151; margin: 14px 0;">{delivery_note_html}</p>
+
+    <div style="margin-top: 18px; padding-top: 14px; border-top: 1px solid #e5e7eb;">
+      <p style="font-size: 14.5px; font-weight: 600; color: #111827; margin: 0 0 12px 0;">Please review and correct the following fields:</p>
+      
+      <!-- Project Name -->
+      <div style="margin-bottom: 16px;">
+        <p style="font-size: 14.5px; margin: 0 0 6px 0; color: #111827;">
+          <strong style="font-weight: bold; text-decoration: underline;">Project Name :-</strong>
+        </p>
+        <ul style="margin: 0; padding-left: 20px; color: #374151;">
+          <li style="margin-bottom: 4px;">Keep the project name clean and consistent with the original Property Details.</li>
+          <li style="margin-bottom: 4px;">Remove unnecessary suffixes such as CHS, Building, Phase, etc.</li>
+          <li style="margin-bottom: 4px;">Do not use English-translated names generated by the LLM. For example, if the Property Details mention &ldquo;Swapnapoorti&rdquo;, retain &ldquo;Swapnapoorti&rdquo; instead of &ldquo;Dream Fulfillment.&rdquo;</li>
+          <li style="margin-bottom: 4px;">Remove values such as Shop No., Room No., Gat No., Survey No., etc., if they have been incorrectly captured as the project name.</li>
+        </ul>
+      </div>
+
+      <!-- Net Carpet Area -->
+      <div style="margin-bottom: 16px;">
+        <p style="font-size: 14.5px; margin: 0 0 6px 0; color: #111827;">
+          <strong style="font-weight: bold; text-decoration: underline;">Net Carpet Area :-</strong>
+        </p>
+        <ul style="margin: 0; padding-left: 20px; color: #374151;">
+          <li style="margin-bottom: 4px;">Review <code>net_carpet_area</code> only for <strong>Sale</strong> transactions.</li>
+          <li style="margin-bottom: 4px;">Where multiple areas are mentioned, such as Total Land Area, Owner&rsquo;s Share, or Sold Portion, select the <strong>actual transacted/sold area</strong>.</li>
+          <li style="margin-bottom: 4px;">If multiple flats/shops are included in the same transaction, add their individual areas and use the total area.</li>
+          <li style="margin-bottom: 4px;">Please manually verify records where:
+            <ul style="margin: 4px 0 4px 18px; padding-left: 0; list-style-type: circle;">
+              <li>the area unit is not mentioned,</li>
+              <li>the mentioned unit appears incorrect, or
+              <li>there is confusion in identifying the correct carpet/transacted area.</li>
+            </ul>
+            In such cases, refer carefully to the original Property Details before finalizing the area.
+          </li>
+        </ul>
+      </div>
+
+      <!-- Unit Number & Floor Number -->
+      <div style="margin-bottom: 16px;">
+        <p style="font-size: 14.5px; margin: 0 0 6px 0; color: #111827;">
+          <strong style="font-weight: bold; text-decoration: underline;">Unit Number &amp; Floor Number :-</strong>
+        </p>
+        <ul style="margin: 0; padding-left: 20px; color: #374151;">
+          <li style="margin-bottom: 4px;">Review <code>unit_number</code> and <code>floor_number</code> against the original Property Details.</li>
+          <li style="margin-bottom: 4px;"><code>unit_number</code> should contain only the actual Flat No., Shop No., Room No., Unit No., etc.</li>
+          <li style="margin-bottom: 4px;"><code>floor_number</code> should contain only the actual floor information, such as Ground Floor, 1st Floor, 2nd Floor, etc.</li>
+          <li style="margin-bottom: 4px;">Do not consider project/building names, Gat No., Survey No., road names, or other location details as unit or floor numbers.</li>
+        </ul>
+      </div>
+
+      <!-- Example -->
+      <div style="background-color: #fefce8; border: 1px solid #fef08a; padding: 12px 14px; border-radius: 6px; margin: 16px 0;">
+        <p style="margin: 0 0 6px 0; color: #854d0e;"><strong style="font-weight: bold; text-decoration: underline;">Example:</strong></p>
+        <p style="margin: 0 0 6px 0; font-family: monospace; font-size: 12.5px; color: #713f12; background: #ffffff; padding: 6px 10px; border-radius: 4px; border: 1px solid #fde047;">Shop No: Shop No - B 402, Floor No: Prisma L, Building Name: Gat No - 79, Block Sector: Moshi 412105, Road: Borhadewadi, City: Moshi, District: Pune</p>
+        <p style="margin: 0; font-size: 13px; color: #854d0e; line-height: 1.5;">In this case, <strong>B 402</strong> should be captured as the <code>unit_number</code>. <strong>Prisma L</strong> should not be considered the <code>floor_number</code> if it represents a building/project name. If the actual floor is not mentioned, keep the <code>floor_number</code> blank.</p>
+      </div>
+
+      <!-- Reference Sheet -->
+      <div style="background-color: #eff6ff; border: 1px solid #bfdbfe; padding: 12px 14px; border-radius: 6px; margin: 16px 0;">
+        <p style="margin: 0 0 6px 0; font-weight: 600; color: #1e40af;">📊 For better understanding and reference, please refer to the following sheet:</p>
+        <a href="https://docs.google.com/spreadsheets/d/1q_HORd89098vHCav494NeFej8zHVWyDHWkvkE-B6mmE/edit?gid=1073436546#gid=1073436546" target="_blank" style="color: #2563eb; font-weight: 600; text-decoration: underline; word-break: break-all; font-size: 13px;">Open Reference Google Sheet ↗</a>
+      </div>
+
+      <p style="margin-top: 14px; color: #374151;">Please complete the review and corrections accordingly.</p>
+    </div>
+
+    <div style="margin-top: 20px; padding-top: 14px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 13px;">
+      <p style="margin: 2px 0;">Best regards,</p>
+      <p style="margin: 2px 0; font-weight: 600; color: #374151;">Nilesh K.</p>
+    </div>
+
+  </div>
+</body>
+</html>"""
+
+    return plain_text, html_text
+
+
 def prompt_share_correction_file(
     file_path: str,
     location_name: str = None,
-    drive_url: str = DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL,
+    drive_url: str = None,
 ):
     """
     Prompts the user if they wish to share the manual correction file with colleagues.
     Sharing is completely optional. Can send an email with the file attached or provide the Drive link.
     """
+    if not drive_url:
+        drive_url = get_manual_correction_drive_url(
+            city_identifier=CURRENT_CITY_KEY if "CURRENT_CITY_KEY" in globals() else None,
+            location_name=location_name,
+            file_path=file_path,
+        ) or (DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL if "DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL" in globals() else "")
     print(f"\n{HEADER}{'-' * 60}{RESET}")
     print(f"{CYAN}📤 [OPTIONAL] SHARE CORRECTION FILE{RESET}")
     print(f"  {CYAN}📄 File      :{RESET} {BOLD}{os.path.basename(file_path)}{RESET}")
@@ -526,10 +710,22 @@ def prompt_share_correction_file(
         f"\n{YELLOW}Enter expected deadline (e.g. 'Today 6 PM' / 'Tomorrow 12 PM', or press Enter to skip): {RESET}"
     ).strip()
 
+    cc_emails = [
+        "deeksha@sigmavalue.co.in",
+        #"paryushan@sigmavalue.co.in",
+        #"anurag@sigmavalue.co.in",
+        "nilesh@sigmavalue.co.in",
+    ]
+    clean_recipients = [r.strip() for r in recipient_emails if r and r.strip()]
+    clean_cc = [c.strip() for c in (cc_emails or []) if c and c.strip()]
+    all_recipients = list(dict.fromkeys(clean_recipients + clean_cc))
+
     file_name = os.path.basename(file_path)
     file_size_mb = os.path.getsize(file_path) / (1024 * 1024) if os.path.exists(file_path) else 0
 
-    print(f"\n{CYAN}📧 Preparing email to:{RESET} {', '.join(recipient_emails)}")
+    print(f"\n{CYAN}📧 Preparing email to:{RESET} {', '.join(clean_recipients)}")
+    if clean_cc:
+        print(f"  {CYAN}📋 CC      :{RESET} {', '.join(clean_cc)}")
     if deadline_input:
         print(f"  {CYAN}⏰ Deadline:{RESET} {deadline_input}")
     print(f"  {CYAN}📎 Attachment size:{RESET} {file_size_mb:.2f} MB")
@@ -550,25 +746,29 @@ def prompt_share_correction_file(
         smtp_server = "smtp.gmail.com"
         smtp_port = 587
 
-        msg = MIMEMultipart()
+        msg = MIMEMultipart("mixed")
         msg["From"] = f"Nilesh <{sender_email}>"
-        msg["To"] = ", ".join(recipient_emails)
+        msg["To"] = ", ".join(clean_recipients)
+        if clean_cc:
+            msg["Cc"] = ", ".join(clean_cc)
         loc_str = f" for {location_name}" if location_name else ""
+        loc_intro = f"The {location_name} manual correction file" if location_name else "The manual correction file"
         msg["Subject"] = f"[Manual Correction Required]{deadline_subj} {loc_str.strip()} - {file_name}"
 
-        body = f"""Hello,
+        plain_body, html_body = build_correction_email_content(
+            loc_intro=loc_intro,
+            file_name=file_name,
+            drive_url=drive_url,
+            file_path=file_path,
+            deadline_body=deadline_str,
+            formatted_dl=deadline_input,
+            is_attachment=True,
+        )
 
-The manual correction file{loc_str} is ready for review and manual correction.{deadline_str}
-📄 File: {file_name}
-🌐 Google Drive Folder: {drive_url}
-📂 Local / Drive Path: {file_path}
-
-Please find the file attached with this email.
-
-Best regards,
-Nilesh K
-"""
-        msg.attach(MIMEText(body, "plain"))
+        body_alt = MIMEMultipart("alternative")
+        body_alt.attach(MIMEText(plain_body, "plain", "utf-8"))
+        body_alt.attach(MIMEText(html_body, "html", "utf-8"))
+        msg.attach(body_alt)
 
         if os.path.exists(file_path):
             with open(file_path, "rb") as attachment:
@@ -587,80 +787,44 @@ Nilesh K
         server.starttls()
         server.ehlo()
         server.login(sender_email, sender_password)
-        server.sendmail(sender_email, recipient_emails, msg.as_string())
+        server.sendmail(sender_email, all_recipients, msg.as_string())
         server.quit()
 
-        print(f"\n{GREEN}✓ Email sent successfully with attachment to {', '.join(recipient_emails)}!{RESET}")
+        print(f"\n{GREEN}✓ Email sent successfully with attachment to {', '.join(clean_recipients)} (CC: {', '.join(clean_cc)})!{RESET}")
     except Exception as err:
         print(f"\n{RED}❌ Failed to send attachment ({err}). Sending Drive link notification instead...{RESET}")
         try:
             # Fallback: Send email with Drive link without the large attachment
-            fallback_msg = MIMEMultipart()
+            fallback_msg = MIMEMultipart("alternative")
             fallback_msg["From"] = f"Nilesh <{sender_email}>"
-            fallback_msg["To"] = ", ".join(recipient_emails)
+            fallback_msg["To"] = ", ".join(clean_recipients)
+            if clean_cc:
+                fallback_msg["Cc"] = ", ".join(clean_cc)
             fallback_msg["Subject"] = f"[Manual Correction Required]{deadline_subj} {loc_str.strip()} - {file_name}"
-            fallback_body = f"""Hello,
 
-The manual correction file{loc_str} is ready for review.{deadline_str}
-📄 File: {file_name}
-🌐 Google Drive Folder: {drive_url}
-📂 File Path: {file_path}
+            fallback_plain, fallback_html = build_correction_email_content(
+                loc_intro=loc_intro,
+                file_name=file_name,
+                drive_url=drive_url,
+                file_path=file_path,
+                deadline_body=deadline_str,
+                formatted_dl=deadline_input,
+                is_attachment=False,
+            )
+            fallback_msg.attach(MIMEText(fallback_plain, "plain", "utf-8"))
+            fallback_msg.attach(MIMEText(fallback_html, "html", "utf-8"))
 
-Please access the file directly from Google Drive using the link above.
-
-Best regards,
-Nilesh K
-"""
-            fallback_msg.attach(MIMEText(fallback_body, "plain"))
             server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
             server.ehlo()
             server.starttls()
             server.ehlo()
             server.login(sender_email, sender_password)
-            server.sendmail(sender_email, recipient_emails, fallback_msg.as_string())
+            server.sendmail(sender_email, all_recipients, fallback_msg.as_string())
             server.quit()
-            print(f"{GREEN}✓ Drive link notification sent successfully to {', '.join(recipient_emails)}!{RESET}")
+            print(f"{GREEN}✓ Drive link notification sent successfully to {', '.join(clean_recipients)} (CC: {', '.join(clean_cc)})!{RESET}")
         except Exception as fb_err:
             print(f"{RED}❌ Fallback email also failed: {fb_err}{RESET}")
         print(f"  {CYAN}🌐 You can also share the link directly:{RESET} {drive_url}")
-
-def derive_net_carpet_area(df: pd.DataFrame, city: str) -> pd.DataFrame:
-    """Fill net_carpet_area_sqmt from whichever area column is available."""
-    saleable_divisor = SALEABLE_TO_CARPET_DIVISOR_BY_CITY.get(city.lower())
-    if saleable_divisor is None:
-        raise ValueError(f"No Saleable->Carpet divisor for city '{city}'.")
-
-    df["net_carpet_area_sqmt"] = np.nan
-
-    mask = df["carpet_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "carpet_area_sqmt"].values
-
-    mask = df["net_carpet_area_sqmt"].isna() & df["builtup_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = (
-        df.loc[mask, "builtup_area_sqmt"].values / BUILDUP_TO_CARPET_DIVISOR
-    )
-
-    mask = df["net_carpet_area_sqmt"].isna() & df["saleable_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = (
-        df.loc[mask, "saleable_area_sqmt"].values / saleable_divisor
-    )
-
-    mask = (
-        df["net_carpet_area_sqmt"].isna() & df["super_builtup_area_sqmt"].notna()
-    )
-    df.loc[mask, "net_carpet_area_sqmt"] = (
-        df.loc[mask, "super_builtup_area_sqmt"].values / saleable_divisor
-    )
-
-    mask = df["net_carpet_area_sqmt"].isna() & df["plot_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "plot_area_sqmt"].values
-
-    mask = df["net_carpet_area_sqmt"].isna() & df["total_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "total_area_sqmt"].values
-
-    df["net_carpet_area_sqmt"] = df["net_carpet_area_sqmt"].round(2)
-    return df
-
 
 def rename_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.rename(
@@ -814,106 +978,23 @@ def populate_location_coords(df, city_id, db_params):
     df["location_longitude"] = keys.map(coords.set_index("loc")["longitude"])
     return df
 
-def resolve_city(df: pd.DataFrame, source_file: str, db_params: dict) -> tuple[int, str]:
+def resolve_city(df: pd.DataFrame = None, source_file: str = None, db_params: dict = None) -> tuple[int, str]:
     """
-    Fetches available cities from public.dim_city, auto-detects the city from df / source_file,
-    and prompts the user once to confirm or override. Returns (target_city_id, target_city_name).
+    Returns (target_city_id, target_city_name) as per the target city selected by the user.
+    Uses the active city selected at pipeline start.
     """
-    cities = {}
+    if "CURRENT_CITY_CONFIG" in globals() and CURRENT_CITY_CONFIG:
+        return CURRENT_CITY_CONFIG["city_id"], CURRENT_CITY_CONFIG["display_name"]
+    if "target_city_id" in globals() and "target_city_name" in globals() and target_city_id and target_city_name:
+        return target_city_id, target_city_name
+
+    # Fallback to active city configuration if available
     try:
-        conn = psycopg2.connect(**db_params)
-        cur = conn.cursor()
-        cur.execute("SELECT city_id, city_name FROM public.dim_city ORDER BY city_id;")
-        cities = {row[0]: row[1] for row in cur.fetchall()}
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"{YELLOW}⚠️ Error querying public.dim_city: {e}{RESET}")
-        cities = {9: "Pune"}
-
-    name_to_id = {str(name).strip().lower(): cid for cid, name in cities.items()}
-
-    detected_id = None
-    detected_name = None
-
-    # Check source_file path first
-    file_str = str(source_file).lower()
-    for name_lower, cid in name_to_id.items():
-        clean_name = name_lower.replace("_", " ")
-        if re.search(r"\b" + re.escape(clean_name) + r"\b", file_str) or re.search(r"\b" + re.escape(name_lower) + r"\b", file_str):
-            detected_id = cid
-            detected_name = cities[cid]
-            break
-
-    # If not found from file path, check columns in df
-    if detected_id is None and df is not None:
-        candidate_cols = [
-            "city_name", "city", "city_en", "city_original",
-            "district_name", "district_en", "district_original",
-            "taluka_en", "taluka_original", "areaname", "village_name_marathi"
-        ]
-        found_cols = [c for c in candidate_cols if c in df.columns]
-        for col in found_cols:
-            col_series = df[col].iloc[:, 0] if isinstance(df[col], pd.DataFrame) else df[col]
-            unique_vals = [str(v).strip().lower() for v in col_series.dropna().unique() if str(v).strip()]
-            for val in unique_vals:
-                for name_lower, cid in name_to_id.items():
-                    clean_name = name_lower.replace("_", " ")
-                    if val == name_lower or val == clean_name or name_lower in val:
-                        detected_id = cid
-                        detected_name = cities[cid]
-                        break
-                if detected_id is not None:
-                    break
-            if detected_id is not None:
-                break
-
-    # Default fallback to Pune (9) if still undetected
-    if detected_id is None:
-        detected_id = 9 if 9 in cities else next(iter(cities.keys()), 9)
-        detected_name = cities.get(detected_id, "Pune")
-
-    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   🏙️  CITY RESOLUTION (public.dim_city){RESET}")
-    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"  {CYAN}Detected City :{RESET} {BOLD}{GREEN}{detected_name}{RESET} (City ID: {BOLD}{CYAN}{detected_id}{RESET})")
-    print(f"{HEADER}{'-' * 60}{RESET}")
-
-    while True:
-        prompt = (
-            f"{YELLOW}Press Enter to confirm [{detected_name} (ID: {detected_id})], "
-            f"or enter City ID / Name: {RESET}"
-        )
-        user_val = input(prompt).strip()
-
-        if not user_val:
-            target_city_id = detected_id
-            target_city_name = detected_name
-            break
-
-        if user_val.isdigit() and int(user_val) in cities:
-            target_city_id = int(user_val)
-            target_city_name = cities[target_city_id]
-            break
-
-        val_lower = user_val.lower().replace(" ", "_")
-        if val_lower in name_to_id:
-            target_city_id = name_to_id[val_lower]
-            target_city_name = cities[target_city_id]
-            break
-
-        matched_cid = next((cid for n_l, cid in name_to_id.items() if val_lower in n_l or n_l in val_lower), None)
-        if matched_cid:
-            target_city_id = matched_cid
-            target_city_name = cities[target_city_id]
-            break
-
-        print(f"{YELLOW}⚠️ '{user_val}' not recognized in public.dim_city.{RESET}")
-        print(f"{BLUE}ℹ Available cities:{RESET} {', '.join([f'{CYAN}{cid}:{RESET} {name}' for cid, name in cities.items()])}")
-
-    print(f"{GREEN}✓ City confirmed: {BOLD}{target_city_name}{RESET}{GREEN} (City ID: {target_city_id}){RESET}")
-    set_active_city(target_city_name)
-    return target_city_id, target_city_name
+        from city_config import get_city_config
+        cfg = get_city_config()
+        return cfg["city_id"], cfg["display_name"]
+    except Exception:
+        return 9, "Pune"
 
 def populate_village_mapping(df: pd.DataFrame, city_id: int, db_params: dict) -> pd.DataFrame:
     """Match areaname / village_name_marathi against transactions table and fill location_name & registered_document_village_name."""
@@ -1058,15 +1139,18 @@ for idx, (ckey, cval) in enumerate(CITY_CONFIG.items(), start=1):
     print(f"  {CYAN}[{idx}]{RESET} {cval['display_name']:<10} (City ID: {cval['city_id']}, Divisor: {div})")
 print(f"{HEADER}{'-' * 60}{RESET}")
 
-selected_city_input = input(f"{YELLOW}Select city (1: Pune, 2: Mumbai, 3: Thane) [default: 1]: {RESET}").strip()
 city_idx_map = {str(i): k for i, k in enumerate(CITY_CONFIG.keys(), start=1)}
+city_prompt_options = ", ".join(f"{i}: {CITY_CONFIG[k]['display_name']}" for i, k in city_idx_map.items())
 
-if selected_city_input in city_idx_map:
-    active_city_key = city_idx_map[selected_city_input]
-elif selected_city_input.lower() in CITY_CONFIG:
-    active_city_key = selected_city_input.lower()
-else:
-    active_city_key = "pune"
+while True:
+    selected_city_input = input(f"{YELLOW}Select city ({city_prompt_options}): {RESET}").strip()
+    if selected_city_input in city_idx_map:
+        active_city_key = city_idx_map[selected_city_input]
+        break
+    elif selected_city_input.lower() in CITY_CONFIG:
+        active_city_key = selected_city_input.lower()
+        break
+    print(f"{RED}❌ Invalid selection '{selected_city_input}'. Please choose a valid city ({city_prompt_options}).{RESET}")
 
 CURRENT_CITY_CONFIG = set_active_city(active_city_key)
 target_city_id = CURRENT_CITY_CONFIG["city_id"]
@@ -1077,16 +1161,16 @@ print(f"{GREEN}✓ Active City set to: {BOLD}{target_city_name}{RESET}{GREEN} (I
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
 print(f"{HEADER}{BOLD}   🏗️  DATA PROCESSING PIPELINE - {target_city_name.upper()}{RESET}")
 print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-print(f"  {CYAN}[1]{RESET} Run from START (Step 1 to Step 20)")
-print(f"  {CYAN}[2]{RESET} Run from STEP 7 (Load manually corrected file directly, Steps 7 to 20)")
-print(f"  {CYAN}[3]{RESET} Run STEP 19 ONLY (Parquet Conversion directly)")
+print(f"  {CYAN}[1]{RESET} Run from START (Step 1 to Step 19)")
+print(f"  {CYAN}[2]{RESET} Run from STEP 7 (Load manually corrected file directly, Steps 7 to 19)")
+print(f"  {CYAN}[3]{RESET} Run STEP 18 ONLY (Parquet Conversion directly)")
 print(f"{HEADER}{'=' * 60}{RESET}")
 
 pipeline_mode = input(f"\n{YELLOW}Select option (1, 2, or 3) [default: 1]: {RESET}").strip()
 
 if pipeline_mode == "3":
-    # STEP 19 ONLY - Direct Parquet Conversion
-    print(f"\n{BLUE}ℹ ⏩ Skipping Steps 1 to 18. Starting directly from STEP 19 (Parquet Conversion)...{RESET}")
+    # STEP 18 ONLY - Direct Parquet Conversion
+    print(f"\n{BLUE}ℹ ⏩ Skipping Steps 1 to 17. Starting directly from STEP 18 (Parquet Conversion)...{RESET}")
     output_path = get_final_processed_file()
     sample_df = None
     try:
@@ -1106,23 +1190,24 @@ else:
     # STEP 1 - INPUT FILE (MANUAL PROMPT HIDDEN)
     # ------------------------------------------------------------
     # print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    # print(f"{HEADER}{BOLD}   ⏳ [STEP 1/20] Getting Input File...{RESET}")
+    # print(f"{HEADER}{BOLD}   ⏳ [STEP 1/19] Getting Input File...{RESET}")
     # print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     # input_file = input(f"{YELLOW}Please provide Input File path: {RESET}").strip().strip('"')
-    # print(f"{GREEN}✓ [STEP 1/20] Input file selected: {input_file}{RESET}")
+    # print(f"{GREEN}✓ [STEP 1/19] Input file selected: {input_file}{RESET}")
 
     # ============================================================
     # STEP 1 - GET FILE FROM GOOGLE DRIVE (LOCATION WISE)
     # ============================================================
     def get_file_from_drive(
-        drive_url: str = DEFAULT_INPUT_DRIVE_FOLDER_URL,
+        drive_url: str = None,
     ) -> str:
         """
         Scans Google Drive folder (via local Google Drive Desktop sync) for location-wise subfolders,
         allows picking location-wise file, and returns the selected file path.
         """
+        drive_url = drive_url or (DEFAULT_INPUT_DRIVE_FOLDER_URL if "DEFAULT_INPUT_DRIVE_FOLDER_URL" in globals() else None)
         print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-        print(f"{HEADER}{BOLD}   📁 [STEP 1/20] Getting Input File from Google Drive...{RESET}")
+        print(f"{HEADER}{BOLD}   📁 [STEP 1/19] Getting Input File from Google Drive...{RESET}")
         print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
         # Extract folder ID from URL or path
@@ -1234,7 +1319,7 @@ else:
                     break
                 print(f"{RED}❌ Invalid file choice. Please choose 1 to {len(loc_files)}.{RESET}")
 
-        print(f"\n{GREEN}✓ [STEP 1/20] Input file selected from Drive:{RESET}")
+        print(f"\n{GREEN}✓ [STEP 1/19] Input file selected from Drive:{RESET}")
         print(f"  {CYAN}📄 File:{RESET} {BOLD}{os.path.basename(selected_file)}{RESET}")
         print(f"  {CYAN}📂 Path:{RESET} {selected_file}")
         global selected_location
@@ -1247,17 +1332,17 @@ else:
 
     # STEP 2 - DictToColumn
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 2/20] Running DictToColumn...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 2/19] Running DictToColumn...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from DictToColumn import process_dict_to_column
 
     df = process_dict_to_column(input_file)
-    print(f"{GREEN}✓ [STEP 2/20] DictToColumn completed - {len(df)} rows{RESET}")
+    print(f"{GREEN}✓ [STEP 2/19] DictToColumn completed - {len(df)} rows{RESET}")
     target_city_id, target_city_name = resolve_city(df, input_file, DB_PARAMS)
 
     # STEP 3 - Create final_project_name
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 3/20] Creating final_project_name...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 3/19] Creating final_project_name...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     project_name_missing = (
         df["project_name_en"].replace(r"^\s*$", pd.NA, regex=True).isna()
@@ -1270,37 +1355,37 @@ else:
     df["final_project_name_status"] = project_name_missing.map(
         {True: "Building Name Considered", False: "Project Name Considered"}
     )
-    print(f"{GREEN}✓ [STEP 3/20] Final project name created.{RESET}")
+    print(f"{GREEN}✓ [STEP 3/19] Final project name created.{RESET}")
 
     # STEP 4 - Static Dictionary Mapping
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 4/20] Mapping transaction types using static dictionary...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 4/19] Mapping transaction types using static dictionary...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from static import result_dict, word_number_dict
 
     df["transaction_type"] = df["docname"].map(result_dict.get)
-    print(f"{GREEN}✓ [STEP 4/20] Transaction types mapped.{RESET}")
+    print(f"{GREEN}✓ [STEP 4/19] Transaction types mapped.{RESET}")
 
     # STEP 5 - Transaction Categorisation
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 5/20] Categorising transactions (Sale / Lease / Other)...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 5/19] Categorising transactions (Sale / Lease / Other)...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from transaction_categorizer import categorise
 
     df = categorise(df)
-    print(f"{GREEN}✓ [STEP 5/20] Transaction categorisation completed.{RESET}")
+    print(f"{GREEN}✓ [STEP 5/19] Transaction categorisation completed.{RESET}")
 
     # STEP 5.5 - Populate village_name_marathi from transactions DB if missing
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 5.5/20] Mapping village_name_marathi -> location_name / registered_document_village_name...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 5.5/19] Mapping village_name_marathi -> location_name / registered_document_village_name...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df = populate_village_mapping(df, target_city_id, DB_PARAMS)
-    print(f"{GREEN}✓ [STEP 5.5/20] Village mapping completed.{RESET}")
+    print(f"{GREEN}✓ [STEP 5.5/19] Village mapping completed.{RESET}")
 
 
     # STEP 6 - Project Standardization & Area Conversion
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 6/20] Running Project Standardization & Area Conversion...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 6/19] Running Project Standardization & Area Conversion...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from project_name_Std_and_area_conversion import process_dataframe
 
@@ -1312,8 +1397,14 @@ else:
     )
 
     # Resolve manual correction Google Drive folder
+    loc_manual_drive_url = get_manual_correction_drive_url(
+        city_identifier=target_city_name,
+        location_name=location_name,
+        file_path=input_file,
+    ) or (DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL if "DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL" in globals() else None)
+
     manual_dir = resolve_manual_correction_directory(
-        DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL,
+        loc_manual_drive_url,
         location_name=location_name,
     )
 
@@ -1322,75 +1413,78 @@ else:
 
     if manual_dir and os.path.exists(manual_dir):
         v1_output_path = os.path.join(manual_dir, out_file_name)
-        print(f"  {CYAN}🌐 Google Drive Target :{RESET} {DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL}")
+        print(f"  {CYAN}🌐 Google Drive Target :{RESET} {loc_manual_drive_url}")
         print(f"  {CYAN}📂 Location Save Path  :{RESET} {v1_output_path}")
     else:
         input_dir = os.path.dirname(input_file)
         v1_output_path = os.path.join(input_dir, out_file_name)
         print(f"  {YELLOW}⚠️ Manual correction drive folder not detected. Saving locally: {v1_output_path}{RESET}")
 
-    df = process_dataframe(df, output_path=v1_output_path)
+    df = process_dataframe(df, output_path=v1_output_path, city=target_city_name.lower())
+
     print(
-        f"{GREEN}✓ [STEP 6/20] Standardization completed -> Saved: {v1_output_path}{RESET}"
+        f"{GREEN}✓ [STEP 6/19] Standardization completed -> Saved: {v1_output_path}{RESET}"
     )
 
     # Optional: Share correction file with colleagues
-    prompt_share_correction_file(v1_output_path, location_name=location_name)
+    prompt_share_correction_file(
+        v1_output_path,
+        location_name=location_name,
+        drive_url=loc_manual_drive_url,
+    )
 
     # STEP 7 - Manually Corrected File Load
-    file_path, df = get_manual_corrected_file(default_file=v1_output_path)
+    file_path, df = get_manual_corrected_file(
+        default_file=v1_output_path,
+        drive_url=loc_manual_drive_url,
+    )
 
 
 if pipeline_mode in ["1", "2"]:
-    # STEP 8 - Calculate Net_carpet_area
+    # STEP 8 - Rename columns
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 8/20] Calculating Net Carpet Area...{RESET}")
-    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-    df = derive_net_carpet_area(df, city=target_city_name.lower())
-    print(f"{GREEN}✓ [STEP 8/20] Net Carpet Area calculation completed.{RESET}")
-
-    # STEP 9 - Rename columns
-    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 9/20] Renaming columns to standard format...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 8/19] Renaming columns to standard format...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df = rename_columns(df)
-    print(f"{GREEN}✓ [STEP 9/20] Columns renamed successfully.{RESET}")
+    print(f"{GREEN}✓ [STEP 8/19] Columns renamed successfully.{RESET}")
 
-    # STEP 10 - Categorise Property Type
+    # STEP 9 - Categorise Property Type
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 10/20] Categorising property types...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 9/19] Categorising property types...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df["property_type"] = df["property_type_raw"].apply(_map_property_type)
-    print(f"{GREEN}✓ [STEP 10/20] Property types categorised.{RESET}")
+    print(f"{GREEN}✓ [STEP 9/19] Property types categorised.{RESET}")
 
-    # STEP 11 - Add Buyer location and Pincode
+    # STEP 10 - Add Buyer location and Pincode
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 11/20] Adding Buyer Location and Pincode...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 10/19] Adding Buyer Location and Pincode...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df = add_buyer_location(df)
     matched_pincodes = df["buyer_pincode"].notna().sum() if "buyer_pincode" in df.columns else 0
     matched_locations = df["buyer_locality"].notna().sum() if "buyer_locality" in df.columns else 0
-    print(f"{GREEN}✓ [STEP 11/20] Buyer location and pincode added ({matched_pincodes} pincodes, {matched_locations} locations matched).{RESET}")
+    print(f"{GREEN}✓ [STEP 10/19] Buyer location and pincode added ({matched_pincodes} pincodes, {matched_locations} locations matched).{RESET}")
     
-    # STEP 12 - Matching with RERA
+    # STEP 11 - Matching with RERA
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 12/20] Running RERA matching...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 11/19] Running RERA matching...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from rera_matching import process_rera_matching
+    import importlib
+    import city_config
+    importlib.reload(city_config)
+    from city_config import resolve_rera_grand_path
 
-    rera_file = CURRENT_CITY_CONFIG.get("rera_grand_file") if "CURRENT_CITY_CONFIG" in globals() else None
-    rera_path = None
-    if rera_file:
-        candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), rera_file)
-        if os.path.exists(candidate):
-            rera_path = candidate
+    rera_path = resolve_rera_grand_path(target_city_name)
+    if not rera_path and "active_city_key" in globals() and active_city_key:
+        rera_path = resolve_rera_grand_path(active_city_key)
 
-    if rera_path:
+    if rera_path and os.path.exists(rera_path):
+        print(f"  {CYAN}📂 Using RERA Dataset: {os.path.basename(rera_path)}{RESET}")
         df = process_rera_matching(df, city=target_city_name.title(), rera_grand_path=rera_path)
-        print(f"{GREEN}✓ [STEP 12/20] RERA matching completed with {os.path.basename(rera_path)} - {len(df)} rows{RESET}")
+        print(f"{GREEN}✓ [STEP 11/19] RERA matching completed with {os.path.basename(rera_path)} - {len(df)} rows{RESET}")
     elif target_city_name.lower() == "pune":
         df = process_rera_matching(df, city="Pune")
-        print(f"{GREEN}✓ [STEP 12/20] RERA matching completed - {len(df)} rows{RESET}")
+        print(f"{GREEN}✓ [STEP 11/19] RERA matching completed - {len(df)} rows{RESET}")
     else:
         print(f"  {YELLOW}⚠️ No RERA Grand dataset configured or found for {target_city_name} (can be set in city_config.py).{RESET}")
         for c in ["index", "modified_project_name", "rera_location_v1", "rera_location",
@@ -1399,7 +1493,7 @@ if pipeline_mode in ["1", "2"]:
                 df[c] = pd.NA
         if "BHK" in df.columns and "property_type" in df.columns:
             df["BHK"] = df["BHK"].fillna(df["property_type"])
-        print(f"{GREEN}✓ [STEP 12/20] RERA matching skipped safely for {target_city_name}.{RESET}")
+        print(f"{GREEN}✓ [STEP 11/19] RERA matching skipped safely for {target_city_name}.{RESET}")
 
 
     # ============================================================
@@ -1459,10 +1553,6 @@ if pipeline_mode in ["1", "2"]:
         "project_stage": pd.NA,
         "is_llm_processed": "Yes",
         "is_manual_processed": "No",
-        "buyer_pincode": pd.NA,
-        "buyer_locality": pd.NA,
-        "buyer_district": pd.NA,
-        "buyer_state": pd.NA,
     }
 
     for col, value in defaults.items():
@@ -1470,61 +1560,61 @@ if pipeline_mode in ["1", "2"]:
             df[col] = value
 
     # ============================================================
-    # STEP 13 - Assign NR Indexes via PostgreSQL
+    # STEP 12 - Assign NR Indexes via PostgreSQL
     # ============================================================
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 13/20] Assigning NR Indexes for {target_city_name} (ID: {target_city_id})...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 12/19] Assigning NR Indexes for {target_city_name} (ID: {target_city_id})...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
     df = assign_nr_indexes(
         df, target_city_id=target_city_id, db_params=DB_PARAMS
     )
-    print(f"{GREEN}✓ [STEP 13/20] NR assignment complete.{RESET}")
+    print(f"{GREEN}✓ [STEP 12/19] NR assignment complete.{RESET}")
 
     # ============================================================
-    # STEP 14 - Fetch Location Latitude & Longitude from DB
+    # STEP 13 - Fetch Location Latitude & Longitude from DB
     # ============================================================
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 14/20] Populating Location Coordinates from DB...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 13/19] Populating Location Coordinates from DB...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df = populate_location_coords(df, target_city_id, DB_PARAMS)
-    print(f"{GREEN}✓ [STEP 14/20] Location LatLong populated.{RESET}")
+    print(f"{GREEN}✓ [STEP 13/19] Location LatLong populated.{RESET}")
 
     # # ============================================================
-    # # STEP 15 - Fill remaining project coordinates using Google Places API
+    # # STEP 14 - Fill remaining project coordinates using Google Places API
     # # ============================================================
     # print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    # print(f"{HEADER}{BOLD}   ⏳ [STEP 15/20] Populating Project Coordinates (Google Places API)...{RESET}")
+    # print(f"{HEADER}{BOLD}   ⏳ [STEP 14/19] Populating Project Coordinates (Google Places API)...{RESET}")
     # print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     # from project_coordinates import populate_project_coordinates
     # df = populate_project_coordinates(df)
-    # print(f"{GREEN}✓ [STEP 15/20] Project Coordinates completed.{RESET}")
+    # print(f"{GREEN}✓ [STEP 14/19] Project Coordinates completed.{RESET}")
 
     # ============================================================
-    # STEP 16 - Filter & Order Selective DB Columns
+    # STEP 15 - Filter & Order Selective DB Columns
     # ============================================================
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 16/20] Filtering and ordering columns according to DB schema...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 15/19] Filtering and ordering columns according to DB schema...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from db_columns import DB_SEQUENCE
     df = keep_db_columns(df, DB_SEQUENCE)
-    print(f"{GREEN}✓ [STEP 16/20] DB columns filtering and ordering completed ({len(df.columns)} columns retained).{RESET}")
+    print(f"{GREEN}✓ [STEP 15/19] DB columns filtering and ordering completed ({len(df.columns)} columns retained).{RESET}")
 
     # ============================================================
-    # STEP 17 - Title Case For all text columns
+    # STEP 16 - Title Case For all text columns
     # ============================================================
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 17/20] Applying Title Case to text columns...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 16/19] Applying Title Case to text columns...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     for col in df.select_dtypes(include=["object"]).columns:
         df[col] = df[col].apply(lambda x: x.title() if isinstance(x, str) else x)
-    print(f"{GREEN}✓ [STEP 17/20] Title Case applied successfully.{RESET}")
+    print(f"{GREEN}✓ [STEP 16/19] Title Case applied successfully.{RESET}")
 
     # ============================================================
-    # STEP 18 - FINAL OUTPUT SAVE (GOOGLE DRIVE & LOCAL)
+    # STEP 17 - FINAL OUTPUT SAVE (GOOGLE DRIVE & LOCAL)
     # ============================================================
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   📁 [STEP 18/20] FINAL OUTPUT SAVE{RESET}")
+    print(f"{HEADER}{BOLD}   📁 [STEP 17/19] FINAL OUTPUT SAVE{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
     # Derive default output filename based on input or manual corrected file
@@ -1672,7 +1762,7 @@ if pipeline_mode in ["1", "2"]:
             print(f"\n{RED}❌ Error saving file ({e}). Please try entering a different path.{RESET}")
 
 # ============================================================
-# VERIFY FINAL PROCESSED FILE BEFORE STEP 19
+# VERIFY FINAL PROCESSED FILE BEFORE STEP 18
 # ============================================================
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
 print(f"{HEADER}{BOLD}   🔍 VERIFICATION: FINAL PROCESSED FILE REVIEW{RESET}")
@@ -1715,12 +1805,12 @@ while True:
         print(f"{RED}❌ Invalid input '{is_correct}'. Please enter 'y' / 'corrected', 'n', or provide the corrected file path.{RESET}")
 
 # ============================================================
-# STEP 19 - Parquet Conversion
+# STEP 18 - Parquet Conversion
 # ============================================================
 
 if proceed_parquet:
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 19/20] Converting Final Processed File to Parquet...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 18/19] Converting Final Processed File to Parquet...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from parquet_conersion import convert_csv_to_parquet
 
@@ -1739,21 +1829,21 @@ if proceed_parquet:
             date_cols=["transaction_date", "date_of_agreement_execution"],
         )
 
-        print(f"{GREEN}✓ [STEP 19/20] Parquet conversion completed successfully!{RESET}")
+        print(f"{GREEN}✓ [STEP 18/19] Parquet conversion completed successfully!{RESET}")
         print(f"  {CYAN}📊 Parquet Summary:{RESET} {result}")
     except Exception as pe:
-        print(f"{RED}❌ [STEP 19/20] Error converting to Parquet: {pe}{RESET}")
+        print(f"{RED}❌ [STEP 18/19] Error converting to Parquet: {pe}{RESET}")
 else:
-    print(f"\n{YELLOW}⚠️ [STEP 19/20] Parquet conversion skipped.{RESET}")
+    print(f"\n{YELLOW}⚠️ [STEP 18/19] Parquet conversion skipped.{RESET}")
 
 # ============================================================
-# STEP 20 - Trigger Database Upload Pipeline (final_code.py)
+# STEP 19 - Trigger Database Upload Pipeline (final_code.py)
 # ============================================================
 import subprocess
 from pathlib import Path
 
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-print(f"{HEADER}{BOLD}   🚀 [STEP 20/20] Triggering Database Upload Pipeline...{RESET}")
+print(f"{HEADER}{BOLD}   🚀 [STEP 19/19] Triggering Database Upload Pipeline...{RESET}")
 print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
 # Resolve path to DB1_DB2_Uploading_Pipeline root directory

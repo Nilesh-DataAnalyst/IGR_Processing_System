@@ -1192,9 +1192,104 @@ def export_combined_workbook(
     print("  3. manual_review     (Project names requiring manual review)")
     print("  4. pair_review       (Project pair candidate matches)")
     print("  5. Area_Review       (Unrecognized area values requiring review)")
-    print("  6. Conversion_Test   (Area conversion self-test suite)")
+    print("  6. Conversion_Test   (Area conversion self-test suite)")  
+    
+# ---------------- NET CARPET AREA DERIVATION ----------------
+from divisor import SALEABLE_TO_CARPET_DIVISOR_BY_CITY
 
-def process_dataframe(df, output_path=None):
+BUILDUP_TO_CARPET_DIVISOR = 1.2
+
+
+def resolve_city_and_divisor(city: str | int = None) -> tuple:
+    """
+    Resolves city key and its saleable-to-carpet divisor dynamically as per the selected city:
+    - Mumbai -> 1.45
+    - Thane  -> 1.40
+    - Pune   -> 1.35
+    """
+    if not city or str(city).strip().lower() in ["none", "", "null", "nan"]:
+        try:
+            from city_config import CURRENT_CITY_KEY
+            city = CURRENT_CITY_KEY
+        except Exception:
+            city = None
+
+    if not city:
+        available_cities = ", ".join(SALEABLE_TO_CARPET_DIVISOR_BY_CITY.keys())
+        raise ValueError(
+            f"City must be selected for area conversion. Available cities: {available_cities}."
+        )
+
+    raw = str(city).strip().lower()
+    id_map = {
+        "8": "mumbai",
+        "12": "thane",
+        "9": "pune",
+        "2": "ahmedabad",
+        "3": "bangalore",
+        "6": "hyderabad",
+        "5": "ghaziabad",
+    }
+    city_str = id_map.get(raw, raw)
+
+    if city_str not in SALEABLE_TO_CARPET_DIVISOR_BY_CITY:
+        if any(k in city_str for k in ["mumbai", "bandra", "borivali", "andheri", "kurla"]):
+            city_str = "mumbai"
+        elif any(k in city_str for k in ["thane", "kalyan", "dombivli"]):
+            city_str = "thane"
+        elif any(k in city_str for k in ["pune", "pcmc", "haveli"]):
+            city_str = "pune"
+
+    saleable_divisor = SALEABLE_TO_CARPET_DIVISOR_BY_CITY.get(city_str)
+    if saleable_divisor is None:
+        available_cities = ", ".join(SALEABLE_TO_CARPET_DIVISOR_BY_CITY.keys())
+        raise ValueError(
+            f"No Saleable->Carpet divisor configured for selected city '{city}'. "
+            f"Configured cities in divisor.py: {available_cities}."
+        )
+
+    return city_str, saleable_divisor
+
+
+def derive_net_carpet_area(df: pd.DataFrame, city: str | int = None) -> pd.DataFrame:
+    """Fill net_carpet_area_sqmt from whichever area column is available using city-specific divisor."""
+    city_key, saleable_divisor = resolve_city_and_divisor(city=city)
+    print(f"[Area Conversion] Selected City: '{city_key}' | Saleable->Carpet Divisor: {saleable_divisor} | Buildup Divisor: {BUILDUP_TO_CARPET_DIVISOR}")
+
+    df["net_carpet_area_sqmt"] = np.nan
+
+    mask = df["carpet_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "carpet_area_sqmt"].values
+
+    mask = df["net_carpet_area_sqmt"].isna() & df["builtup_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sqmt"] = (
+        df.loc[mask, "builtup_area_sqmt"].values / BUILDUP_TO_CARPET_DIVISOR
+    )
+
+    mask = df["net_carpet_area_sqmt"].isna() & df["saleable_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sqmt"] = (
+        df.loc[mask, "saleable_area_sqmt"].values / saleable_divisor
+    )
+
+    mask = (
+        df["net_carpet_area_sqmt"].isna() & df["super_builtup_area_sqmt"].notna()
+    )
+    df.loc[mask, "net_carpet_area_sqmt"] = (
+        df.loc[mask, "super_builtup_area_sqmt"].values / saleable_divisor
+    )
+
+    mask = df["net_carpet_area_sqmt"].isna() & df["plot_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "plot_area_sqmt"].values
+
+    mask = df["net_carpet_area_sqmt"].isna() & df["total_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "total_area_sqmt"].values
+
+    df["net_carpet_area_sqmt"] = df["net_carpet_area_sqmt"].round(2)
+    return df
+
+
+
+def process_dataframe(df, output_path=None, city=None):
 
     # Remove any duplicate column names if already present
     df = df.loc[:, ~df.columns.duplicated()].copy()
@@ -1229,6 +1324,8 @@ def process_dataframe(df, output_path=None):
         categorised_df
     )
 
+    # Part D - Calculate Net_carpet_area
+    categorised_df = derive_net_carpet_area(categorised_df, city=city)
 
     # Optional final export
     if output_path is not None:

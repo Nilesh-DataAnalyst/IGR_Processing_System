@@ -1,9 +1,9 @@
 /**
  * Sogaon Data Processing Pipeline - Web Controller
- * Handles 18-step UI rendering, state management, live polling & console streaming.
+ * Handles 19-step UI rendering, state management, live polling & console streaming.
  */
 
-// Step Definitions (1 to 20)
+// Step Definitions (1 to 19)
 const PIPELINE_STEPS = [
   {
     id: 1,
@@ -48,7 +48,7 @@ const PIPELINE_STEPS = [
   {
     id: 6,
     name: "Standardization & Area Conversion",
-    desc: "Cleans project names & converts area measures -> exports _processed_v1.xlsx.",
+    desc: "Cleans project names, calculates net carpet area & converts area measures -> exports _for_manual.xlsx.",
     status: "pending",
     detail: "Waiting...",
     duration: "-"
@@ -63,14 +63,6 @@ const PIPELINE_STEPS = [
   },
   {
     id: 8,
-    name: "Net Carpet Area Calculation",
-    desc: "Derives net carpet area from builtup/saleable using city divisor logic.",
-    status: "pending",
-    detail: "Waiting...",
-    duration: "-"
-  },
-  {
-    id: 9,
     name: "Column Renaming & Standardizing",
     desc: "Normalizes internal column names to DB naming standards (e.g., location_name).",
     status: "pending",
@@ -78,7 +70,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 10,
+    id: 9,
     name: "Property Type Categorization",
     desc: "Maps raw property types into standard categories (Apartment, Commercial, etc.).",
     status: "pending",
@@ -86,7 +78,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 11,
+    id: 10,
     name: "Buyer Location & Pincode Lookup",
     desc: "Extracts buyer pincode from buyer_name and enriches locality, district, and state from postal mapping.",
     status: "pending",
@@ -94,7 +86,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 12,
+    id: 11,
     name: "RERA Grand Reference Matching",
     desc: "Matches project names against city RERA dataset to extract coordinates, BHK, and standard location.",
     status: "pending",
@@ -102,7 +94,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 13,
+    id: 12,
     name: "PostgreSQL NR Index Assignment",
     desc: "Queries max NR sequence for target city from public.transactions and assigns new nr IDs.",
     status: "pending",
@@ -110,7 +102,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 14,
+    id: 13,
     name: "Location Coordinates Lookup",
     desc: "Enriches location_latitude & longitude from public.dim_location table.",
     status: "pending",
@@ -118,7 +110,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 15,
+    id: 14,
     name: "Project Coordinates (Google Places API)",
     desc: "Enriches project coordinates via Google Places API (Temporarily commented out in main.py).",
     status: "pending",
@@ -126,7 +118,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 16,
+    id: 15,
     name: "DB Schema Column Alignment",
     desc: "Filters and orders columns strictly to the 66-field DB_SEQUENCE schema.",
     status: "pending",
@@ -134,7 +126,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 17,
+    id: 16,
     name: "Title Casing",
     desc: "Applies Title Case to all object/string text columns.",
     status: "pending",
@@ -142,7 +134,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 18,
+    id: 17,
     name: "Final Output Save (Drive & Local)",
     desc: "Saves final 66-column database-ready file directly to Google Drive (4. Final processed file) with local backup.",
     status: "pending",
@@ -150,7 +142,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 19,
+    id: 18,
     name: "Parquet Conversion",
     desc: "Converts Drive final processed file to Parquet format (converted_feather_parquet) with date normalization.",
     status: "pending",
@@ -158,7 +150,7 @@ const PIPELINE_STEPS = [
     duration: "-"
   },
   {
-    id: 20,
+    id: 19,
     name: "Database Upload Pipeline",
     desc: "Launches final_code.py in interactive terminal to verify, backup, and upload parquet records to PostgreSQL.",
     status: "pending",
@@ -246,6 +238,7 @@ const shareArrow = document.getElementById("share-arrow");
 const shareEmailRecipients = document.getElementById("share-email-recipients");
 const btnSendShareEmail = document.getElementById("btn-send-share-email");
 const shareEmailDeadline = document.getElementById("share-email-deadline");
+const shareEmailCc = document.getElementById("share-email-cc");
 const shareStatusMsg = document.getElementById("share-status-msg");
 
 // Auto-detect city from input path or filename
@@ -320,7 +313,7 @@ function renderStepCards() {
         </span>
       </div>
       <p class="step-desc">${step.desc}</p>
-      ${step.id === 20 ? `
+      ${step.id === 19 ? `
         <div class="step-actions-row">
           <button type="button" class="btn-step-action" onclick="launchUploadPipeline()" title="Launch final_code.py in interactive console">
             🚀 Launch final_code.py
@@ -429,6 +422,14 @@ function attachEventListeners() {
         if (opt && opt.dataset.location) {
           appState.selectedLocation = opt.dataset.location;
         }
+        const pauseDriveLink = document.getElementById("pause-drive-link") || document.querySelector(".pause-desc .drive-external-link");
+        if (pauseDriveLink) {
+          const locDriveUrl = opt?.dataset?.driveUrl || (opt?.dataset?.location?.toLowerCase() === "bandra" || val.toLowerCase().includes("bandra") ? "https://drive.google.com/drive/folders/1wsvFldaqifK_yoyifZqqFpL8MsZKJZUq?usp=drive_link" : null);
+          if (locDriveUrl) {
+            pauseDriveLink.href = locDriveUrl;
+            pauseDriveLink.textContent = `🌐 Open ${opt?.dataset?.location || "Drive"} Folder ↗`;
+          }
+        }
         logToConsole(`[Step 7] Selected alternate manual file: ${val}`, "info");
       } else if (pauseV1Path && pauseV1Path.textContent) {
         resumeFilePath.value = pauseV1Path.textContent;
@@ -476,12 +477,34 @@ function attachEventListeners() {
   }
 
   // Contact chips
-  document.querySelectorAll(".contact-pill").forEach(pill => {
+  document.querySelectorAll(".contact-pill:not(.cc-pill)").forEach(pill => {
     pill.addEventListener("click", () => {
       const email = pill.dataset.email;
       if (email && shareEmailRecipients) {
         shareEmailRecipients.value = email;
       }
+    });
+  });
+
+  // CC Toggle chips
+  document.querySelectorAll(".cc-pill").forEach(pill => {
+    pill.addEventListener("click", () => {
+      const email = pill.dataset.cc;
+      if (!email || !shareEmailCc) return;
+      let current = shareEmailCc.value.split(",").map(s => s.trim()).filter(Boolean);
+      const idx = current.indexOf(email);
+      if (idx >= 0) {
+        current.splice(idx, 1);
+        pill.classList.remove("active");
+        if (!pill.textContent.startsWith("+ ")) {
+          pill.textContent = "+ " + pill.textContent.replace(/^[\s+]+/, "");
+        }
+      } else {
+        current.push(email);
+        pill.classList.add("active");
+        pill.textContent = pill.textContent.replace(/^\+\s*/, "");
+      }
+      shareEmailCc.value = current.join(", ");
     });
   });
 
@@ -577,11 +600,11 @@ function attachEventListeners() {
       logToConsole(`[Resume Error] ${err.message}`, "error");
     } finally {
       btnResume.disabled = false;
-      btnResume.innerHTML = '<span class="btn-icon">▶</span> <span class="btn-text">Resume (Steps 7 → 20)</span>';
+      btnResume.innerHTML = '<span class="btn-icon">▶</span> <span class="btn-text">Resume (Steps 7 → 19)</span>';
     }
   });
 
-  // Parquet Verification Buttons (Step 18 pause card)
+  // Parquet Verification Buttons (Step 17 pause card)
   if (btnConfirmParquet) {
     btnConfirmParquet.addEventListener("click", async () => {
       const confirmedPath = parquetConfirmFilePath ? parquetConfirmFilePath.value.trim() : "";
@@ -609,7 +632,7 @@ function attachEventListeners() {
 
   if (btnSkipParquet) {
     btnSkipParquet.addEventListener("click", async () => {
-      if (!confirm("Are you sure you want to skip Parquet conversion (Step 19)?")) return;
+      if (!confirm("Are you sure you want to skip Parquet conversion (Step 18)?")) return;
       btnSkipParquet.disabled = true;
       btnSkipParquet.innerHTML = '<span class="btn-icon">⏳</span> Skipping...';
       try {
@@ -637,7 +660,7 @@ function attachEventListeners() {
       const val = e.target.value;
       if (val && parquetConfirmFilePath) {
         parquetConfirmFilePath.value = val;
-        logToConsole(`[Step 19] Selected alternate file: ${val}`, "info");
+        logToConsole(`[Step 18] Selected alternate file: ${val}`, "info");
       }
     });
   }
@@ -645,7 +668,7 @@ function attachEventListeners() {
   if (btnRefreshParquetLocs) {
     btnRefreshParquetLocs.addEventListener("click", () => {
       loadFinalDriveLocations();
-      logToConsole("[Step 19] Refreshed final location folders from Google Drive.", "info");
+      logToConsole("[Step 18] Refreshed final location folders from Google Drive.", "info");
     });
   }
 
@@ -672,10 +695,10 @@ function setMode(mode) {
     if (finalFilePath) finalFilePath.required = false;
 
     // Reset marks on steps
-    for (let i = 1; i <= 20; i++) {
+    for (let i = 1; i <= 19; i++) {
       updateStepUI(i, "pending", "Waiting...", "-");
     }
-    logToConsole("[Mode] Selected Mode 1: Run from START (Step 1 to Step 20)");
+    logToConsole("[Mode] Selected Mode 1: Run from START (Step 1 to Step 19)");
   } else if (mode === "2") {
     mode2Label.classList.add("active");
     mode1Label.classList.remove("active");
@@ -691,10 +714,10 @@ function setMode(mode) {
     for (let i = 1; i <= 6; i++) {
       updateStepUI(i, "skipped", "Skipped in Mode 2", "-");
     }
-    for (let i = 7; i <= 20; i++) {
+    for (let i = 7; i <= 19; i++) {
       updateStepUI(i, "pending", "Waiting...", "-");
     }
-    logToConsole("[Mode] Selected Mode 2: Resume from Step 7 (Steps 7 to 20)");
+    logToConsole("[Mode] Selected Mode 2: Resume from Step 7 (Steps 7 to 19)");
   } else if (mode === "3") {
     if (mode3Label) mode3Label.classList.add("active");
     mode1Label.classList.remove("active");
@@ -706,13 +729,13 @@ function setMode(mode) {
     manualFilePath.required = false;
     if (finalFilePath) finalFilePath.required = true;
 
-    // Visually mark steps 1-18 as skipped
-    for (let i = 1; i <= 18; i++) {
+    // Visually mark steps 1-17 as skipped
+    for (let i = 1; i <= 17; i++) {
       updateStepUI(i, "skipped", "Skipped in Mode 3", "-");
     }
-    updateStepUI(19, "pending", "Waiting for Parquet conversion...", "-");
-    updateStepUI(20, "pending", "Waiting...", "-");
-    logToConsole("[Mode] Selected Mode 3: Parquet Conversion Directly (Step 19 → 20)");
+    updateStepUI(18, "pending", "Waiting for Parquet conversion...", "-");
+    updateStepUI(19, "pending", "Waiting...", "-");
+    logToConsole("[Mode] Selected Mode 3: Parquet Conversion Directly (Step 18 → 19)");
   }
 }
 
@@ -845,6 +868,13 @@ function applyStatusUpdate(status) {
     if (status.location_name) {
       appState.selectedLocation = status.location_name;
     }
+    const pauseDriveLink = document.getElementById("pause-drive-link") || document.querySelector(".pause-desc .drive-external-link");
+    if (pauseDriveLink && (status.manual_drive_url || (status.location_name && status.location_name.toLowerCase() === "bandra"))) {
+      const bandraUrl = "https://drive.google.com/drive/folders/1wsvFldaqifK_yoyifZqqFpL8MsZKJZUq?usp=drive_link";
+      const targetUrl = (status.location_name && status.location_name.toLowerCase() === "bandra") ? bandraUrl : status.manual_drive_url;
+      pauseDriveLink.href = targetUrl;
+      pauseDriveLink.textContent = `🌐 Open ${status.location_name || "Drive"} Folder ↗`;
+    }
     if (isFirstTimePaused) {
       loadManualDriveLocations();
     }
@@ -863,8 +893,16 @@ function applyStatusUpdate(status) {
           parquetConfirmFilePath.value = status.output_file;
         }
       }
+      const verifyDriveLink = document.getElementById("parquet-verify-drive-link");
+      if (verifyDriveLink) {
+        const finalUrl = status.final_drive_url || (status.city_id == 8 ? "https://drive.google.com/drive/folders/1Fxf1yTUo4FZWRHjm_XrpA7jq93kG7diO?usp=drive_link" : (status.city_id == 9 ? "https://drive.google.com/drive/folders/1l-HFh36Yk8pSs-NmoSK60if6cP2cjztM" : null));
+        if (finalUrl) {
+          verifyDriveLink.href = finalUrl;
+          verifyDriveLink.textContent = `🌐 Open ${status.city_name || "4. Final processed file"} ↗`;
+        }
+      }
       if (isFirstTimePaused) {
-        loadFinalDriveLocations();
+        loadFinalDriveLocations(status.city_id || (cityIdInput ? cityIdInput.value : ""));
         parquetPauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }
@@ -1108,6 +1146,11 @@ async function loadManualDriveLocations(cityId) {
           const opt = document.createElement("option");
           opt.value = f.path;
           opt.dataset.location = loc.location;
+          if (loc.drive_url) {
+            opt.dataset.driveUrl = loc.drive_url;
+          } else if (loc.location && loc.location.toLowerCase() === "bandra") {
+            opt.dataset.driveUrl = "https://drive.google.com/drive/folders/1wsvFldaqifK_yoyifZqqFpL8MsZKJZUq?usp=drive_link";
+          }
           const isMatch = currentPath && (
             currentPath.toLowerCase() === f.path.toLowerCase() ||
             currentPath.toLowerCase().endsWith(f.name.toLowerCase())
@@ -1140,6 +1183,14 @@ async function loadManualDriveLocations(cityId) {
               document.querySelectorAll(".loc-folder-chip").forEach(c => c.classList.remove("active"));
               chip.classList.add("active");
               logToConsole(`[Step 7] Selected location folder '${loc.location}' -> ${firstFile.name}`, "info");
+              const pauseDriveLink = document.getElementById("pause-drive-link") || document.querySelector(".pause-desc .drive-external-link");
+              if (pauseDriveLink) {
+                const targetDriveUrl = loc.drive_url || (loc.location.toLowerCase() === "bandra" ? "https://drive.google.com/drive/folders/1wsvFldaqifK_yoyifZqqFpL8MsZKJZUq?usp=drive_link" : (data.drive_url || ""));
+                if (targetDriveUrl) {
+                  pauseDriveLink.href = targetDriveUrl;
+                  pauseDriveLink.textContent = `🌐 Open ${loc.location} Drive Folder ↗`;
+                }
+              }
             }
           });
           pauseChipsContainer.appendChild(chip);
@@ -1167,6 +1218,8 @@ async function handleShareEmail() {
   const targetFile = resumeFilePath.value.trim() || (pauseV1Path ? pauseV1Path.textContent.trim() : "");
   const recipient = shareEmailRecipients.value.trim();
   const deadline = shareEmailDeadline ? shareEmailDeadline.value.trim() : "";
+  const ccVal = shareEmailCc ? shareEmailCc.value.trim() : "";
+  const ccList = ccVal ? ccVal.split(",").map(c => c.trim()).filter(Boolean) : [];
 
   if (!recipient) {
     alert("Please enter a recipient email address.");
@@ -1183,6 +1236,15 @@ async function handleShareEmail() {
   shareStatusMsg.textContent = "Connecting to mail server & uploading attachment (timeout: 300s)...";
   shareStatusMsg.classList.remove("hidden");
 
+  const selectedLoc = appState.selectedLocation || (pauseLocationSelect?.selectedOptions[0]?.dataset.location) || "";
+  let locDriveUrl = null;
+  if (selectedLoc.toLowerCase() === "bandra" || targetFile.toLowerCase().includes("bandra")) {
+    locDriveUrl = "https://drive.google.com/drive/folders/1wsvFldaqifK_yoyifZqqFpL8MsZKJZUq?usp=drive_link";
+  } else if (pauseLocationSelect?.selectedOptions[0]?.dataset.driveUrl) {
+    locDriveUrl = pauseLocationSelect.selectedOptions[0].dataset.driveUrl;
+  }
+  const effectiveLocation = selectedLoc || (targetFile.toLowerCase().includes("bandra") ? "Bandra" : (targetFile.toLowerCase().includes("borivali") ? "Borivali" : ""));
+
   try {
     const res = await fetch("/api/share-email", {
       method: "POST",
@@ -1190,24 +1252,27 @@ async function handleShareEmail() {
       body: JSON.stringify({
         file_path: targetFile,
         recipients: [recipient],
-        location_name: appState.selectedLocation || (pauseLocationSelect?.selectedOptions[0]?.dataset.location) || "Mohmadwadi",
+        cc_emails: ccList,
+        location_name: effectiveLocation,
         deadline: deadline,
-        city_id: parseInt(cityIdInput?.value, 10) || 9
+        city_id: parseInt(cityIdInput?.value, 10) || 8,
+        drive_url: locDriveUrl
       })
     });
     const result = await res.json();
     if (!res.ok) throw new Error(result.error || "Failed to send email.");
 
     const deadlineInfo = result.deadline_formatted ? ` [⏰ Deadline: ${result.deadline_formatted}]` : (deadline ? ` [⏰ Deadline: ${deadline}]` : "");
+    const actualCc = result.cc && result.cc.length > 0 ? ` (CC: ${result.cc.join(", ")})` : (ccList.length > 0 ? ` (CC: ${ccList.join(", ")})` : "");
 
     if (result.mode === "attachment") {
       shareStatusMsg.className = "share-status-msg success";
-      shareStatusMsg.textContent = `✓ Email sent successfully with file attached to ${recipient}!${deadlineInfo}`;
-      logToConsole(`[Email Share] ✓ Sent manual file with attachment to ${recipient}${deadlineInfo}`, "success");
+      shareStatusMsg.textContent = `✓ Email sent successfully with file attached to ${recipient}${actualCc}!${deadlineInfo}`;
+      logToConsole(`[Email Share] ✓ Sent manual file with attachment to ${recipient}${actualCc}${deadlineInfo}`, "success");
     } else {
       shareStatusMsg.className = "share-status-msg warning";
-      shareStatusMsg.textContent = `✓ Drive link notification sent to ${recipient} (fallback link mode).${deadlineInfo}`;
-      logToConsole(`[Email Share] Sent Drive link notification to ${recipient}${deadlineInfo}`, "info");
+      shareStatusMsg.textContent = `✓ Drive link notification sent to ${recipient}${actualCc} (fallback link mode).${deadlineInfo}`;
+      logToConsole(`[Email Share] Sent Drive link notification to ${recipient}${actualCc}${deadlineInfo}`, "info");
     }
   } catch (err) {
     shareStatusMsg.className = "share-status-msg error";
@@ -1237,6 +1302,12 @@ async function loadFinalDriveLocations(cityId) {
     const data = await res.json();
     const locations = data.locations || [];
     const cityName = data.city || "Selected City";
+
+    const verifyDriveLink = document.getElementById("parquet-verify-drive-link");
+    if (verifyDriveLink && data.drive_url) {
+      verifyDriveLink.href = data.drive_url;
+      verifyDriveLink.textContent = `🌐 Open ${cityName} (4. Final processed file) ↗`;
+    }
 
     selects.forEach(select => {
       const isVerifySelect = (select === parquetVerifyLocationSelect);

@@ -76,11 +76,10 @@ def resolve_drive_directory(drive_target: str = DEFAULT_DRIVE_FOLDER_URL) -> str
     return None
 
 
-def derive_net_carpet_area(df: pd.DataFrame, city: str = "pune") -> pd.DataFrame:
-    """Fill net_carpet_area_sqmt from whichever area column is available."""
-    saleable_divisor = SALEABLE_TO_CARPET_DIVISOR_BY_CITY.get(city.lower())
-    if saleable_divisor is None:
-        raise ValueError(f"No Saleable->Carpet divisor for city '{city}'.")
+def derive_net_carpet_area(df: pd.DataFrame, city: str | int = None) -> pd.DataFrame:
+    """Fill net_carpet_area_sqmt from whichever area column is available using city-specific divisor."""
+    from project_name_Std_and_area_conversion import resolve_city_and_divisor
+    city_key, saleable_divisor = resolve_city_and_divisor(city=city)
 
     df["net_carpet_area_sqmt"] = np.nan
 
