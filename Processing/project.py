@@ -54,6 +54,9 @@ DEFAULT_INPUT_DRIVE_FOLDER_ID = None
 DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL = None
 DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_ID = None
 
+# Selected location name from Google Drive folder (if applicable)
+selected_location = None
+
 
 def set_active_city(city_key_or_id: str | int) -> dict:
     """
@@ -1300,14 +1303,10 @@ else:
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
     print(f"{HEADER}{BOLD}   ⏳ [STEP 6/19] Running Project Standardization & Area Conversion...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-    from project_name_Std_and_area_conversion import process_dataframe
+    
 
     # Determine location name
-    location_name = (
-        selected_location
-        if ("selected_location" in globals() and selected_location)
-        else os.path.basename(os.path.dirname(input_file))
-    )
+    location_name = selected_location or os.path.basename(os.path.dirname(input_file))
 
     # Resolve manual correction Google Drive folder
     loc_manual_drive_url = get_manual_correction_drive_url(
@@ -1333,10 +1332,11 @@ else:
         v1_output_path = os.path.join(input_dir, out_file_name)
         print(f"  {YELLOW}⚠️ Manual correction drive folder not detected. Saving locally: {v1_output_path}{RESET}")
 
+    from project_name_Std_and_area_conversion import process_dataframe
     df = process_dataframe(df, output_path=v1_output_path, city=target_city_name.lower())
 
     print(
-        f"{GREEN}✓ [STEP 6/19] Standardization completed -> Saved: {v1_output_path}{RESET}"
+        f"{GREEN}✓ [STEP 6/19] Standardization completed Ready For Manual -> Saved: {v1_output_path}{RESET}"
     )
 
     # Optional: Share correction file with colleagues
@@ -1427,7 +1427,6 @@ if pipeline_mode in ["1", "2"]:
 
     rename_mapping = {
         "city": "city_name",
-        "net_carpet_area_sqmt": "net_carpet_area_sq_m",
         "balcony_area_sqmt": "balcony_sq_m",
         "terrace_area_sqmt": "terrace_sq_m",
         "project_lat": "project_latitude",
@@ -1545,11 +1544,7 @@ if pipeline_mode in ["1", "2"]:
     drive_folder_path = resolve_drive_directory(DEFAULT_DRIVE_FOLDER_URL)
 
     # Determine location name for folder creation
-    location_name = (
-        selected_location
-        if ("selected_location" in globals() and selected_location)
-        else os.path.basename(os.path.dirname(source_file))
-    )
+    location_name = selected_location or os.path.basename(os.path.dirname(source_file))
     if not location_name or location_name.lower() in ["3. manually corrected", "2. llm processed data", "required_files", "processing"]:
         location_name = base_name
 

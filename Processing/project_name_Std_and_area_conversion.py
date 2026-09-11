@@ -50,6 +50,7 @@ try:
     from static import result_dict, word_number_dict
 except ImportError:
     try:
+        # pyrefly: ignore [missing-import]
         from required_files.static import result_dict, word_number_dict
     except ImportError:
         result_dict, word_number_dict = {}, {}
@@ -1252,39 +1253,46 @@ def resolve_city_and_divisor(city: str | int = None) -> tuple:
 
 
 def derive_net_carpet_area(df: pd.DataFrame, city: str | int = None) -> pd.DataFrame:
-    """Fill net_carpet_area_sqmt from whichever area column is available using city-specific divisor."""
+    """Fill net_carpet_area_sq_m from whichever area column is available using city-specific divisor."""
     city_key, saleable_divisor = resolve_city_and_divisor(city=city)
     print(f"[Area Conversion] Selected City: '{city_key}' | Saleable->Carpet Divisor: {saleable_divisor} | Buildup Divisor: {BUILDUP_TO_CARPET_DIVISOR}")
 
-    df["net_carpet_area_sqmt"] = np.nan
+    df["net_carpet_area_sq_m"] = np.nan
 
     mask = df["carpet_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "carpet_area_sqmt"].values
+    df.loc[mask, "net_carpet_area_sq_m"] = df.loc[mask, "carpet_area_sqmt"].values
 
-    mask = df["net_carpet_area_sqmt"].isna() & df["builtup_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = (
+    mask = df["net_carpet_area_sq_m"].isna() & df["builtup_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sq_m"] = (
         df.loc[mask, "builtup_area_sqmt"].values / BUILDUP_TO_CARPET_DIVISOR
     )
 
-    mask = df["net_carpet_area_sqmt"].isna() & df["saleable_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = (
+    mask = df["net_carpet_area_sq_m"].isna() & df["saleable_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sq_m"] = (
         df.loc[mask, "saleable_area_sqmt"].values / saleable_divisor
     )
 
     mask = (
-        df["net_carpet_area_sqmt"].isna() & df["super_builtup_area_sqmt"].notna()
+        df["net_carpet_area_sq_m"].isna() & df["super_builtup_area_sqmt"].notna()
     )
-    df.loc[mask, "net_carpet_area_sqmt"] = (
+    df.loc[mask, "net_carpet_area_sq_m"] = (
         df.loc[mask, "super_builtup_area_sqmt"].values / saleable_divisor
     )
 
-    mask = df["net_carpet_area_sqmt"].isna() & df["plot_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "plot_area_sqmt"].values
+    mask = df["net_carpet_area_sq_m"].isna() & df["plot_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sq_m"] = df.loc[mask, "plot_area_sqmt"].values
 
-    mask = df["net_carpet_area_sqmt"].isna() & df["total_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "total_area_sqmt"].values
+    mask = df["net_carpet_area_sq_m"].isna() & df["total_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sq_m"] = df.loc[mask, "total_area_sqmt"].values
 
-    df["net_carpet_area_sqmt"] = df["net_carpet_area_sqmt"].round(2)
+    df["net_carpet_area_sq_m"] = df["net_carpet_area_sq_m"].round(2)
+
+    # Also create net_carpet_area_sqft
+    df["net_carpet_area_sqft"] = (df["net_carpet_area_sq_m"] * 10.7639).round(2)
+
+    # Calculate rate_in_sqft directly
+    df["rate_in_sqft"] = (df["consideration_amt"] / df["net_carpet_area_sqft"]).round(2)
+
     return df
 
 
@@ -1326,6 +1334,9 @@ def process_dataframe(df, output_path=None, city=None):
 
     # Part D - Calculate Net_carpet_area
     categorised_df = derive_net_carpet_area(categorised_df, city=city)
+
+    # Part E - calculuate rate
+    
 
     # Optional final export
     if output_path is not None:
