@@ -210,3 +210,56 @@ def resolve_rera_grand_path(city_identifier: str | int = None) -> str | None:
 
     return None
 
+
+def render_correction_email_html(
+    loc_intro: str,
+    file_name: str,
+    drive_url: str,
+    file_path: str,
+    delivery_note_html: str,
+    deadline_banner_html: str = "",
+) -> str:
+    """
+    Renders the HTML email template by reading email_template.html (located in web/ or Processing root)
+    and replacing placeholders with actual transaction and file details.
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(base_dir, "web", "email_template.html"),
+        os.path.join(base_dir, "email_template.html"),
+    ]
+    template_html = None
+    for cand in candidates:
+        if os.path.isfile(cand):
+            try:
+                with open(cand, "r", encoding="utf-8") as f:
+                    template_html = f.read()
+                break
+            except Exception:
+                pass
+
+    if not template_html:
+        template_html = """<!DOCTYPE html><html><body style="font-family:sans-serif;padding:16px;">
+        <p>Hello,</p><p><strong>{{loc_intro}}</strong> is ready for review.</p>
+        {{deadline_banner_html}}
+        <p><strong>📄 File:</strong> {{file_name}}</p>
+        <p><strong>🌐 Google Drive Folder:</strong> <a href="{{drive_url}}">{{drive_url}}</a></p>
+        <p><strong>📂 Local / Drive Path:</strong> <code>{{file_path}}</code></p>
+        <p>{{delivery_note_html}}</p>
+        <p>Best regards,<br><strong>Nilesh K.</strong></p>
+        </body></html>"""
+
+    replacements = {
+        "{{loc_intro}}": loc_intro or "",
+        "{{file_name}}": file_name or "",
+        "{{drive_url}}": drive_url or "",
+        "{{file_path}}": file_path or "",
+        "{{delivery_note_html}}": delivery_note_html or "",
+        "{{deadline_banner_html}}": deadline_banner_html or "",
+    }
+    html_output = template_html
+    for key, val in replacements.items():
+        html_output = html_output.replace(key, str(val))
+    return html_output
+
+
