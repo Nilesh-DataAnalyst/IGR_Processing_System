@@ -27,8 +27,7 @@
         </div>
         <div>
           <h1 class="brand-title">Data Processing Pipeline</h1>
-          <p class="brand-subtitle">19-Step Automated Ingestion, Standardization, RERA Matching, Parquet & Database
-            Upload</p>
+          <p class="brand-subtitle">20-Step Automated Ingestion, Standardization, RERA Matching, Parquet, Database Upload & Outlier Detection</p>
         </div>
       </div>
       <div class="header-status">
@@ -54,20 +53,55 @@
           <div class="mode-switch-group">
             <label class="mode-pill active" id="mode1-label">
               <input type="radio" name="pipeline-mode" value="1" checked id="mode1-radio">
-              <span>Mode 1: Start (Steps 1 → 19)</span>
+              <span>Mode 1: Start (Steps 1 → 20)</span>
             </label>
             <label class="mode-pill" id="mode2-label">
               <input type="radio" name="pipeline-mode" value="2" id="mode2-radio">
-              <span>Mode 2: Resume (Step 7 → 19)</span>
+              <span>Mode 2: Resume (Step 7 → 20)</span>
             </label>
             <label class="mode-pill" id="mode3-label">
               <input type="radio" name="pipeline-mode" value="3" id="mode3-radio">
-              <span>Mode 3: Parquet (Step 18 → 19)</span>
+              <span>Mode 3: Parquet (Step 18 → 20)</span>
+            </label>
+            <label class="mode-pill" id="mode4-label">
+              <input type="radio" name="pipeline-mode" value="4" id="mode4-radio">
+              <span>Mode 4: Outlier (Step 20 Only)</span>
             </label>
           </div>
         </div>
 
         <form id="pipeline-form" class="config-grid">
+          <!-- Target City (dim_city) - Placed on the Left Side -->
+          <div class="form-group" id="target-city-group">
+            <div class="label-with-badge">
+              <label for="city-id">Target City (dim_city) <span class="req">*</span></label>
+              <span class="badge-autodetect hidden" id="city-detect-badge">✨ Auto-detected</span>
+            </div>
+            <div class="input-with-icon">
+              <span class="input-icon">🏙️</span>
+              <select id="city-id" required>
+                <optgroup label="Supported Cities (Google Drive & Custom Divisors)">
+                  <option value="9" selected>Pune (ID: 9) — Divisor: 1.35</option>
+                  <option value="8">Mumbai (ID: 8) — Divisor: 1.45</option>
+                  <option value="12">Thane (ID: 12) — Divisor: 1.40</option>
+                </optgroup>
+                <optgroup label="Other Database Cities (dim_city)">
+                  <option value="2">Ahmedabad (ID: 2)</option>
+                  <option value="3">Banglore (ID: 3)</option>
+                  <option value="6">Hyderabad (ID: 6)</option>
+                  <option value="5">Ghaziabad (ID: 5)</option>
+                  <option value="7">Medchal_Malkajgiri (ID: 7)</option>
+                  <option value="10">Rangareddy (ID: 10)</option>
+                  <option value="11">Sangareddy (ID: 11)</option>
+                  <option value="13">Yadadri_Bhuvanagiri (ID: 13)</option>
+                  <option value="1">Abu_Dhabi (ID: 1)</option>
+                  <option value="15">Dubai (ID: 15)</option>
+                </optgroup>
+              </select>
+            </div>
+            <small class="form-hint">Fetched from public.dim_city. Configures NR sequences & location coordinates.</small>
+          </div>
+
           <!-- Mode 1 Input -->
           <div class="form-group" id="input-file-group">
             <div class="label-with-badge">
@@ -96,22 +130,20 @@
               <input type="text" id="input-file-path"
                 placeholder="Select a location above or enter Drive/local file path" required autocomplete="off">
             </div>
-            <small class="form-hint">Fetched directly from Google Drive <code>2. LLM Processed Data</code>. You can
-              switch location using the dropdown above.</small>
+            <small class="form-hint">Fetched directly from Google Drive <code>2. LLM Processed Data</code>. You can switch location using the dropdown above.</small>
           </div>
 
           <!-- Mode 2 Input (Hidden initially) -->
           <div class="form-group hidden" id="manual-file-group">
             <div class="label-with-badge">
               <label for="manual-file-path">Manual Corrected Excel File (.xlsx) <span class="req">*</span></label>
-              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (3. Manually
-                Corrected)</span>
+              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (3. Manually Corrected)</span>
             </div>
 
             <!-- Quick pick location from Drive for Mode 2 -->
             <div class="drive-picker-container" id="manual-drive-picker-container">
               <div class="drive-picker-header">
-                <span class="picker-label">📁 Pick Location from Google Drive:</span>
+                <span class="picker-label">📁 Pick Location from Google Drive (3. Manually Corrected):</span>
                 <button type="button" class="picker-refresh-btn" id="btn-refresh-manual-locs"
                   title="Refresh Drive Folders">🔄 Refresh</button>
               </div>
@@ -135,8 +167,7 @@
           <div class="form-group hidden" id="final-file-group">
             <div class="label-with-badge">
               <label for="final-file-path">Final Processed Excel File (.xlsx) <span class="req">*</span></label>
-              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (4. Final
-                processed file)</span>
+              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (4. Final processed file)</span>
             </div>
 
             <!-- Quick pick location from Drive for Mode 3 -->
@@ -162,83 +193,145 @@
             <small class="form-hint">Direct Parquet conversion on a final processed file from Google Drive.</small>
           </div>
 
-          <!-- Target City (dim_city) -->
-          <div class="form-group">
-            <div class="label-with-badge">
-              <label for="city-id">Target City (dim_city) <span class="req">*</span></label>
-              <span class="badge-autodetect hidden" id="city-detect-badge">✨ Auto-detected</span>
+          <!-- MODE 4 OUTLIER-ONLY DEDICATED SECTION (Visible in Mode 4) -->
+          <div class="form-group full-width hidden" id="mode4-location-container" style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: var(--radius-md); padding: 16px 18px;">
+            <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px;">
+              <div>
+                <h3 style="font-size: 0.96rem; font-weight: 600; color: #a5b4fc; margin-bottom: 4px;">
+                  📊 Outlier Detection & Database Update (Step 20)
+                </h3>
+                <p style="font-size: 0.8rem; color: #94a3b8; line-height: 1.4;">
+                  Calculates price percentiles and updates <code>rate</code>, <code>is_outlier</code>, and <code>outlier_type</code> in PostgreSQL.
+                </p>
+              </div>
+              <div id="outlier-city-badge" class="badge-drive" style="font-size: 0.78rem; padding: 4px 12px; background: rgba(99, 102, 241, 0.18);">
+                🏙️ <span id="outlier-city-badge-text">City: Mumbai</span>
+              </div>
             </div>
-            <div class="input-with-icon">
-              <span class="input-icon">🏙️</span>
-              <select id="city-id" required>
-                <optgroup label="Supported Cities (Google Drive & Custom Divisors)">
-                  <option value="9" selected>Pune (ID: 9) — Divisor: 1.35</option>
-                  <option value="8">Mumbai (ID: 8) — Divisor: 1.45</option>
-                  <option value="12">Thane (ID: 12) — Divisor: 1.40</option>
-                </optgroup>
-                <optgroup label="Other Database Cities (dim_city)">
-                  <option value="2">Ahmedabad (ID: 2)</option>
-                  <option value="3">Banglore (ID: 3)</option>
-                  <option value="6">Hyderabad (ID: 6)</option>
-                  <option value="5">Ghaziabad (ID: 5)</option>
-                  <option value="7">Medchal_Malkajgiri (ID: 7)</option>
-                  <option value="10">Rangareddy (ID: 10)</option>
-                  <option value="11">Sangareddy (ID: 11)</option>
-                  <option value="13">Yadadri_Bhuvanagiri (ID: 13)</option>
-                  <option value="1">Abu_Dhabi (ID: 1)</option>
-                  <option value="15">Dubai (ID: 15)</option>
-                </optgroup>
-              </select>
+
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <div class="label-with-badge" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <label style="color: #e2e8f0; font-weight: 600; font-size: 0.92rem; margin: 0;">📍 Select Location to Process:</label>
+                <label class="checkbox-pill">
+                  <input type="checkbox" id="mode4-all-locations" checked>
+                  <span>Run for ALL locations in city (Recommended)</span>
+                </label>
+              </div>
+
+              <!-- Location Dropdown Selector -->
+              <div class="input-with-icon">
+                <span class="input-icon">📍</span>
+                <select id="outlier-location-select" style="background: rgba(15, 23, 42, 0.9); color: #fff;">
+                  <option value="" selected>🌐 ALL Locations (Whole City)</option>
+                </select>
+              </div>
+
+              <!-- Quick Clickable Location Chips -->
+              <div id="outlier-chips-wrapper" style="margin-top: 2px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <span style="font-size: 0.76rem; color: #94a3b8; font-weight: 500;">⚡ Quick-Select Updated Location:</span>
+                  <button type="button" class="picker-refresh-btn" id="btn-refresh-outlier-locs" title="Refresh locations from Google Drive folders" style="font-size: 0.72rem; padding: 2px 8px;">🔄 Refresh Locations</button>
+                </div>
+                <div class="outlier-chips-row" id="outlier-chips-row">
+                  <!-- Dynamically populated chips -->
+                </div>
+              </div>
+
+              <!-- Specific Location Text Input -->
+              <div style="margin-top: 4px;">
+                <input type="text" id="mode4-location-input" placeholder="e.g. Andheri, Baner, Wakad (click a chip above or type custom location)" disabled style="padding: 9px 14px;">
+              </div>
+              <small class="form-hint" style="color: #94a3b8;">Choose a location from the dropdown/chips above or leave 'ALL' checked for the entire city.</small>
             </div>
-            <small class="form-hint">Fetched from public.dim_city. Configures NR sequences & location
-              coordinates.</small>
           </div>
 
-          <!-- Output Path -->
-          <div class="form-group full-width">
+          <!-- Output Path (Optional) -->
+          <div class="form-group full-width" id="output-path-group">
             <label for="output-path">Final Output Save Path (.xlsx) <span class="badge-optional"
-                style="color: #60a5fa; font-weight: 500; font-size: 0.85em;">[Optional — Defaults to Google
-                Drive]</span></label>
+                style="color: #60a5fa; font-weight: 500; font-size: 0.85em;">[Optional — Defaults to Google Drive]</span></label>
             <div class="input-with-icon">
               <span class="input-icon">☁️</span>
               <input type="text" id="output-path"
-                placeholder="Leave blank to save to Google Drive (4. Final processed file), or enter filename/path">
+                placeholder="Leave blank to save to Google Drive (4. Final processed file), or enter custom filename">
             </div>
-            <small class="form-hint" id="drive-target-hint">☁️ Google Drive Target: Automatically saved to the selected
-              city's <code>4. Final processed file\&lt;location_name&gt;</code> folder.</small>
+            <small class="form-hint" id="drive-target-hint">☁️ Google Drive Target: Automatically saved to the selected city's <code>4. Final processed file\&lt;location_name&gt;</code> folder.</small>
           </div>
 
-          <!-- Step 14 Geocoding Toggle (Commented out / Optional) -->
-          <div class="form-group full-width" style="margin-top: 4px;">
-            <label class="checkbox-label">
-              <input type="checkbox" id="include-geocoding">
-              <span>Enable Step 14: Project Coordinates (Google Places API) <em style="color: #94a3b8;">[Disabled by
-                  default — temporarily commented out in main.py]</em></span>
-            </label>
+          <!-- ADVANCED PIPELINE OPTIONS (COLLAPSIBLE ACCORDION FOR CLEAN UI) -->
+          <div class="form-group full-width advanced-settings-wrapper" id="advanced-settings-wrapper">
+            <div class="advanced-settings-toggle" id="toggle-advanced-settings">
+              <div class="advanced-toggle-left">
+                <span class="adv-icon">⚙️</span>
+                <span class="adv-title">Advanced Pipeline Options</span>
+                <span class="adv-badge">Recommended Defaults Active</span>
+              </div>
+              <span class="adv-arrow" id="adv-arrow">▾</span>
+            </div>
+
+            <div class="advanced-settings-body hidden" id="advanced-settings-body">
+              <div class="adv-options-grid">
+                <!-- Option 1: Step 19 Auto Database Upload -->
+                <label class="adv-card">
+                  <div class="adv-card-header">
+                    <input type="checkbox" id="auto-upload" checked>
+                    <span class="adv-card-title">🚀 Auto Database Upload (Step 19)</span>
+                  </div>
+                  <span class="adv-card-desc">Automatically launches upload window when files are ready for PostgreSQL.</span>
+                </label>
+
+                <!-- Option 2: Step 20 Auto Outlier Detection -->
+                <label class="adv-card">
+                  <div class="adv-card-header">
+                    <input type="checkbox" id="auto-outlier" checked>
+                    <span class="adv-card-title">📊 Auto Outlier Detection (Step 20)</span>
+                  </div>
+                  <span class="adv-card-desc">Automatically calculates price metrics and flags outliers in the database.</span>
+                </label>
+
+                <!-- Option 3: Export Outlier Excel Report -->
+                <label class="adv-card">
+                  <div class="adv-card-header">
+                    <input type="checkbox" id="save-outlier-report">
+                    <span class="adv-card-title">📄 Save Outlier Excel Report</span>
+                  </div>
+                  <span class="adv-card-desc">Exports a spreadsheet (.xlsx) of all records with detected outlier tags.</span>
+                </label>
+
+                <!-- Option 4: Step 14 Geocoding -->
+                <label class="adv-card">
+                  <div class="adv-card-header">
+                    <input type="checkbox" id="include-geocoding">
+                    <span class="adv-card-title">🌐 Google Places Geocoding (Step 14)</span>
+                  </div>
+                  <span class="adv-card-desc">Optional: Enriches latitude/longitude using Google Places API (disabled by default).</span>
+                </label>
+              </div>
+            </div>
           </div>
 
-          <!-- Step 19 Database Upload Toggle -->
-          <div class="form-group full-width">
-            <label class="checkbox-label">
-              <input type="checkbox" id="auto-upload" checked>
-              <span>Auto-trigger Database Upload Pipeline (Step 19) <em>[Launches final_code.py interactive terminal
-                  upon completion]</em></span>
-            </label>
-          </div>
-
+          <!-- PRIMARY ACTION BUTTONS -->
           <div class="form-actions full-width">
-            <button type="submit" id="btn-run" class="btn btn-primary">
+            <button type="submit" id="btn-run" class="btn btn-primary btn-run-large">
               <span class="btn-icon">🚀</span>
-              <span class="btn-text">Execute Pipeline</span>
+              <span class="btn-text">Start Pipeline Execution</span>
             </button>
             <button type="button" id="btn-stop" class="btn btn-danger hidden" disabled>
               <span class="btn-icon">⏹</span>
               <span class="btn-text">Stop Pipeline</span>
             </button>
-            <button type="button" id="btn-launch-upload-manual" class="btn btn-secondary">
-              <span class="btn-icon">⚡</span>
-              <span class="btn-text">Launch final_code.py</span>
-            </button>
+          </div>
+
+          <!-- STANDALONE UTILITIES STRIP (RUN INDIVIDUAL TOOLS WITHOUT FULL PIPELINE) -->
+          <div class="quick-tools-strip full-width">
+            <span class="quick-tools-label">🛠️ Standalone Tools (Run individual tools directly):</span>
+            <div class="quick-tools-btns">
+              <button type="button" id="btn-launch-upload-manual" class="btn-tool-pill" title="Launch database uploader interactive console directly">
+                ⚡ Database Uploader (final_code.py)
+              </button>
+              <button type="button" id="btn-run-outlier-manual" class="btn-tool-pill" title="Run outlier detection on database directly">
+                📊 Outlier Detector (Step 20)
+              </button>
+            </div>
           </div>
         </form>
       </section>
@@ -247,7 +340,11 @@
       <section class="card pause-card hidden" id="pause-card">
         <div class="pause-content">
           <div class="pause-badge">⏸️ Step 6 Complete — Paused at Step 7</div>
-          <h3 class="pause-title">Manual Project Name Verification Required</h3>
+          <div class="save-confirmation-pill" id="pause-save-status"
+            style="display: inline-flex; align-items: center; gap: 8px; background: rgba(34, 197, 94, 0.15); border: 1px solid rgba(34, 197, 94, 0.4); color: #4ade80; padding: 6px 14px; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; margin-bottom: 10px;">
+            <span>💾 File saved to Google Drive at <strong id="pause-save-time">--:--</strong></span>
+          </div>
+          <h3 class="pause-title">Manual Verification Required</h3>
           <p class="pause-desc">
             Step 6 saved to Google Drive: <code id="pause-v1-path">_for_manual.xlsx</code>
             <a href="https://drive.google.com/drive/folders/1oQ3JQ_v9shWZQlW4JYDpLPXKFOEdAqRW?usp=drive_link"
@@ -284,34 +381,29 @@
               <div class="share-deadline-row">
                 <div class="deadline-input-group">
                   <label for="share-email-deadline" class="deadline-label">
-                    <span class="deadline-icon">📅 ⏰</span>
-                    <span>Correction Deadline:</span>
+                    ⏰ Correction Deadline:
                   </label>
-                  <input type="datetime-local" id="share-email-deadline" class="deadline-input"
-                    title="Select completion deadline (calendar & clock)">
+                  <input type="datetime-local" id="share-email-deadline" class="deadline-input">
                 </div>
-                <div class="deadline-quick-presets">
+                <div class="deadline-presets">
                   <span class="preset-label">Quick:</span>
-                  <button type="button" class="deadline-preset-btn" data-hours="2">+2h</button>
-                  <button type="button" class="deadline-preset-btn" data-hours="4">+4h</button>
-                  <button type="button" class="deadline-preset-btn" data-preset="today-eod">Today 6 PM</button>
+                  <button type="button" class="deadline-preset-btn" data-hours="2">+2 Hours</button>
+                  <button type="button" class="deadline-preset-btn" data-hours="4">+4 Hours</button>
+                  <button type="button" class="deadline-preset-btn" data-preset="today-eod">Today EOD (6 PM)</button>
                   <button type="button" class="deadline-preset-btn" data-preset="tomorrow-12pm">Tomorrow 12 PM</button>
-                  <button type="button" class="deadline-preset-btn" data-preset="tomorrow-eod">Tomorrow 6 PM</button>
-                  <button type="button" class="deadline-preset-btn clear-btn" id="btn-clear-deadline"
-                    title="Clear deadline">✕</button>
+                  <button type="button" class="deadline-preset-btn" data-preset="tomorrow-eod">Tomorrow EOD</button>
+                  <button type="button" class="deadline-preset-btn clear-btn" id="btn-clear-deadline">✕ Clear</button>
                 </div>
               </div>
 
-              <!-- Recipient (To) -->
-              <div class="share-input-row">
-                <div class="input-with-label" style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
-                  <label for="share-email-recipients" style="font-size: 0.78rem; font-weight: 600; color: #a5b4fc;">
-                    To (Recipient):
-                  </label>
+              <div class="share-input-row" style="margin-top: 6px;">
+                <div class="input-with-icon" style="flex: 1;">
+                  <span class="input-icon">✉️</span>
                   <input type="text" id="share-email-recipients"
                     placeholder="Recipient email address (e.g. pankaj@sigmavalue.co.in)">
                 </div>
-                <button type="button" id="btn-send-share-email" class="btn btn-secondary" style="align-self: flex-end; height: 38px;">
+                <button type="button" id="btn-send-share-email" class="btn btn-secondary"
+                  style="align-self: flex-end; height: 38px;">
                   <span class="btn-icon">📤</span>
                   <span class="btn-text">Send Email</span>
                 </button>
@@ -319,31 +411,35 @@
 
               <!-- CC Recipients -->
               <div class="share-input-row share-cc-container" style="display: flex; flex-direction: column; gap: 6px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
+                <div
+                  style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
                   <label for="share-email-cc" style="font-size: 0.78rem; font-weight: 600; color: #cbd5e1;">
                     📋 CC:
                   </label>
                   <div class="cc-quick-pills" style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
                     <span style="font-size: 0.72rem; color: #94a3b8; margin-right: 2px;">Toggle:</span>
-                    <button type="button" class="contact-pill cc-pill active" data-cc="deeksha@sigmavalue.co.in">Deeksha</button>
-                    <button type="button" class="contact-pill cc-pill active" data-cc="nilesh@sigmavalue.co.in">Nilesh</button>
-                    <button type="button" class="contact-pill cc-pill" data-cc="paryushan@sigmavalue.co.in">+ Paryushan</button>
-                    <button type="button" class="contact-pill cc-pill" data-cc="anurag@sigmavalue.co.in">+ Anurag</button>
+                    <button type="button" class="contact-pill cc-pill active"
+                      data-cc="deeksha@sigmavalue.co.in">Deeksha</button>
+                    <button type="button" class="contact-pill cc-pill active"
+                      data-cc="nilesh@sigmavalue.co.in">Nilesh</button>
+                    <button type="button" class="contact-pill cc-pill" data-cc="paryushan@sigmavalue.co.in">+
+                      Paryushan</button>
+                    <button type="button" class="contact-pill cc-pill" data-cc="anurag@sigmavalue.co.in">+
+                      Anurag</button>
                   </div>
                 </div>
-                <input type="text" id="share-email-cc"
-                  value="deeksha@sigmavalue.co.in, nilesh@sigmavalue.co.in"
+                <input type="text" id="share-email-cc" value="deeksha@sigmavalue.co.in, nilesh@sigmavalue.co.in"
                   placeholder="CC email addresses (comma separated)">
               </div>
 
-              <div class="share-status-msg hidden" id="share-status-msg"></div>
+              <div id="share-status-msg" class="share-status-msg hidden"></div>
             </div>
           </div>
 
           <!-- Location selection from 3. Manually Corrected -->
-          <div class="pause-location-selector">
+          <div class="pause-location-selector" style="margin-top: 14px;">
             <div class="drive-picker-header">
-              <span class="picker-label" style="color: #fbbf24; font-size: 0.84rem;">📂 Available Location Folders in
+              <span class="picker-label" style="color: #fbbf24; font-size: 0.84rem;">📂 Or Select Location Folder from
                 Google Drive (3. Manually Corrected):</span>
               <button type="button" class="picker-refresh-btn" id="btn-refresh-pause-locs"
                 title="Refresh Drive Folders">🔄 Refresh Folders</button>
@@ -367,7 +463,7 @@
             <input type="text" id="resume-file-path" placeholder="Path to manual corrected file (.xlsx)">
             <button type="button" id="btn-resume" class="btn btn-primary">
               <span class="btn-icon">▶</span>
-              <span class="btn-text">Resume (Steps 7 → 19)</span>
+              <span class="btn-text">Resume (Steps 7 → 20)</span>
             </button>
           </div>
         </div>
@@ -384,8 +480,9 @@
           <p class="pause-desc">
             Final processed dataset saved to Google Drive:
             <code id="parquet-verify-path">..._final_processed.xlsx</code>
-            <a href="https://drive.google.com/drive/folders/1Fxf1yTUo4FZWRHjm_XrpA7jq93kG7diO?usp=drive_link" target="_blank"
-              class="drive-external-link" id="parquet-verify-drive-link" title="Open Google Drive Folder">🌐 Open 4. Final processed file ↗</a>
+            <a href="https://drive.google.com/drive/folders/1Fxf1yTUo4FZWRHjm_XrpA7jq93kG7diO?usp=drive_link"
+              target="_blank" class="drive-external-link" id="parquet-verify-drive-link"
+              title="Open Google Drive Folder">🌐 Open 4. Final processed file ↗</a>
           </p>
           <p class="pause-instructions">
             Please verify if the final processed file is correct before proceeding to Parquet conversion. If correct,
@@ -459,11 +556,11 @@
         </div>
       </section>
 
-      <!-- 19-STEP PIPELINE VISUALIZATION GRID -->
+      <!-- 20-STEP PIPELINE VISUALIZATION GRID -->
       <section class="steps-section">
         <div class="section-title-bar">
-          <h2 class="section-title">Pipeline Execution Steps (1 to 19)</h2>
-          <span class="steps-count-badge" id="steps-status-summary">0 / 19 Completed</span>
+          <h2 class="section-title">Pipeline Execution Steps (1 to 20)</h2>
+          <span class="steps-count-badge" id="steps-status-summary">0 / 20 Completed</span>
         </div>
 
         <div class="steps-grid" id="steps-grid">

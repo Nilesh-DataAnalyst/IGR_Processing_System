@@ -36,7 +36,7 @@ BUILDUP_TO_CARPET_DIVISOR = 1.2
 DB_PARAMS = {
     "host": "localhost",
     "port": "5432",
-    "database": "nilesh",
+    "database": "test",
     "user": "postgres",
     "password": "nilesh",
 }
@@ -1077,14 +1077,19 @@ print(f"{GREEN}✓ Active City set to: {BOLD}{target_city_name}{RESET}{GREEN} (I
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
 print(f"{HEADER}{BOLD}   🏗️  DATA PROCESSING PIPELINE - {target_city_name.upper()}{RESET}")
 print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-print(f"  {CYAN}[1]{RESET} Run from START (Step 1 to Step 19)")
-print(f"  {CYAN}[2]{RESET} Run from STEP 7 (Load manually corrected file directly, Steps 7 to 19)")
+print(f"  {CYAN}[1]{RESET} Run from START (Step 1 to Step 20)")
+print(f"  {CYAN}[2]{RESET} Run from STEP 7 (Load manually corrected file directly, Steps 7 to 20)")
 print(f"  {CYAN}[3]{RESET} Run STEP 18 ONLY (Parquet Conversion directly)")
+print(f"  {CYAN}[4]{RESET} Run STEP 20 ONLY (Outlier Update directly)")
 print(f"{HEADER}{'=' * 60}{RESET}")
 
-pipeline_mode = input(f"\n{YELLOW}Select option (1, 2, or 3) [default: 1]: {RESET}").strip()
+pipeline_mode = input(f"\n{YELLOW}Select option (1, 2, 3, or 4) [default: 1]: {RESET}").strip()
 
-if pipeline_mode == "3":
+if pipeline_mode == "4":
+    # STEP 20 ONLY - Direct Outlier Update
+    print(f"\n{BLUE}ℹ ⏩ Skipping Steps 1 to 19. Starting directly from STEP 20 (Outlier Update)...{RESET}")
+
+elif pipeline_mode == "3":
     # STEP 18 ONLY - Direct Parquet Conversion
     print(f"\n{BLUE}ℹ ⏩ Skipping Steps 1 to 17. Starting directly from STEP 18 (Parquet Conversion)...{RESET}")
     output_path = get_final_processed_file()
@@ -1425,6 +1430,24 @@ if pipeline_mode in ["1", "2"]:
     for col in ["transaction_date", "date_of_agreement_execution"]:
         df[col] = df[col].dt.strftime("%d/%m/%Y")
 
+    # ------------------------------------------------------------
+    # Ensure Rate Column is Populated & Mapped to DB Schema ("rate")
+    # Rate represents agreement_price per net_carpet_area_sqft.
+    # ------------------------------------------------------------
+    # 1. Derive net_carpet_area_sqft if missing
+    if "net_carpet_area_sqft" not in df.columns:
+        area_m_col = "net_carpet_area_sq_m" if "net_carpet_area_sq_m" in df.columns else ("net_carpet_area_sqmt" if "net_carpet_area_sqmt" in df.columns else None)
+        if area_m_col and area_m_col in df.columns:
+            df["net_carpet_area_sqft"] = (pd.to_numeric(df[area_m_col], errors="coerce") * 10.7639).round(2)
+
+    # 2. Compute rate if not already present as 'rate' or 'rate_in_sqft'
+    if "rate" not in df.columns and "rate_in_sqft" not in df.columns:
+        price_col = "agreement_price" if "agreement_price" in df.columns else ("consideration_amt" if "consideration_amt" in df.columns else None)
+        if price_col and "net_carpet_area_sqft" in df.columns:
+            price_clean = pd.to_numeric(df[price_col].astype(str).str.replace(",", "").str.strip(), errors="coerce")
+            area_clean = pd.to_numeric(df["net_carpet_area_sqft"], errors="coerce")
+            df["rate"] = (price_clean / area_clean).round(2)
+
     rename_mapping = {
         "city": "city_name",
         "balcony_area_sqmt": "balcony_sq_m",
@@ -1435,6 +1458,7 @@ if pipeline_mode in ["1", "2"]:
         "manual_processed": "is_manual_processed",
         "locality_en": "sub_locality",
         "wing_no": "tower_name",
+        "rate_in_sqft": "rate"  # Standardize 'rate_in_sqft' to DB schema column 'rate'
     }
 
     df = df.rename(
@@ -1672,45 +1696,46 @@ if pipeline_mode in ["1", "2"]:
 # ============================================================
 # VERIFY FINAL PROCESSED FILE BEFORE STEP 18
 # ============================================================
-print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-print(f"{HEADER}{BOLD}   🔍 VERIFICATION: FINAL PROCESSED FILE REVIEW{RESET}")
-print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-print(f"  {CYAN}📄 Final Processed File:{RESET} {BOLD}{output_path}{RESET}")
-
 proceed_parquet = False
-while True:
-    is_correct = input(
-        f"\n{YELLOW}Is the final processed file correct? (y/n / enter corrected path / 'corrected') [default: y]: {RESET}"
-    ).strip().strip('"')
+if pipeline_mode != "4":
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   🔍 VERIFICATION: FINAL PROCESSED FILE REVIEW{RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"  {CYAN}📄 Final Processed File:{RESET} {BOLD}{output_path if 'output_path' in locals() else 'N/A'}{RESET}")
 
-    if not is_correct or is_correct.lower() in ["y", "yes", "correct", "corrected"]:
-        print(f"{GREEN}✓ Final processed file confirmed! Proceeding to Parquet conversion...{RESET}")
-        proceed_parquet = True
-        break
-    elif is_correct.lower() in ["skip", "cancel"]:
-        print(f"{BLUE}ℹ Parquet conversion skipped.{RESET}")
-        proceed_parquet = False
-        break
-    elif is_correct.lower() in ["n", "no"]:
-        corrected_input = input(f"{YELLOW}Please provide the path to the corrected file (or type 'skip' to skip conversion): {RESET}").strip().strip('"')
-        if corrected_input.lower() in ["skip", "cancel", "n", "no", ""]:
+    while True:
+        is_correct = input(
+            f"\n{YELLOW}Is the final processed file correct? (y/n / enter corrected path / 'corrected') [default: y]: {RESET}"
+        ).strip().strip('"')
+
+        if not is_correct or is_correct.lower() in ["y", "yes", "correct", "corrected"]:
+            print(f"{GREEN}✓ Final processed file confirmed! Proceeding to Parquet conversion...{RESET}")
+            proceed_parquet = True
+            break
+        elif is_correct.lower() in ["skip", "cancel"]:
             print(f"{BLUE}ℹ Parquet conversion skipped.{RESET}")
             proceed_parquet = False
             break
-        elif os.path.exists(corrected_input):
-            output_path = corrected_input
+        elif is_correct.lower() in ["n", "no"]:
+            corrected_input = input(f"{YELLOW}Please provide the path to the corrected file (or type 'skip' to skip conversion): {RESET}").strip().strip('"')
+            if corrected_input.lower() in ["skip", "cancel", "n", "no", ""]:
+                print(f"{BLUE}ℹ Parquet conversion skipped.{RESET}")
+                proceed_parquet = False
+                break
+            elif os.path.exists(corrected_input):
+                output_path = corrected_input
+                print(f"{GREEN}✓ Corrected file accepted: {output_path}. Proceeding to Parquet conversion...{RESET}")
+                proceed_parquet = True
+                break
+            else:
+                print(f"{RED}❌ File not found: '{corrected_input}'. Please try again.{RESET}")
+        elif os.path.exists(is_correct):
+            output_path = is_correct
             print(f"{GREEN}✓ Corrected file accepted: {output_path}. Proceeding to Parquet conversion...{RESET}")
             proceed_parquet = True
             break
         else:
-            print(f"{RED}❌ File not found: '{corrected_input}'. Please try again.{RESET}")
-    elif os.path.exists(is_correct):
-        output_path = is_correct
-        print(f"{GREEN}✓ Corrected file accepted: {output_path}. Proceeding to Parquet conversion...{RESET}")
-        proceed_parquet = True
-        break
-    else:
-        print(f"{RED}❌ Invalid input '{is_correct}'. Please enter 'y' / 'corrected', 'n', or provide the corrected file path.{RESET}")
+            print(f"{RED}❌ Invalid input '{is_correct}'. Please enter 'y' / 'corrected', 'n', or provide the corrected file path.{RESET}")
 
 # ============================================================
 # STEP 18 - Parquet Conversion
@@ -1718,7 +1743,7 @@ while True:
 
 if proceed_parquet:
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 18/19] Converting Final Processed File to Parquet...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 18/20] Converting Final Processed File to Parquet...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from parquet_conersion import convert_csv_to_parquet
 
@@ -1737,50 +1762,181 @@ if proceed_parquet:
             date_cols=["transaction_date", "date_of_agreement_execution"],
         )
 
-        print(f"{GREEN}✓ [STEP 18/19] Parquet conversion completed successfully!{RESET}")
+        print(f"{GREEN}✓ [STEP 18/20] Parquet conversion completed successfully!{RESET}")
         print(f"  {CYAN}📊 Parquet Summary:{RESET} {result}")
     except Exception as pe:
-        print(f"{RED}❌ [STEP 18/19] Error converting to Parquet: {pe}{RESET}")
-else:
-    print(f"\n{YELLOW}⚠️ [STEP 18/19] Parquet conversion skipped.{RESET}")
+        print(f"{RED}❌ [STEP 18/20] Error converting to Parquet: {pe}{RESET}")
+elif pipeline_mode != "4":
+    print(f"\n{YELLOW}⚠️ [STEP 18/20] Parquet conversion skipped.{RESET}")
 
 # ============================================================
 # STEP 19 - Trigger Database Upload Pipeline (final_code.py)
+# ============================================================
+if pipeline_mode != "4":
+    import subprocess
+    from pathlib import Path
+
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   🚀 [STEP 19/20] Triggering Database Upload Pipeline...{RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+
+    # Resolve path to DB1_DB2_Uploading_Pipeline root directory
+    project_root = Path(__file__).resolve().parents[2]
+    final_code_path = project_root / "final_code.py"
+
+    # Fallback to central pipeline repository if executed from a task-specific directory
+    if not final_code_path.exists():
+        central_dir = Path(r"E:\Nilesh\Database\DB1_DB2_Uploading_Pipeline")
+        if (central_dir / "final_code.py").exists():
+            project_root = central_dir
+            final_code_path = central_dir / "final_code.py"
+
+    if not final_code_path.exists():
+        print(f"{RED}❌ Error: Could not locate final_code.py at: {final_code_path}{RESET}")
+    else:
+        # Optional: Prompt user before triggering upload
+        trigger = input(f"\n{YELLOW}Do you want to run final_code.py now? (y/n) [default: y]: {RESET}").strip().lower()
+        if trigger in ("", "y", "yes"):
+            try:
+                # sys.executable ensures the same virtual environment (venv) is used
+                subprocess.run([sys.executable, str(final_code_path)], cwd=str(project_root), check=True)
+                print(f"\n{GREEN}{BOLD}🎉 final_code.py finished successfully!{RESET}")
+            except subprocess.CalledProcessError as e:
+                print(f"\n{RED}❌ final_code.py exited with error code: {e.returncode}{RESET}")
+            except KeyboardInterrupt:
+                print(f"\n{YELLOW}⚠️ final_code.py execution interrupted by user.{RESET}")
+        else:
+            print(f"{BLUE}ℹ Database upload skipped.{RESET}")
+
+# ============================================================
+# STEP 20 - Outlier Implementation on Updated Location
 # ============================================================
 import subprocess
 from pathlib import Path
 
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-print(f"{HEADER}{BOLD}   🚀 [STEP 19/19] Triggering Database Upload Pipeline...{RESET}")
+print(f"{HEADER}{BOLD}   📊 [STEP 20/20] Outlier Detection & Database Update...{RESET}")
 print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
-# Resolve path to DB1_DB2_Uploading_Pipeline root directory
-project_root = Path(__file__).resolve().parents[2]
-final_code_path = project_root / "final_code.py"
+# Resolve target city
+city_id_to_process = (
+    target_city_id
+    if ("target_city_id" in locals() and target_city_id)
+    else (CURRENT_CITY_CONFIG.get("city_id", 8) if CURRENT_CITY_CONFIG else 8)
+)
+city_name_to_process = (
+    target_city_name
+    if ("target_city_name" in locals() and target_city_name)
+    else (CURRENT_CITY_CONFIG.get("display_name", "Mumbai") if CURRENT_CITY_CONFIG else "Mumbai")
+)
 
-# Fallback to central pipeline repository if executed from a task-specific directory
-if not final_code_path.exists():
-    central_dir = Path(r"E:\Nilesh\Database\DB1_DB2_Uploading_Pipeline")
-    if (central_dir / "final_code.py").exists():
-        project_root = central_dir
-        final_code_path = central_dir / "final_code.py"
+# Resolve target location
+loc_candidate = None
+if "location_name" in locals() and location_name:
+    loc_candidate = location_name
+elif "selected_location" in globals() and selected_location:
+    loc_candidate = selected_location
+elif "output_path" in locals() and output_path:
+    parent_dir = os.path.basename(os.path.dirname(output_path))
+    if parent_dir and parent_dir.lower() not in ["4. final processed file", "final processed file", "processing"]:
+        loc_candidate = parent_dir
 
-if not final_code_path.exists():
-    print(f"{RED}❌ Error: Could not locate final_code.py at: {final_code_path}{RESET}")
+loc_display = loc_candidate if loc_candidate else "All Locations"
+print(f"  {CYAN}🏙️  Target City :{RESET} {BOLD}{city_name_to_process}{RESET} (City ID: {city_id_to_process})")
+print(f"  {CYAN}🗄️  Database    :{RESET} {BOLD}{DB_PARAMS.get('database', 'nilesh')}{RESET}")
+if loc_candidate:
+    print(f"  {CYAN}📍 Detected Location:{RESET} {BOLD}{loc_candidate}{RESET}")
+
+print(f"\n{HEADER}{'-' * 60}{RESET}")
+print(f"{CYAN}Select Outlier Scope for {city_name_to_process}:{RESET}")
+if loc_candidate:
+    print(f"  {CYAN}[1]{RESET} Current detected location ({BOLD}{loc_candidate}{RESET})")
+    print(f"  {CYAN}[2]{RESET} Enter a different specific location")
+    print(f"  {CYAN}[3]{RESET} ALL locations in {city_name_to_process} (whole city)")
+    print(f"  {CYAN}[0]{RESET} Skip / Cancel")
+    print(f"{HEADER}{'-' * 60}{RESET}")
+    scope_choice = input(f"\n{YELLOW}Select option (1, 2, 3, or 0 / enter location name) [default: 1]: {RESET}").strip()
 else:
-    # Optional: Prompt user before triggering upload
-    trigger = input(f"\n{YELLOW}Do you want to run final_code.py now? (y/n) [default: y]: {RESET}").strip().lower()
-    if trigger in ("", "y", "yes"):
-        try:
-            # sys.executable ensures the same virtual environment (venv) is used
-            subprocess.run([sys.executable, str(final_code_path)], cwd=str(project_root), check=True)
-            print(f"\n{GREEN}{BOLD}🎉 final_code.py finished successfully!{RESET}")
-        except subprocess.CalledProcessError as e:
-            print(f"\n{RED}❌ final_code.py exited with error code: {e.returncode}{RESET}")
-        except KeyboardInterrupt:
-            print(f"\n{YELLOW}⚠️ final_code.py execution interrupted by user.{RESET}")
-    else:
-        print(f"{BLUE}ℹ Database upload skipped.{RESET}")
+    print(f"  {CYAN}[1]{RESET} Specific location (enter location name, e.g. 'Andheri', 'Baner')")
+    print(f"  {CYAN}[2]{RESET} ALL locations in {city_name_to_process} (whole city)")
+    print(f"  {CYAN}[0]{RESET} Skip / Cancel")
+    print(f"{HEADER}{'-' * 60}{RESET}")
+    scope_choice = input(f"\n{YELLOW}Select option (1, 2, or 0 / enter location name) [default: 1]: {RESET}").strip()
 
+loc_to_process = None
+skip_outlier = False
+
+if loc_candidate:
+    if scope_choice in ["1", "", "y", "yes", "current"]:
+        loc_to_process = loc_candidate
+    elif scope_choice == "2":
+        while True:
+            custom_loc = input(f"\n{YELLOW}Enter specific location name for {city_name_to_process}: {RESET}").strip().strip('"')
+            if custom_loc:
+                loc_to_process = custom_loc
+                break
+            print(f"{RED}❌ Location name cannot be empty. Please enter a valid location name.{RESET}")
+    elif scope_choice in ["3", "all", "*"]:
+        loc_to_process = None
+    elif scope_choice in ["0", "skip", "cancel", "n", "no"]:
+        skip_outlier = True
+    else:
+        # User directly typed a location name
+        loc_to_process = scope_choice
+else:
+    if scope_choice in ["1", ""]:
+        while True:
+            custom_loc = input(f"\n{YELLOW}Enter specific location name for {city_name_to_process} (or 'all' for whole city): {RESET}").strip().strip('"')
+            if custom_loc.lower() in ["all", "*", "none"]:
+                loc_to_process = None
+                break
+            elif custom_loc:
+                loc_to_process = custom_loc
+                break
+            print(f"{RED}❌ Location name cannot be empty.{RESET}")
+    elif scope_choice in ["2", "all", "*"]:
+        loc_to_process = None
+    elif scope_choice in ["0", "skip", "cancel", "n", "no"]:
+        skip_outlier = True
+    else:
+        # User directly typed a location name
+        loc_to_process = scope_choice
+
+if not skip_outlier:
+    scope_str = f"location='{loc_to_process}'" if loc_to_process else f"ALL locations in {city_name_to_process}"
+    print(f"\n{CYAN}⏳ Starting outlier update for {BOLD}{scope_str}{RESET}{CYAN} (city_id={city_id_to_process})...{RESET}")
+
+    # Optional prompt to save merged df to Excel
+    save_prompt = input(f"\n{YELLOW}Do you want to save the detailed merged outlier Excel report? (y/n) [default: n]: {RESET}").strip().lower()
+    save_path = None
+    if save_prompt in ["y", "yes"]:
+        loc_slug = loc_to_process.replace(" ", "_") if loc_to_process else "all_locations"
+        save_path = f"outliers_{city_name_to_process.lower()}_{loc_slug}.xlsx"
+        print(f"  {CYAN}📄 Merged report will be saved to:{RESET} {save_path}")
+
+    try:
+        from outlier_update import main as run_outlier_main
+        run_outlier_main(
+            city_id=city_id_to_process,
+            location_name=loc_to_process,
+            db_params=DB_PARAMS,
+            save_merged_path=save_path,
+        )
+        print(f"\n{GREEN}{BOLD}🎉 [STEP 20/20] Outlier detection & database update finished successfully!{RESET}")
+    except ImportError:
+        # Fallback to subprocess if import fails
+        outlier_script = Path(__file__).resolve().parent / "outlier_update.py"
+        if outlier_script.exists():
+            cmd = [sys.executable, str(outlier_script), "--city_id", str(city_id_to_process)]
+            if loc_to_process:
+                cmd.extend(["--location", loc_to_process])
+            subprocess.run(cmd, cwd=str(Path(__file__).resolve().parent), check=True)
+            print(f"\n{GREEN}{BOLD}🎉 [STEP 20/20] outlier_update.py finished successfully via subprocess!{RESET}")
+        else:
+            print(f"{RED}❌ Error: Could not locate outlier_update.py at: {outlier_script}{RESET}")
+    except Exception as oe:
+        print(f"\n{RED}❌ [STEP 20/20] Error executing outlier update: {oe}{RESET}")
+else:
+    print(f"{BLUE}ℹ Outlier update skipped.{RESET}")
 
 

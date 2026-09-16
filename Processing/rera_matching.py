@@ -242,7 +242,7 @@ def assign_bhk_carpet_match(village_df: pd.DataFrame,
         return i, (None if final in SKIP_BHK else final)
 
     # Extract first number from mixed strings
-    village_df['net_carpet_area_sqmt'] = village_df['net_carpet_area_sqmt'].apply(
+    village_df['net_carpet_area_sq_m'] = village_df['net_carpet_area_sq_m'].apply(
         lambda x: re.findall(r"[-+]?\d*\.?\d+|\d+", str(x))[0] if not isinstance(x, float) else x
     )
 
@@ -267,7 +267,7 @@ def assign_bhk_carpet_match(village_df: pd.DataFrame,
     village_df['BHK'] = None
 
     mask = village_df['building_wise_carpet_area'].notna() & (village_df['property_type'] == 'Flat')
-    target = village_df[mask][['net_carpet_area_sqmt', 'building_wise_carpet_area']].copy()
+    target = village_df[mask][['net_carpet_area_sq_m', 'building_wise_carpet_area']].copy()
 
     parse_cache = {}
     for raw in target['building_wise_carpet_area'].unique():
@@ -280,7 +280,7 @@ def assign_bhk_carpet_match(village_df: pd.DataFrame,
     print(f"Processing {len(target)} rows, {len(parse_cache)} unique building configs...")
 
     results = Parallel(n_jobs=-1, backend='threading', verbose=1)(
-        delayed(process_row)(i, row['net_carpet_area_sqmt'], row['building_wise_carpet_area'], parse_cache)
+        delayed(process_row)(i, row['net_carpet_area_sq_m'], row['building_wise_carpet_area'], parse_cache)
         for i, row in target.iterrows()
     )
     valid = {i: bhk for i, bhk in results if bhk is not None}
@@ -390,7 +390,7 @@ def assign_bhk_range_fallback(village_df: pd.DataFrame,
             return None
 
         village_df['BHK'] = village_df.apply(
-            lambda row: assign_bhk_range(row['net_carpet_area_sqmt'])
+            lambda row: assign_bhk_range(row['net_carpet_area_sq_m'])
             if pd.isna(row['BHK']) and row['property_type'] == 'Flat'
             else row['BHK'],
             axis=1

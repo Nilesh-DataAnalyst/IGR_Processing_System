@@ -8,7 +8,7 @@ const PIPELINE_STEPS = [
   {
     id: 1,
     name: "Input File Ingestion",
-    desc: "Loads raw extraction Excel file and validates source tabular structures.",
+    desc: "Loads the LLM-completed file as an input file and validates source tabular structures.",
     status: "pending",
     detail: "Waiting...",
     duration: "-"
@@ -16,7 +16,7 @@ const PIPELINE_STEPS = [
   {
     id: 2,
     name: "DictToColumn Processing",
-    desc: "Extracts nested dictionary strings into standardized flat dataframe columns.",
+    desc: "Extracts nested dictionary LLM output strings into standardized flat DataFrame columns.",
     status: "pending",
     detail: "Waiting...",
     duration: "-"
@@ -32,7 +32,7 @@ const PIPELINE_STEPS = [
   {
     id: 4,
     name: "Static Transaction Mapping",
-    desc: "Maps document names against static result dictionary definitions.",
+    desc: "Maps transaction types from document names using static dictionary definitions (e.g., deeds containing 'गहाणखत' to 'Mortgage').",
     status: "pending",
     detail: "Waiting...",
     duration: "-"
@@ -156,6 +156,14 @@ const PIPELINE_STEPS = [
     status: "pending",
     detail: "Waiting...",
     duration: "-"
+  },
+  {
+    id: 20,
+    name: "Outlier Detection & Update",
+    desc: "Computes rate percentiles & bounds, flags price outliers, and updates rate/is_outlier in public.transactions.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
   }
 ];
 
@@ -175,9 +183,12 @@ let appState = {
 const mode1Radio = document.getElementById("mode1-radio");
 const mode2Radio = document.getElementById("mode2-radio");
 const mode3Radio = document.getElementById("mode3-radio");
+const mode4Radio = document.getElementById("mode4-radio");
 const mode1Label = document.getElementById("mode1-label");
 const mode2Label = document.getElementById("mode2-label");
 const mode3Label = document.getElementById("mode3-label");
+const mode4Label = document.getElementById("mode4-label");
+
 const inputFileGroup = document.getElementById("input-file-group");
 const manualFileGroup = document.getElementById("manual-file-group");
 const finalFileGroup = document.getElementById("final-file-group");
@@ -190,6 +201,25 @@ const outputPath = document.getElementById("output-path");
 const pipelineForm = document.getElementById("pipeline-form");
 const btnRun = document.getElementById("btn-run");
 const btnStop = document.getElementById("btn-stop");
+
+// Mode 4 Outlier Detection DOM Elements
+const mode4LocationContainer = document.getElementById("mode4-location-container");
+const mode4AllLocations = document.getElementById("mode4-all-locations");
+const mode4LocationInput = document.getElementById("mode4-location-input");
+const outlierLocationSelect = document.getElementById("outlier-location-select");
+const outlierChipsRow = document.getElementById("outlier-chips-row");
+const outlierCityBadgeText = document.getElementById("outlier-city-badge-text");
+const btnRefreshOutlierLocs = document.getElementById("btn-refresh-outlier-locs");
+
+// Advanced Collapsible Options
+const toggleAdvancedSettings = document.getElementById("toggle-advanced-settings");
+const advancedSettingsBody = document.getElementById("advanced-settings-body");
+const advArrow = document.getElementById("adv-arrow");
+const autoUploadCb = document.getElementById("auto-upload");
+const autoOutlierCb = document.getElementById("auto-outlier");
+const saveOutlierReportCb = document.getElementById("save-outlier-report");
+const includeGeocodingCb = document.getElementById("include-geocoding");
+const btnRunOutlierManual = document.getElementById("btn-run-outlier-manual");
 
 const progressBar = document.getElementById("progress-bar");
 const progressPercent = document.getElementById("progress-percent");
@@ -291,10 +321,11 @@ document.addEventListener("DOMContentLoaded", () => {
   loadInputDriveLocations();
   loadManualDriveLocations();
   loadFinalDriveLocations();
+  loadOutlierLocations();
   checkServerHealth();
 });
 
-// Render the 18 step cards in the grid
+// Render the 20 step cards in the grid
 function renderStepCards() {
   stepsGrid.innerHTML = "";
   PIPELINE_STEPS.forEach(step => {
@@ -317,6 +348,12 @@ function renderStepCards() {
         <div class="step-actions-row">
           <button type="button" class="btn-step-action" onclick="launchUploadPipeline()" title="Launch final_code.py in interactive console">
             🚀 Launch final_code.py
+          </button>
+        </div>` : ''}
+      ${step.id === 20 ? `
+        <div class="step-actions-row">
+          <button type="button" class="btn-step-action" onclick="runOutlierDetection()" title="Run Outlier Detection on Database">
+            📊 Run Outlier Update
           </button>
         </div>` : ''}
       <div class="step-bottom">
@@ -354,6 +391,7 @@ function attachEventListeners() {
   mode1Radio.addEventListener("change", () => setMode("1"));
   mode2Radio.addEventListener("change", () => setMode("2"));
   if (mode3Radio) mode3Radio.addEventListener("change", () => setMode("3"));
+  if (mode4Radio) mode4Radio.addEventListener("change", () => setMode("4"));
 
   // Auto-detect city from path input
   inputFilePath.addEventListener("input", () => detectCityFromPath(inputFilePath.value));
@@ -365,6 +403,7 @@ function attachEventListeners() {
     loadInputDriveLocations(cid);
     loadManualDriveLocations(cid);
     loadFinalDriveLocations(cid);
+    loadOutlierLocations(cid);
   });
 
   // Google Drive Location Dropdowns
@@ -580,7 +619,9 @@ function attachEventListeners() {
           output_path: outputPath.value.trim(),
           city_id: parseInt(cityIdInput.value, 10) || 9,
           include_geocoding: document.getElementById("include-geocoding") ? document.getElementById("include-geocoding").checked : false,
-          auto_upload: document.getElementById("auto-upload") ? document.getElementById("auto-upload").checked : true
+          auto_upload: document.getElementById("auto-upload") ? document.getElementById("auto-upload").checked : true,
+          auto_outlier: document.getElementById("auto-outlier") ? document.getElementById("auto-outlier").checked : true,
+          save_outlier_report: document.getElementById("save-outlier-report") ? document.getElementById("save-outlier-report").checked : false
         })
       });
       const data = await res.json();
@@ -600,7 +641,7 @@ function attachEventListeners() {
       logToConsole(`[Resume Error] ${err.message}`, "error");
     } finally {
       btnResume.disabled = false;
-      btnResume.innerHTML = '<span class="btn-icon">▶</span> <span class="btn-text">Resume (Steps 7 → 19)</span>';
+      btnResume.innerHTML = '<span class="btn-icon">▶</span> <span class="btn-text">Resume (Steps 7 → 20)</span>';
     }
   });
 
@@ -672,11 +713,84 @@ function attachEventListeners() {
     });
   }
 
-  // Manual launch button for final_code.py
-  const btnLaunchUploadManual = document.getElementById("btn-launch-upload-manual");
+  // Outlier Mode 4 UI Listeners
+  if (mode4AllLocations) {
+    mode4AllLocations.addEventListener("change", () => {
+      if (mode4LocationInput) {
+        mode4LocationInput.disabled = mode4AllLocations.checked;
+        if (mode4AllLocations.checked) {
+          mode4LocationInput.value = "";
+          if (outlierLocationSelect) outlierLocationSelect.value = "";
+          document.querySelectorAll(".outlier-chip").forEach(c => c.classList.remove("active"));
+          const allChip = document.querySelector(".outlier-chip.chip-all");
+          if (allChip) allChip.classList.add("active");
+        }
+      }
+    });
+  }
+
+  if (outlierLocationSelect) {
+    outlierLocationSelect.addEventListener("change", (e) => {
+      const val = e.target.value;
+      if (mode4LocationInput) {
+        mode4LocationInput.value = val;
+      }
+      if (mode4AllLocations) {
+        mode4AllLocations.checked = !val;
+        if (mode4LocationInput) mode4LocationInput.disabled = !val;
+      }
+      document.querySelectorAll(".outlier-chip").forEach(c => {
+        if (!val && c.classList.contains("chip-all")) {
+          c.classList.add("active");
+        } else if (val && c.dataset.loc === val) {
+          c.classList.add("active");
+        } else {
+          c.classList.remove("active");
+        }
+      });
+    });
+  }
+
+  if (mode4LocationInput) {
+    mode4LocationInput.addEventListener("input", (e) => {
+      const val = e.target.value.trim();
+      if (mode4AllLocations) {
+        mode4AllLocations.checked = !val;
+      }
+      if (outlierLocationSelect) {
+        outlierLocationSelect.value = val;
+      }
+    });
+  }
+
+  if (btnRefreshOutlierLocs) {
+    btnRefreshOutlierLocs.addEventListener("click", () => {
+      const cid = cityIdInput ? cityIdInput.value : "9";
+      loadOutlierLocations(cid);
+      logToConsole(`[Outlier] Refreshed locations list for city ID ${cid}.`, "info");
+    });
+  }
+
+  // Collapsible Advanced Settings Accordion
+  if (toggleAdvancedSettings && advancedSettingsBody) {
+    toggleAdvancedSettings.addEventListener("click", () => {
+      const isHidden = advancedSettingsBody.classList.toggle("hidden");
+      if (advArrow) {
+        advArrow.textContent = isHidden ? "▾" : "▴";
+      }
+    });
+  }
+
+  // Manual launch buttons for Standalone Tools
   if (btnLaunchUploadManual) {
     btnLaunchUploadManual.addEventListener("click", () => {
       launchUploadPipeline();
+    });
+  }
+
+  if (btnRunOutlierManual) {
+    btnRunOutlierManual.addEventListener("click", () => {
+      runOutlierDetection();
     });
   }
 }
@@ -687,47 +801,56 @@ function setMode(mode) {
     mode1Label.classList.add("active");
     mode2Label.classList.remove("active");
     if (mode3Label) mode3Label.classList.remove("active");
+    if (mode4Label) mode4Label.classList.remove("active");
     inputFileGroup.classList.remove("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
+    if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
     inputFilePath.required = true;
     manualFilePath.required = false;
     if (finalFilePath) finalFilePath.required = false;
+    btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Pipeline Execution</span>';
 
-    // Reset marks on steps
-    for (let i = 1; i <= 19; i++) {
+    // Reset marks on steps 1 to 20
+    for (let i = 1; i <= 20; i++) {
       updateStepUI(i, "pending", "Waiting...", "-");
     }
-    logToConsole("[Mode] Selected Mode 1: Run from START (Step 1 to Step 19)");
+    logToConsole("[Mode] Selected Mode 1: Run from START (Step 1 to Step 20)");
   } else if (mode === "2") {
     mode2Label.classList.add("active");
     mode1Label.classList.remove("active");
     if (mode3Label) mode3Label.classList.remove("active");
+    if (mode4Label) mode4Label.classList.remove("active");
     inputFileGroup.classList.add("hidden");
     manualFileGroup.classList.remove("hidden");
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
+    if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
     inputFilePath.required = false;
     manualFilePath.required = true;
     if (finalFilePath) finalFilePath.required = false;
+    btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Pipeline Execution</span>';
 
     // Visually mark steps 1-6 as skipped
     for (let i = 1; i <= 6; i++) {
       updateStepUI(i, "skipped", "Skipped in Mode 2", "-");
     }
-    for (let i = 7; i <= 19; i++) {
+    for (let i = 7; i <= 20; i++) {
       updateStepUI(i, "pending", "Waiting...", "-");
     }
-    logToConsole("[Mode] Selected Mode 2: Resume from Step 7 (Steps 7 to 19)");
+    logToConsole("[Mode] Selected Mode 2: Resume from Step 7 (Steps 7 to 20)");
   } else if (mode === "3") {
     if (mode3Label) mode3Label.classList.add("active");
     mode1Label.classList.remove("active");
     mode2Label.classList.remove("active");
+    if (mode4Label) mode4Label.classList.remove("active");
     inputFileGroup.classList.add("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.remove("hidden");
+    if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
     inputFilePath.required = false;
     manualFilePath.required = false;
     if (finalFilePath) finalFilePath.required = true;
+    btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Pipeline Execution</span>';
 
     // Visually mark steps 1-17 as skipped
     for (let i = 1; i <= 17; i++) {
@@ -735,7 +858,29 @@ function setMode(mode) {
     }
     updateStepUI(18, "pending", "Waiting for Parquet conversion...", "-");
     updateStepUI(19, "pending", "Waiting...", "-");
-    logToConsole("[Mode] Selected Mode 3: Parquet Conversion Directly (Step 18 → 19)");
+    updateStepUI(20, "pending", "Waiting...", "-");
+    logToConsole("[Mode] Selected Mode 3: Parquet Conversion Directly (Step 18 → 20)");
+  } else if (mode === "4") {
+    if (mode4Label) mode4Label.classList.add("active");
+    mode1Label.classList.remove("active");
+    mode2Label.classList.remove("active");
+    if (mode3Label) mode3Label.classList.remove("active");
+    inputFileGroup.classList.add("hidden");
+    manualFileGroup.classList.add("hidden");
+    if (finalFileGroup) finalFileGroup.classList.add("hidden");
+    if (mode4LocationContainer) mode4LocationContainer.classList.remove("hidden");
+    inputFilePath.required = false;
+    manualFilePath.required = false;
+    if (finalFilePath) finalFilePath.required = false;
+    btnRun.innerHTML = '<span class="btn-icon">📊</span> <span class="btn-text">Run Outlier Detection</span>';
+
+    // Visually mark steps 1-19 as skipped
+    for (let i = 1; i <= 19; i++) {
+      updateStepUI(i, "skipped", "Skipped in Mode 4", "-");
+    }
+    updateStepUI(20, "pending", "Ready for Outlier Detection...", "-");
+    loadOutlierLocations(cityIdInput ? cityIdInput.value : "9");
+    logToConsole("[Mode] Selected Mode 4: Outlier Detection & Database Update (Step 20 Only)");
   }
 }
 
@@ -750,16 +895,28 @@ async function startPipeline() {
   }
 
   const autoUploadCb = document.getElementById("auto-upload");
+  const autoOutlierCb = document.getElementById("auto-outlier");
+  const saveOutlierCb = document.getElementById("save-outlier-report");
   const geocodingCb = document.getElementById("include-geocoding");
+
+  let effectiveOutlierLoc = null;
+  if (appState.mode === "4") {
+    const isAll = mode4AllLocations ? mode4AllLocations.checked : false;
+    effectiveOutlierLoc = isAll ? null : ((mode4LocationInput ? mode4LocationInput.value.trim() : "") || (outlierLocationSelect ? outlierLocationSelect.value.trim() : ""));
+  }
+
   const payload = {
     mode: appState.mode,
     input_file: inputFilePath.value.trim(),
     manual_file: manualFilePath.value.trim(),
     location_name: appState.selectedLocation || (driveInputLocationSelect?.selectedOptions[0]?.dataset.location) || null,
+    outlier_location: effectiveOutlierLoc,
     city_id: parseInt(cityIdInput.value, 10) || 9,
     output_path: appState.mode === "3" ? ((finalFilePath ? finalFilePath.value.trim() : "") || targetOutput) : targetOutput,
     include_geocoding: geocodingCb ? geocodingCb.checked : false,
-    auto_upload: autoUploadCb ? autoUploadCb.checked : true
+    auto_upload: autoUploadCb ? autoUploadCb.checked : true,
+    auto_outlier: autoOutlierCb ? autoOutlierCb.checked : true,
+    save_outlier_report: saveOutlierCb ? saveOutlierCb.checked : false
   };
 
   // Reset UI
@@ -865,6 +1022,10 @@ function applyStatusUpdate(status) {
         resumeFilePath.value = status.v1_file;
       }
     }
+    const pauseSaveTime = document.getElementById("pause-save-time");
+    if (pauseSaveTime) {
+      pauseSaveTime.textContent = status.v1_saved_at || "Just now";
+    }
     if (status.location_name) {
       appState.selectedLocation = status.location_name;
     }
@@ -877,6 +1038,8 @@ function applyStatusUpdate(status) {
     }
     if (isFirstTimePaused) {
       loadManualDriveLocations();
+      pauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
+      logToConsole(`\n⏸️ [Action Required] Step 6 Complete! File saved to Google Drive at ${status.v1_saved_at || "just now"}. Please review/correct project names in Google Drive or select file below.`, "warning");
     }
   } else {
     pauseCard.classList.add("hidden");
@@ -1363,3 +1526,172 @@ async function loadFinalDriveLocations(cityId) {
     selects.forEach(s => { s.disabled = false; });
   }
 }
+
+// =========================================================
+// OUTLIER LOCATIONS & MANUAL TRIGGER
+// =========================================================
+async function loadOutlierLocations(cityId) {
+  const currentCityId = cityId || (cityIdInput ? cityIdInput.value : "9");
+  const cityName = cityIdInput?.selectedOptions[0]?.text.split(" (")[0] || "City";
+  if (outlierCityBadgeText) outlierCityBadgeText.textContent = `City: ${cityName}`;
+
+  if (outlierLocationSelect) {
+    outlierLocationSelect.disabled = true;
+    outlierLocationSelect.innerHTML = '<option value="" selected>Scanning locations...</option>';
+  }
+  if (outlierChipsRow) {
+    outlierChipsRow.innerHTML = '<span style="font-size: 0.76rem; color: #94a3b8;">Scanning locations...</span>';
+  }
+
+  let locList = [];
+
+  try {
+    const res = await fetch(`/api/outlier/locations?city_id=${encodeURIComponent(currentCityId)}`);
+    if (res.ok) {
+      const data = await res.json();
+      locList = data.locations || [];
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  // Fallback: If locList is empty, fetch from final & input drive endpoints
+  if (locList.length === 0) {
+    try {
+      const [finalRes, inputRes] = await Promise.all([
+        fetch(`/api/drive/final-locations?city_id=${encodeURIComponent(currentCityId)}`),
+        fetch(`/api/drive/input-locations?city_id=${encodeURIComponent(currentCityId)}`)
+      ]);
+      const set = new Set();
+      if (finalRes.ok) {
+        const d = await finalRes.json();
+        (d.locations || []).forEach(l => { if (l.location) set.add(l.location.trim()); });
+      }
+      if (inputRes.ok) {
+        const d = await inputRes.json();
+        (d.locations || []).forEach(l => { if (l.location) set.add(l.location.trim()); });
+      }
+      locList = Array.from(set).sort((a, b) => a.localeCompare(b));
+    } catch (e) {
+      console.error("Fallback locations error:", e);
+    }
+  }
+
+  // If Drive scan returned empty, provide known Drive location folders for the city
+  if (locList.length === 0) {
+    if (String(currentCityId) === "8") {
+      locList = ["Andheri", "Bandra", "Borivali"];
+    } else if (String(currentCityId) === "9") {
+      locList = ["Chikhali", "Mohmadwadi", "Sogaon"];
+    }
+  }
+
+  // Populate Select
+  if (outlierLocationSelect) {
+    outlierLocationSelect.innerHTML = "";
+    const allOpt = document.createElement("option");
+    allOpt.value = "";
+    allOpt.textContent = `🌐 ALL Locations (${cityName} - Whole City)`;
+    allOpt.selected = true;
+    outlierLocationSelect.appendChild(allOpt);
+
+    locList.forEach(loc => {
+      const opt = document.createElement("option");
+      opt.value = loc;
+      opt.textContent = `📍 ${loc}`;
+      outlierLocationSelect.appendChild(opt);
+    });
+    outlierLocationSelect.disabled = false;
+  }
+
+  // Populate Chips
+  if (outlierChipsRow) {
+    outlierChipsRow.innerHTML = "";
+    const allChip = document.createElement("button");
+    allChip.type = "button";
+    allChip.className = "outlier-chip chip-all active";
+    allChip.innerHTML = `🌐 <strong>ALL Locations</strong>`;
+    allChip.addEventListener("click", () => {
+      if (mode4AllLocations) mode4AllLocations.checked = true;
+      if (mode4LocationInput) {
+        mode4LocationInput.value = "";
+        mode4LocationInput.disabled = true;
+      }
+      if (outlierLocationSelect) outlierLocationSelect.value = "";
+      document.querySelectorAll(".outlier-chip").forEach(c => c.classList.remove("active"));
+      allChip.classList.add("active");
+    });
+    outlierChipsRow.appendChild(allChip);
+
+    locList.forEach(loc => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "outlier-chip";
+      chip.dataset.loc = loc;
+      chip.innerHTML = `📍 ${loc}`;
+      chip.addEventListener("click", () => {
+        if (mode4AllLocations) mode4AllLocations.checked = false;
+        if (mode4LocationInput) {
+          mode4LocationInput.value = loc;
+          mode4LocationInput.disabled = false;
+        }
+        if (outlierLocationSelect) outlierLocationSelect.value = loc;
+        document.querySelectorAll(".outlier-chip").forEach(c => c.classList.remove("active"));
+        chip.classList.add("active");
+      });
+      outlierChipsRow.appendChild(chip);
+    });
+
+    if (locList.length === 0) {
+      const note = document.createElement("span");
+      note.style.fontSize = "0.76rem";
+      note.style.color = "#94a3b8";
+      note.textContent = "No saved locations found. Enter location manually below.";
+      outlierChipsRow.appendChild(note);
+    }
+  }
+}
+
+async function runOutlierDetection() {
+  const currentCityId = parseInt(cityIdInput ? cityIdInput.value : "9", 10) || 9;
+  const cityName = cityIdInput?.selectedOptions[0]?.text.split(" (")[0] || "City";
+  const isAll = mode4AllLocations ? mode4AllLocations.checked : true;
+  const chosenLoc = isAll ? null : ((mode4LocationInput ? mode4LocationInput.value.trim() : "") || (outlierLocationSelect ? outlierLocationSelect.value.trim() : ""));
+  const saveReport = saveOutlierReportCb ? saveOutlierReportCb.checked : false;
+
+  const scopeMsg = chosenLoc ? `location '${chosenLoc}'` : `ALL locations in ${cityName}`;
+  if (!confirm(`Run Outlier Detection for ${scopeMsg} (City ID: ${currentCityId})?`)) return;
+
+  logToConsole(`[Outlier] Requesting Outlier Detection for ${scopeMsg}...`, "info");
+
+  try {
+    const res = await fetch("/api/run-outlier", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        city_id: currentCityId,
+        location_name: chosenLoc,
+        save_outlier_report: saveReport
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to start outlier detection.");
+
+    appState.isRunning = true;
+    btnRun.disabled = true;
+    btnStop.disabled = false;
+    btnStop.classList.remove("hidden");
+    startTimer();
+    startPolling();
+    logToConsole(`[Outlier] 🚀 Worker started for ${scopeMsg}!`, "success");
+  } catch (err) {
+    logToConsole(`[Outlier Error] ${err.message}`, "error");
+    alert(`Could not run outlier detection: ${err.message}`);
+  }
+}
+
+// Global functions exposed for HTML inline onclick handlers
+window.launchUploadPipeline = launchUploadPipeline;
+window.runOutlierDetection = runOutlierDetection;
+window.loadOutlierLocations = loadOutlierLocations;
+window.setMode = setMode;

@@ -26,7 +26,7 @@ PART B - Area-unit conversion (applied to the clustered dataframe)
 pip install pandas numpy rapidfuzz scikit-learn openpyxl xlsxwriter tqdm
 """
 
-import ast, datetime, re, sys
+import os, ast, datetime, re, sys
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -1297,7 +1297,7 @@ def derive_net_carpet_area(df: pd.DataFrame, city: str | int = None) -> pd.DataF
 
 
 
-def process_dataframe(df, output_path=None, city=None):
+def process_dataframe(df, output_path=None, city=None, progress_callback=None):
 
     # Remove any duplicate column names if already present
     df = df.loc[:, ~df.columns.duplicated()].copy()
@@ -1306,10 +1306,16 @@ def process_dataframe(df, output_path=None, city=None):
     print("RUNNING PIPELINE USING EXISTING DATAFRAME")
     print("=" * 70)
 
+    if progress_callback:
+        progress_callback("Stage 1/5: Running project clustering...")
+
     # Part A - Project clustering
     categorised_df, cluster_summary, manual_review_df, pair_review_df = (
         run_project_clustering(input_df=df)
     )
+
+    if progress_callback:
+        progress_callback("Stage 2/5: Applying area conversions...")
 
     # Part B - Area conversion
     print("\n" + "=" * 70)
@@ -1322,6 +1328,8 @@ def process_dataframe(df, output_path=None, city=None):
 
     test_df = run_area_conversion_tests()
 
+    if progress_callback:
+        progress_callback("Stage 3/5: Processing unit and floor mapping...")
 
     # Part C - Unit and Floor processing
     print("\n" + "=" * 70)
@@ -1332,14 +1340,16 @@ def process_dataframe(df, output_path=None, city=None):
         categorised_df
     )
 
+    if progress_callback:
+        progress_callback("Stage 4/5: Deriving net carpet area & rates...")
+
     # Part D - Calculate Net_carpet_area
     categorised_df = derive_net_carpet_area(categorised_df, city=city)
 
-    # Part E - calculuate rate
-    
-
     # Optional final export
     if output_path is not None:
+        if progress_callback:
+            progress_callback(f"Stage 5/5: Saving manual review workbook to Google Drive ({os.path.basename(str(output_path))})...")
 
         export_combined_workbook(
             categorised_df,
@@ -1351,5 +1361,7 @@ def process_dataframe(df, output_path=None, city=None):
             output_path
         )
 
+        if progress_callback:
+            progress_callback(f"✓ Saved to Google Drive: {os.path.basename(str(output_path))}")
 
     return categorised_df

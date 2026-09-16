@@ -210,9 +210,7 @@ def scan_drive_locations(drive_target: str) -> list:
             if any(term in os.path.basename(sub).lower() for term in ["manually corrected", "llm processed", "final processed"]):
                 scan_root = sub
                 break
-        if not scan_root and sub_dirs:
-            scan_root = sub_dirs[0]
-        elif not scan_root:
+        if not scan_root:
             scan_root = base_shortcut_path
     elif os.path.isdir(clean_target):
         scan_root = clean_target
@@ -243,6 +241,7 @@ def scan_drive_locations(drive_target: str) -> list:
                 "files": [{"name": f, "path": os.path.join(scan_root, f)} for f in sorted(excel_files)],
             }]
 
+    # 1. Walk through to find folders with Excel files
     for root, dirs, files in os.walk(scan_root):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         excel_files = [
@@ -259,6 +258,27 @@ def scan_drive_locations(drive_target: str) -> list:
                     "drive_url": loc_drive_url or drive_target,
                     "files": [{"name": f, "path": os.path.join(root, f)} for f in sorted(excel_files)],
                 }
+
+    # 2. Also register any direct subdirectories of scan_root that represent locations
+    try:
+        for d in os.listdir(scan_root):
+            d_path = os.path.join(scan_root, d)
+            if os.path.isdir(d_path) and not d.startswith(".") and not d.startswith("~$"):
+                d_lower = d.lower()
+                if d_lower not in ["system volume information", "$recycle.bin", "temp", "archive", "old"]:
+                    if d not in location_dict:
+                        sub_files = [
+                            f for f in os.listdir(d_path)
+                            if f.lower().endswith(valid_exts) and not f.startswith("~$")
+                        ] if os.path.exists(d_path) else []
+                        location_dict[d] = {
+                            "location": d,
+                            "folder_path": d_path,
+                            "drive_url": get_manual_correction_drive_url(location_name=d) or drive_target,
+                            "files": [{"name": f, "path": os.path.join(d_path, f)} for f in sorted(sub_files)],
+                        }
+    except Exception:
+        pass
 
     if not location_dict:
         root_files = [
@@ -639,7 +659,8 @@ pipeline_state = {
         {"id": 16, "name": "Title Casing", "status": "pending", "detail": "Waiting", "duration": "-"},
         {"id": 17, "name": "Final Output Save (Drive & Local)", "status": "pending", "detail": "Waiting", "duration": "-"},
         {"id": 18, "name": "Parquet Conversion", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 19, "name": "Database Upload Pipeline", "status": "pending", "detail": "Waiting", "duration": "-"}
+        {"id": 19, "name": "Database Upload Pipeline", "status": "pending", "detail": "Waiting", "duration": "-"},
+        {"id": 20, "name": "Outlier Detection & Update", "status": "pending", "detail": "Waiting", "duration": "-"}
     ]
 }
 
@@ -737,7 +758,10 @@ def run_pipeline_worker(params):
         pipeline_state["progress"] = 0
         pipeline_state["logs"] = []
         for s in pipeline_state["steps"]:
-            if mode == "3" and s["id"] < 18:
+            if mode == "4" and s["id"] < 20:
+                s["status"] = "skipped"
+                s["detail"] = "Skipped in Mode 4"
+            elif mode == "3" and s["id"] < 18:
                 s["status"] = "skipped"
                 s["detail"] = "Skipped in Mode 3"
             elif mode == "2" and s["id"] < 7:
@@ -752,6 +776,48 @@ def run_pipeline_worker(params):
     df = None
 
     try:
+        if mode == "4":
+            # MODE 4: OUTLIER DETECTION & DATABASE UPDATE (STEP 20 ONLY)
+            t0 = time.time()
+            outlier_loc = params.get("outlier_location") or params.get("location_name")
+            if outlier_loc and str(outlier_loc).strip().lower() in ["all", "none", "", "null", "*"]:
+                outlier_loc = None
+
+            save_outlier_report = params.get("save_outlier_report", False)
+            save_path = None
+            if save_outlier_report:
+                loc_slug = str(outlier_loc).replace(" ", "_") if outlier_loc else "all_locations"
+                save_path = os.path.join(CURR_DIR, f"outliers_{city_name.lower()}_{loc_slug}.xlsx")
+
+            scope_desc = f"location='{outlier_loc}'" if outlier_loc else f"ALL locations in {city_name}"
+            update_step_status(20, "running", f"Running Outlier Detection ({scope_desc})...")
+            with state_lock:
+                pipeline_state["current_step_id"] = 20
+                pipeline_state["current_step_name"] = "Outlier Detection & Update"
+                pipeline_state["progress"] = 50
+
+            add_log(f"Step 20: 📊 Starting Outlier Detection for {city_name} ({scope_desc}, City ID: {city_id})...", "info")
+
+            from outlier_update import main as run_outlier_main
+            run_outlier_main(
+                city_id=city_id,
+                location_name=outlier_loc,
+                db_params=core.DB_PARAMS,
+                save_merged_path=save_path,
+            )
+
+            dur = f"{time.time() - t0:.2f}s"
+            update_step_status(20, "completed", f"Updated {scope_desc}", dur)
+            add_log(f"Step 20: ✓ Outlier detection & database update finished successfully! ({scope_desc})", "success")
+            if save_path and os.path.exists(save_path):
+                add_log(f"Step 20: 📄 Detailed outlier report saved to: {save_path}", "success")
+
+            with state_lock:
+                pipeline_state["state"] = "completed"
+                pipeline_state["progress"] = 100
+                pipeline_state["current_step_name"] = "Outlier Detection Completed!"
+            return
+
         if mode == "3":
             # RESUME DIRECTLY FROM STEP 18 (PARQUET CONVERSION)
             final_file = output_path or manual_file or input_file
@@ -776,6 +842,13 @@ def run_pipeline_worker(params):
                 pipeline_state["progress"] = 43
 
             df = pd.read_excel(manual_file, engine="openpyxl")
+            if "net_carpet_area_sqmt" in df.columns and "net_carpet_area_sq_m" not in df.columns:
+                df["net_carpet_area_sq_m"] = df["net_carpet_area_sqmt"]
+            if "net_carpet_area_sq_m" in df.columns:
+                if "net_carpet_area_sqft" not in df.columns:
+                    df["net_carpet_area_sqft"] = (pd.to_numeric(df["net_carpet_area_sq_m"], errors="coerce") * 10.7639).round(2)
+                if "rate_in_sqft" not in df.columns and "consideration_amt" in df.columns:
+                    df["rate_in_sqft"] = (pd.to_numeric(df["consideration_amt"], errors="coerce") / df["net_carpet_area_sqft"]).round(2)
             dur = f"{time.time() - t0:.2f}s"
             update_step_status(7, "completed", f"{len(df)} rows loaded", dur)
             add_log(f"Step 7: Loaded {len(df)} rows from manual file.", "success")
@@ -892,10 +965,15 @@ def run_pipeline_worker(params):
                 v1_output_path = os.path.join(input_dir, out_file_name)
                 add_log(f"Step 6: Saving locally: {v1_output_path}", "warning")
 
-            df = process_dataframe(df, output_path=v1_output_path, city=city_key)
+            def on_step6_progress(stage_msg):
+                update_step_status(6, "running", stage_msg)
+                add_log(f"Step 6: {stage_msg}", "info")
+
+            df = process_dataframe(df, output_path=v1_output_path, city=city_key, progress_callback=on_step6_progress)
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(6, "completed", f"Saved manual file ({len(df)} rows)", dur)
-            add_log(f"Step 6: Standardization completed -> Saved: {v1_output_path}", "success")
+            save_time_str = datetime.now().strftime("%I:%M:%S %p")
+            update_step_status(6, "completed", f"Saved to Drive: {out_file_name} ({len(df)} rows)", dur)
+            add_log(f"✅ Step 6 Complete! File saved to Google Drive at {save_time_str}: {v1_output_path}", "success")
 
             # ============================================================
             # STEP 7: PAUSE AND WAIT FOR USER MANUAL CORRECTED FILE
@@ -905,13 +983,15 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_id"] = 7
                 pipeline_state["current_step_name"] = "Waiting for Manual Corrected File"
                 pipeline_state["v1_file"] = v1_output_path
+                pipeline_state["v1_filename"] = out_file_name
+                pipeline_state["v1_saved_at"] = save_time_str
                 pipeline_state["location_name"] = location_name
                 pipeline_state["manual_drive_url"] = manual_drive_url
 
-            update_step_status(7, "running", "Waiting for manual review/correction...")
+            update_step_status(7, "running", f"Paused — File saved to Drive at {save_time_str}. Waiting for manual review...")
             add_log("=" * 60, "warning")
-            add_log(f"⏸️ Step 6 finished! Standardized file saved to: {v1_output_path}", "warning")
-            add_log("⏸️ Pipeline PAUSED at Step 7. You can share this file or select a location file to resume.", "warning")
+            add_log(f"⏸️ Step 6 finished! Standardized file saved to Google Drive at {save_time_str}: {v1_output_path}", "success")
+            add_log("⏸️ Pipeline PAUSED at Step 7. Review the file in Google Drive, then select or enter the file below to resume.", "warning")
             add_log("=" * 60, "warning")
 
             # Wait for resume signal from client via /api/resume
@@ -930,6 +1010,13 @@ def run_pipeline_worker(params):
             add_log(f"Step 7: Resumed! Loading manual corrected file: {resolved_manual_file}", "info")
             t0 = time.time()
             df = pd.read_excel(resolved_manual_file, engine="openpyxl")
+            if "net_carpet_area_sqmt" in df.columns and "net_carpet_area_sq_m" not in df.columns:
+                df["net_carpet_area_sq_m"] = df["net_carpet_area_sqmt"]
+            if "net_carpet_area_sq_m" in df.columns:
+                if "net_carpet_area_sqft" not in df.columns:
+                    df["net_carpet_area_sqft"] = (pd.to_numeric(df["net_carpet_area_sq_m"], errors="coerce") * 10.7639).round(2)
+                if "rate_in_sqft" not in df.columns and "consideration_amt" in df.columns:
+                    df["rate_in_sqft"] = (pd.to_numeric(df["consideration_amt"], errors="coerce") / df["net_carpet_area_sqft"]).round(2)
             dur = f"{time.time() - t0:.2f}s"
             update_step_status(7, "completed", f"{len(df)} rows loaded", dur)
             add_log(f"Step 7: Loaded {len(df)} rows from manual file.", "success")
@@ -1023,11 +1110,28 @@ def run_pipeline_worker(params):
             for col in ["transaction_date", "date_of_agreement_execution"]:
                 df[col] = df[col].dt.strftime("%d/%m/%Y")
 
+            # ------------------------------------------------------------
+            # Ensure Rate Column is Populated & Mapped to DB Schema ("rate")
+            # Rate represents agreement_price per net_carpet_area_sqft.
+            # ------------------------------------------------------------
+            # 1. Derive net_carpet_area_sqft if missing
+            if "net_carpet_area_sqft" not in df.columns:
+                area_m_col = "net_carpet_area_sq_m" if "net_carpet_area_sq_m" in df.columns else ("net_carpet_area_sqmt" if "net_carpet_area_sqmt" in df.columns else None)
+                if area_m_col and area_m_col in df.columns:
+                    df["net_carpet_area_sqft"] = (pd.to_numeric(df[area_m_col], errors="coerce") * 10.7639).round(2)
+
+            # 2. Compute rate if not already present as 'rate' or 'rate_in_sqft'
+            if "rate" not in df.columns and "rate_in_sqft" not in df.columns:
+                price_col = "agreement_price" if "agreement_price" in df.columns else ("consideration_amt" if "consideration_amt" in df.columns else None)
+                if price_col and "net_carpet_area_sqft" in df.columns:
+                    price_clean = pd.to_numeric(df[price_col].astype(str).str.replace(",", "").str.strip(), errors="coerce")
+                    area_clean = pd.to_numeric(df["net_carpet_area_sqft"], errors="coerce")
+                    df["rate"] = (price_clean / area_clean).round(2)
+
             rename_map = {
                 "location": "location_name",
                 "igr_village": "registered_document_village_name",
                 "city": "city_name",
-                "net_carpet_area_sqmt": "net_carpet_area_sq_m",
                 "balcony_area_sqmt": "balcony_sq_m",
                 "terrace_area_sqmt": "terrace_sq_m",
                 "project_lat": "project_latitude",
@@ -1036,7 +1140,10 @@ def run_pipeline_worker(params):
                 "manual_processed": "is_manual_processed",
                 "locality_en": "sub_locality",
                 "wing_no": "tower_name",
+                "rate_in_sqft": "rate",  # Standardize 'rate_in_sqft' to DB schema column 'rate'
             }
+            if "net_carpet_area_sqmt" in df.columns and "net_carpet_area_sq_m" not in df.columns:
+                df["net_carpet_area_sq_m"] = df["net_carpet_area_sqmt"]
             df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
             defaults = {
@@ -1059,9 +1166,9 @@ def run_pipeline_worker(params):
                 "sourcing_time": np.nan,
                 "data_type": "Registered Document",
                 "normalized_unit_configuration": df.get("unit_configuration", pd.NA),
-                "city_name": city_name,
+                "city_name": city_name.title() if isinstance(city_name, str) else city_name,
                 "project_stage": pd.NA,
-                "is_llm_processed": "No",
+                "is_llm_processed": "Yes",
                 "is_manual_processed": "No",
             }
             for col, val in defaults.items():
@@ -1163,7 +1270,7 @@ def run_pipeline_worker(params):
             base_name = "output"
             if src:
                 base_name = os.path.splitext(os.path.basename(src))[0]
-                for suffix in ["_for_manual", "_processed_v1", "_processed", "_llm_output"]:
+                for suffix in ["_for_manual", "_processed_v1", "_processed", "_llm_output", "_Merged_File", "_merged_file", "_merged"]:
                     base_name = base_name.replace(suffix, "")
             default_filename = f"{base_name}_final_processed.xlsx"
 
@@ -1337,6 +1444,49 @@ def run_pipeline_worker(params):
                 update_step_status(19, "completed", "Ready to Launch", dur)
                 add_log("Step 19: Auto-upload skipped. You can trigger final_code.py anytime from the dashboard.", "info")
 
+        # STEP 20 - Outlier Detection & Database Update
+        auto_outlier = params.get("auto_outlier", True)
+        if auto_outlier:
+            t0 = time.time()
+            update_step_status(20, "running", "Running Outlier Detection...")
+            with state_lock:
+                pipeline_state["current_step_id"] = 20
+                pipeline_state["current_step_name"] = "Outlier Detection & Update"
+                pipeline_state["progress"] = 99
+
+            outlier_loc = params.get("outlier_location") or location_name
+            if outlier_loc and str(outlier_loc).strip().lower() in ["all", "none", "", "null", "*"]:
+                outlier_loc = None
+            save_outlier_report = params.get("save_outlier_report", False)
+            save_path = None
+            if save_outlier_report:
+                loc_slug = str(outlier_loc).replace(" ", "_") if outlier_loc else "all_locations"
+                save_path = os.path.join(CURR_DIR, f"outliers_{city_name.lower()}_{loc_slug}.xlsx")
+
+            scope_desc = f"location='{outlier_loc}'" if outlier_loc else f"ALL locations in {city_name}"
+            add_log(f"Step 20: 📊 Running Outlier Detection & Update on PostgreSQL for {city_name} ({scope_desc})...", "info")
+
+            try:
+                from outlier_update import main as run_outlier_main
+                run_outlier_main(
+                    city_id=city_id,
+                    location_name=outlier_loc,
+                    db_params=core.DB_PARAMS,
+                    save_merged_path=save_path
+                )
+                dur = f"{time.time() - t0:.2f}s"
+                update_step_status(20, "completed", f"Updated {scope_desc}", dur)
+                add_log(f"Step 20: ✓ Outlier detection & database update finished successfully! ({scope_desc})", "success")
+                if save_path and os.path.exists(save_path):
+                    add_log(f"Step 20: 📄 Detailed outlier report saved to: {save_path}", "success")
+            except Exception as oe:
+                add_log(f"Step 20: ⚠️ Outlier detection warning/error: {oe}", "warning")
+                dur = f"{time.time() - t0:.2f}s"
+                update_step_status(20, "completed", "Finished with warning", dur)
+        else:
+            update_step_status(20, "skipped", "Skipped by configuration", "-")
+            add_log("Step 20: Outlier detection skipped by user option.", "info")
+
         with state_lock:
             pipeline_state["state"] = "completed"
             pipeline_state["progress"] = 100
@@ -1419,6 +1569,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "city_id": cfg.get("city_id"),
                 "drive_url": drive_url,
                 "locations": locations
+            })
+        elif url_path == "/api/outlier/locations":
+            city_param = self.get_query_param("city") or self.get_query_param("city_id") or "9"
+            cfg = get_city_config(city_param) if city_param else {}
+            city_id = int(cfg.get("city_id", 9))
+            city_name = cfg.get("display_name", "Selected City")
+
+            # Collect locations strictly from Google Drive folders (DO NOT query database):
+            final_drive_url = cfg.get("final_drive_url")
+            final_locs = scan_drive_locations(final_drive_url) if final_drive_url else []
+
+            manual_drive_url = cfg.get("manual_correction_drive_url")
+            manual_locs = scan_drive_locations(manual_drive_url) if manual_drive_url else []
+
+            input_drive_url = cfg.get("input_drive_url")
+            input_locs = scan_drive_locations(input_drive_url) if input_drive_url else []
+
+            loc_names = set()
+            for loc in final_locs + manual_locs + input_locs:
+                if loc.get("location"):
+                    l_clean = loc["location"].strip()
+                    if l_clean.lower() not in ["general", "none", "null", "all_locations", "all locations"]:
+                        loc_names.add(l_clean)
+
+            # Also check dedicated location drive configs for this city (e.g. Bandra in Mumbai)
+            for loc_k, loc_v in LOCATION_DRIVE_CONFIG.items():
+                if loc_v.get("city_id") == city_id:
+                    loc_names.add(loc_v.get("display_name", loc_k.title()))
+
+            sorted_locs = sorted(list(loc_names), key=lambda x: x.lower())
+            self.send_json({
+                "city": city_name,
+                "city_id": city_id,
+                "locations": sorted_locs
             })
         elif url_path == "/email_template.html":
             self.serve_file(os.path.join(WEB_DIR, "email_template.html"), "text/html")
@@ -1589,6 +1773,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"status": "resumed", "state": "running"})
             else:
                 self.send_json({"error": "Pipeline is not currently awaiting Parquet confirmation."}, status=400)
+
+        elif self.path == "/api/run-outlier":
+            length = int(self.headers.get("content-length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+
+            if pipeline_state["state"] == "running":
+                self.send_json({"error": "A pipeline run is already in progress."}, status=409)
+                return
+
+            city_id = data.get("city_id") or pipeline_state.get("city_id", 9)
+            location_name = data.get("location_name")
+            save_report = data.get("save_outlier_report", False)
+
+            params = {
+                "mode": "4",
+                "city_id": city_id,
+                "outlier_location": location_name,
+                "save_outlier_report": save_report,
+            }
+            thread = threading.Thread(target=run_pipeline_worker, args=(params,), daemon=True)
+            thread.start()
+            self.send_json({"status": "started", "state": "running"})
 
         elif self.path == "/api/stop":
             with state_lock:
