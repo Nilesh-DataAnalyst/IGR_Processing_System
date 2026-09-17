@@ -1,1 +1,17 @@
+# Environment variables
 .env
+*.env
+
+# Google OAuth Credentials & Tokens (Secret Scanning Protection)
+credentials.json
+token.json
+service_account.json
+**/credentials.json
+**/token.json
+**/service_account.json
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.log

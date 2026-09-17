@@ -1,22 +1,36 @@
-# Maharashtra IGR Processing Pipeline Documentation (`project.py`)
+# IGR & Real Estate Data Processing Pipeline Documentation (`project.py`)
 
 ## 1. Executive Summary & Overview
 
-`project.py` is the central orchestrator and data transformation pipeline for processing Maharashtra Inspector General of Registration (IGR) real estate transaction data. It ingests semi-structured LLM-parsed output files, standardizes project names through machine-learning clustering, normalizes Marathi land/area measurements, reconciles with MahaRERA master records, enriches buyer demographics and geospatial coordinates, and formats the data for PostgreSQL ingestion.
+`project.py` is the central orchestrator and data transformation pipeline for processing Inspector General of Registration (IGR) and international real estate transaction datasets. It ingests semi-structured LLM-parsed output files, standardizes project names through machine-learning clustering, normalizes traditional Marathi land/area measurements (Hectare-Are-Guntha), reconciles records against MahaRERA master datasets, enriches buyer demographics and geospatial coordinates, applies statistical outlier detection, and formats the output for strict PostgreSQL database ingestion.
+
+The system supports domestic Indian markets (e.g., Pune, Mumbai, Thane) as well as international real estate data (Dubai Land Department, Abu Dhabi), and can be operated either through an interactive terminal CLI or a full-featured real-time Web Dashboard (`server.py`).
 
 ---
 
 ## 2. Pipeline Execution Modes
 
-When launching `project.py`, the user selects the **Target City** (e.g., Mumbai, Pune, Thane) and one of three execution modes:
+When launching `project.py` (or through the Web Dashboard), the operator selects the **Target City** and one of four execution modes:
 
 ```
-[1] Run from START (Step 1 to Step 19)
+[1] Run from START (Step 1 to Step 20)
     - Full end-to-end execution starting with raw LLM outputs.
-[2] Run from STEP 7 (Load manually corrected file directly, Steps 7 to 19)
+    - Runs entity clustering, outputs manual review file, resumes upon approval,
+      standardizes schema, converts to Parquet, uploads to DB, and flags outliers.
+
+[2] Run from STEP 7 (Load manually corrected file directly, Steps 7 to 20)
     - Resumes pipeline after human review of project names and areas.
-[3] Run STEP 18 ONLY (Parquet Conversion directly)
-    - Fast-path for converting verified Excel datasets to Parquet and triggering DB upload.
+    - Skips raw ingestion & clustering, directly executing RERA matching, NR indexing,
+      coordinate enrichment, Parquet export, DB upload, and outlier detection.
+
+[3] Run STEP 18 ONLY (Parquet Conversion directly, Steps 18 to 20)
+    - Fast-path for converting verified final Excel/CSV datasets directly to Parquet.
+    - Automatically triggers database upload (Step 19) and outlier classification (Step 20).
+
+[4] Run STEP 20 ONLY (Outlier Detection & Update)
+    - Standalone statistical outlier detection and classification directly on PostgreSQL.
+    - Calculates P1/P99 trimmed medians, updates database flags (is_outlier, outlier_type),
+      and exports multi-sheet audit workbooks without re-running data ingestion.
 ```
 
 ---
@@ -25,28 +39,42 @@ When launching `project.py`, the user selects the **Target City** (e.g., Mumbai,
 
 ```mermaid
 flowchart TD
-    A[Raw LLM Output File\nGoogle Drive: 2. LLM Processed Data] --> B[Step 1-5: Ingestion & Preprocessing\nDictToColumn, Categorisation, Village Mapping]
-    B --> C[Step 6: Clustering & Area Conversion\nTF-IDF N-grams, Marathi Regex, Divisors]
-    C --> D[Generated File: _for_manual.xlsx\nGoogle Drive: 3. Manually Corrected]
-    D --> E[Human Review & Verification]
-    E --> F[Step 7-10: Ingestion of Reviewed File\nSchema Renaming, Property Types, Pincode Enrichment]
-    F --> G[Step 11-13: Master Reconciliation\nMahaRERA Fuzzy Match, NR Indexing, Coordinates]
-    G --> H[Step 15-17: Final Dataset Export\nDB Schema Alignment, Title Case, Excel Export]
-    H --> I[Step 18: Parquet Conversion\nCity-Level Compressed Parquet Dataset]
-    I --> J[Step 19: Database Upload\nTriggering final_code.py for PostgreSQL]
+    subgraph Ingestion & Entity Resolution [Steps 1 - 6]
+        A[Raw LLM Output File\nGoogle Drive: 2. LLM Processed Data] --> B[Steps 1-5: Preprocessing\nDictToColumn, Categorisation, Village Mapping]
+        B --> C[Step 6: Clustering & Area Conversion\nTF-IDF N-grams, Marathi Regex, Divisors]
+        C --> D[Review File: _for_manual.xlsx\nGoogle Drive: 3. Manually Corrected]
+    end
+
+    subgraph Human Review Loop [Step 7]
+        D --> E[Human Verification / Correction]
+        E --> F[Step 7: Ingestion of Reviewed File]
+    end
+
+    subgraph Enrichment & Normalization [Steps 8 - 16]
+        F --> G[Steps 8-10: Schema & Demographics\nColumn Mapping, Property Types, Indian Pincode]
+        G --> H[Steps 11-14: Master Reconciliation\nMahaRERA Fuzzy Match, NR Indexing, Coordinates]
+        H --> I[Steps 15-16: Selective Filtering\nDB Column Sequence, Title Case Normalization]
+    end
+
+    subgraph Export, Upload & Audit [Steps 17 - 20]
+        I --> J[Step 17: Final Excel Export & Checker Email\nSave to Drive + Alert to deeksha@sigmavalue.co.in]
+        J --> K[Step 18: Parquet Conversion\nCompressed City-Level Parquet Dataset]
+        K --> L[Step 19: Database Upload\nTriggering final_code.py for PostgreSQL]
+        L --> M[Step 20: Outlier Detection\nTrimmed Medians, Flagging & Summary Workbooks]
+    end
 ```
 
 ---
 
-## 4. End-to-End Step-by-Step Breakdown
+## 4. End-to-End Step-by-Step Breakdown (Steps 1 to 20)
 
 ### Pre-Step: Target City Selection & Environment Configuration
-- **City Registry (`city_config.py`)**: Interactively selects city (Mumbai [ID: 8], Pune [ID: 9], Thane [ID: 12], etc.).
-- **Dynamic Drive Binding**: Resolves local Google Drive shortcut paths on `G:\.shortcut-targets-by-id` for:
+- **City Registry (`city_config.py`)**: Resolves active city settings (Pune [ID: 9], Mumbai [ID: 8], Thane [ID: 12], Dubai [ID: 15], Abu Dhabi [ID: 1], etc.).
+- **Dynamic Drive Binding**: Resolves local Google Drive desktop shortcut paths on `G:\.shortcut-targets-by-id` for:
   - Input Folder (`2. LLM Processed Data`)
   - Manual Review Folder (`3. Manually Corrected`)
   - Final Output Folder (`4. Final processed file`)
-- **Divisor Loading (`divisor.py`)**: Sets city-specific Saleable-to-Carpet divisors (e.g., Mumbai: `1.45`, Pune: `1.35`).
+- **Divisor Loading (`divisor.py`)**: Sets city-specific Saleable-to-Carpet divisors (e.g., Mumbai: `1.45`, Pune: `1.35`, Dubai: `1.0`).
 
 ---
 
@@ -193,6 +221,7 @@ flowchart TD
   - `project_latitude` & `project_longitude`: Verified project coordinates.
   - `unit_configuration` / `BHK`: 1 BHK, 2 BHK, 3 BHK, etc.
   - `rera_location`: Official registered location.
+- Non-RERA cities safely bypass this step with null placeholders.
 
 ---
 
@@ -204,7 +233,7 @@ Before index assignment, `project.py` executes critical financial and chronologi
 4. **Calculated Rate (`rate`)**:
    $$\text{rate} = \frac{\text{agreement\_price}}{\text{net\_carpet\_area\_sqft}}$$
    Standardized to PostgreSQL schema column `rate`.
-5. **Database Default Assignments**: Populates defaults for `state_name` ("Maharashtra"), `country_name` ("India"), `data_source` ("Igr"), `source_accessibility` ("Easy"), `is_llm_processed` ("Yes"), etc.
+5. **Database Default Assignments**: Populates defaults for `state_name`, `country_name`, `data_source` ("Igr"), `source_accessibility` ("Easy"), `is_llm_processed` ("Yes"), etc.
 
 ---
 
@@ -250,10 +279,14 @@ Before index assignment, `project.py` executes critical financial and chronologi
 
 ---
 
-### Step 17: Final Output Save (Google Drive & Local Backup)
+### Step 17: Final Output Save & Automated Checker Notification
 - **Naming Pattern**: `<Location>_final_processed.xlsx`
 - **Target Folder**: `G:\.shortcut-targets-by-id\<final_drive_id>\4. Final processed file\<Location>\`
 - **Verification**: Allows interactive path confirmation, filename customization, and validates directory write permissions.
+- **Automated Checker Email**:
+  - Spawns background thread via `send_final_checker_email()` in `city_config.py`.
+  - Dispatches an automated HTML report to the quality checker (`deeksha@sigmavalue.co.in`).
+  - Email includes: City, Location, Row Count, Local Output Path, Google Drive Shareable Folder Link, and timestamp.
 
 ---
 
@@ -262,7 +295,7 @@ Before index assignment, `project.py` executes critical financial and chronologi
 - **Purpose**: Generates high-speed columnar Parquet format optimized for bulk database loading and analytics.
 - **Output Target**:
   `G:\.shortcut-targets-by-id\1oGd6xPdp686p0qW-tzZyy5quOpi82hLA\DB1+DB2\converted_feather_parquet\<City>\<City>_db1.parquet`
-- **Type Casting**: Validates and serializes dates, numeric prices, and string identifiers.
+- **Type Casting & Date Normalization**: Converts dates safely to string `YYYY-MM-DD` (handling historical and modern dates without 64-bit nanosecond overflows).
 
 ---
 
@@ -270,42 +303,76 @@ Before index assignment, `project.py` executes critical financial and chronologi
 - **Script**: `E:\Nilesh\Database\DB1_DB2_Uploading_Pipeline\final_code.py`
 - **Mechanism**:
   - Uses `subprocess.run([sys.executable, "final_code.py"])` in the target virtual environment.
-  - Automatically ingests the final Parquet dataset into the PostgreSQL database.
+  - Automatically ingests the final Parquet dataset into the PostgreSQL database (`transactions`, `projects`, `listings`, etc.).
 
 ---
 
-## 5. Post-Pipeline: Outlier Detection & Classification
+### Step 20: Post-Upload Statistical Outlier Detection (`outlier_update.py`)
+- **Modules**: `outlier_update.py` and `incremental_outlier_update.py`
+- **Purpose**: Classifies newly ingested transactions into statistical categories without skewing historical distributions.
+- **Algorithm**:
+  - Trims top 1% and bottom 1% records (P1 / P99) per `(city, location, category, property_type)` slice.
+  - Computes robust baseline medians.
+  - Sets dynamic boundaries:
+    $$\text{lower\_limit} = \frac{\text{median}}{4}, \quad \text{upper\_limit} = \text{median} \times 4$$
+  - Classifies records: `Normal`, `Lower Outlier`, `Upper Outlier`, `Mumbai Low Price Outlier`, `Zero Area/Price`.
+  - Batch updates PostgreSQL columns: `rate`, `is_outlier`, `outlier_type`.
+  - Multi-Sheet Audit Export: Generates structured summary reports under `outlier_summaries/`.
 
-After data ingestion via `final_code.py`, the outlier classification pipeline is executed:
+---
 
-```powershell
-# Command
-python incremental_outlier_update.py --city-id <CITY_ID>
+## 5. Web Dashboard Architecture (`server.py`)
+
+A full-stack, browser-based operations dashboard is provided in `Processing/server.py` and `Processing/web/`:
+
+```
+Processing/web/
+├── index.html       # Single-page operations interface
+├── app.js           # Real-time SSE streaming client & dynamic mode router
+└── style.css        # Premium dark-themed design system
 ```
 
-- **Logic**:
-  - Compares new transactions against historical baseline medians and interquartile ranges (IQR).
-  - Trims top 1% and bottom 1% outliers (P1 / P99).
-  - Computes dynamic limits: $\text{lower\_limit} = \frac{\text{median}}{4}$, $\text{upper\_limit} = \text{median} \times 4$.
-  - Flags records: `Normal`, `Lower Outlier`, `Upper Outlier`, `Mumbai Low Price Outlier`, `Zero Area/Price`.
-  - Updates PostgreSQL columns (`rate`, `is_outlier`, `outlier_type`).
-  - Generates multi-sheet Excel summary report in `outlier_summaries/`.
+### Key Web Features:
+1. **Interactive Multi-City Selector**: Supports Pune, Mumbai, Thane, Dubai, Abu Dhabi, and database cities from `public.dim_city`.
+2. **Dynamic Mode Navigation**:
+   - Mode 1: Start (Auto-expands Google Drive input file picker).
+   - Mode 2: Resume (Auto-scrolls and focuses Step 7 review file card).
+   - Mode 3: Parquet (Focuses Step 18 Parquet conversion card).
+   - Mode 4: Outliers (Scrolls to Outlier Detection controls).
+3. **Live SSE Terminal Stream**: Real-time terminal output streaming with auto-scroll and status indicators.
+4. **Google Drive Directory Picker**: Browses local Google Drive folders dynamically from the UI.
 
 ---
 
-## 6. Summary of Key Files & Dependencies
+## 6. International Data Ingestion (Dubai & Abu Dhabi)
 
-| File | Role |
+The system extends real estate data processing beyond Indian IGR to Middle Eastern markets:
+
+1. **Automated Scraper (`Processing/Dubai_processing/`)**:
+   - `dubai_scraper_all_in_one.py`: Automated Selenium-based scraper for the **Dubai Land Department Open Data Portal**.
+   - Automated reCAPTCHA handling, date range filtering, CSV download, and Google Drive upload.
+2. **Outlier Grouping Logic**:
+   - In `outlier_update.py`, international markets (`dubai`, `abu_dhabi`) have their localities collapsed into `__ALL_LOCATIONS__` to compute unified city-level price distribution metrics.
+3. **Parquet & DB Schema Compatibility**:
+   - Historical date strings (such as Hijri calendar dates) are serialized safely into Parquet strings without truncation.
+
+---
+
+## 7. Master File & Dependency Registry
+
+| File / Script | Core Functionality & Role |
 | :--- | :--- |
-| [project.py](file:///e:/Nilesh/IGR_processing_System/Processing/project.py) | Master CLI pipeline orchestrator. |
-| [server.py](file:///e:/Nilesh/IGR_processing_System/Processing/server.py) | FastAPI Web Server & real-time SSE progress monitor. |
-| [city_config.py](file:///e:/Nilesh/IGR_processing_System/Processing/city_config.py) | Master city registry, Drive IDs, RERA paths, and email templates. |
-| [divisor.py](file:///e:/Nilesh/IGR_processing_System/Processing/divisor.py) | City-specific carpet area conversion divisors. |
-| [DictToColumn.py](file:///e:/Nilesh/IGR_processing_System/Processing/DictToColumn.py) | JSON/dict string flattener. |
-| [transaction_categorizer.py](file:///e:/Nilesh/IGR_processing_System/Processing/transaction_categorizer.py) | Transaction classifier (Sale / Lease / Other). |
-| [project_name_Std_and_area_conversion.py](file:///e:/Nilesh/IGR_processing_System/Processing/project_name_Std_and_area_conversion.py) | Machine-learning clustering, Marathi area conversion, review workbook generator. |
-| [rera_matching.py](file:///e:/Nilesh/IGR_processing_System/Processing/rera_matching.py) | MahaRERA master dataset matching engine. |
-| [postal_pincode.csv](file:///e:/Nilesh/IGR_processing_System/Processing/postal_pincode.csv) | Master Indian postal directory for buyer enrichment. |
-| [db_columns.py](file:///e:/Nilesh/IGR_processing_System/Processing/db_columns.py) | Canonical PostgreSQL schema column sequence (`DB_SEQUENCE`). |
-| [parquet_conersion.py](file:///e:/Nilesh/IGR_processing_System/Processing/parquet_conersion.py) | Excel-to-Parquet conversion utility. |
-| [incremental_outlier_update.py](file:///e:/Nilesh/IGR_processing_System/Processing/incremental_outlier_update.py) | Statistical outlier classification and Excel summary generator. |
+| [project.py](file:///e:/Nilesh/IGR_processing_System/Processing/project.py) | Master CLI pipeline orchestrator coordinating Steps 1 through 20. |
+| [server.py](file:///e:/Nilesh/IGR_processing_System/Processing/server.py) | FastAPI Web server providing real-time SSE progress streaming and web dashboard. |
+| [web/](file:///e:/Nilesh/IGR_processing_System/Processing/web) | Web Dashboard frontend (`index.html`, `app.js`, `style.css`). |
+| [city_config.py](file:///e:/Nilesh/IGR_processing_System/Processing/city_config.py) | Central configuration for city IDs, Google Drive IDs, RERA paths, and automated email dispatches. |
+| [divisor.py](file:///e:/Nilesh/IGR_processing_System/Processing/divisor.py) | Defines city-specific carpet area divisors (Mumbai: 1.45, Pune: 1.35, Dubai: 1.0). |
+| [DictToColumn.py](file:///e:/Nilesh/IGR_processing_System/Processing/DictToColumn.py) | Extracts stringified JSON dictionaries into structured tabular columns. |
+| [transaction_categorizer.py](file:///e:/Nilesh/IGR_processing_System/Processing/transaction_categorizer.py) | Rule-based transaction categorizer (Sale, Lease/Mortgage, Other). |
+| [project_name_Std_and_area_conversion.py](file:///e:/Nilesh/IGR_processing_System/Processing/project_name_Std_and_area_conversion.py) | TF-IDF n-gram clustering, Marathi area converter, unit/floor parser, and review workbook exporter. |
+| [rera_matching.py](file:///e:/Nilesh/IGR_processing_System/Processing/rera_matching.py) | MahaRERA fuzzy matching engine for project name and coordinate enrichment. |
+| [postal_pincode.csv](file:///e:/Nilesh/IGR_processing_System/Processing/postal_pincode.csv) | Master Indian postal PIN code database for buyer locality and district mapping. |
+| [db_columns.py](file:///e:/Nilesh/IGR_processing_System/Processing/db_columns.py) | Canonical PostgreSQL column sequence definition (`DB_SEQUENCE`). |
+| [parquet_conersion.py](file:///e:/Nilesh/IGR_processing_System/Processing/parquet_conersion.py) | High-performance Excel/CSV-to-Parquet conversion utility with type validation. |
+| [outlier_update.py](file:///e:/Nilesh/IGR_processing_System/Processing/outlier_update.py) | Incremental statistical outlier detection, IQR calculations, and database updater. |
+| [Dubai_processing/](file:///e:/Nilesh/IGR_processing_System/Processing/Dubai_processing) | Automated scraper and Google Drive uploader for Dubai Land Department real estate data. |
