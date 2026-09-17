@@ -85,9 +85,27 @@ for _city, _cfg in CITY_CONFIG.items():
     _cfg["final_drive_id"] = extract_folder_id(_cfg.get("final_drive_url"))
 
 
+DIM_CITY_CONFIG = {
+    1: {"city_id": 1, "key": "abu_dhabi", "display_name": "Abu_Dhabi", "saleable_to_carpet_divisor": 1.0, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    2: {"city_id": 2, "key": "ahmedabad", "display_name": "Ahmedabad", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    3: {"city_id": 3, "key": "banglore", "display_name": "Banglore", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    5: {"city_id": 5, "key": "ghaziabad", "display_name": "Ghaziabad", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    6: {"city_id": 6, "key": "hyderabad", "display_name": "Hyderabad", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    7: {"city_id": 7, "key": "medchal_malkajgiri", "display_name": "Medchal_Malkajgiri", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    8: {"city_id": 8, "key": "mumbai", "display_name": "Mumbai", "saleable_to_carpet_divisor": 1.45, "input_drive_url": CITY_CONFIG["mumbai"]["input_drive_url"], "manual_correction_drive_url": CITY_CONFIG["mumbai"]["manual_correction_drive_url"], "final_drive_url": CITY_CONFIG["mumbai"]["final_drive_url"]},
+    9: {"city_id": 9, "key": "pune", "display_name": "Pune", "saleable_to_carpet_divisor": 1.35, "input_drive_url": CITY_CONFIG["pune"]["input_drive_url"], "manual_correction_drive_url": CITY_CONFIG["pune"]["manual_correction_drive_url"], "final_drive_url": CITY_CONFIG["pune"]["final_drive_url"]},
+    10: {"city_id": 10, "key": "rangareddy", "display_name": "Rangareddy", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    11: {"city_id": 11, "key": "sangareddy", "display_name": "Sangareddy", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    12: {"city_id": 12, "key": "thane", "display_name": "Thane", "saleable_to_carpet_divisor": 1.40, "input_drive_url": CITY_CONFIG["thane"]["input_drive_url"], "manual_correction_drive_url": CITY_CONFIG["thane"]["manual_correction_drive_url"], "final_drive_url": CITY_CONFIG["thane"]["final_drive_url"]},
+    13: {"city_id": 13, "key": "yadadri_bhuvanagiri", "display_name": "Yadadri_Bhuvanagiri", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    15: {"city_id": 15, "key": "dubai", "display_name": "Dubai", "saleable_to_carpet_divisor": 1.0, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+}
+
+
 def get_city_config(city_identifier: str | int = "pune") -> dict:
     """
     Returns the configuration dictionary for a given city name, city ID, or alias.
+    Matches against CITY_CONFIG and all database cities in DIM_CITY_CONFIG.
     Defaults to Pune if not found.
     """
     if city_identifier is None:
@@ -108,10 +126,28 @@ def get_city_config(city_identifier: str | int = "pune") -> dict:
     if cid_str in CITY_CONFIG:
         return CITY_CONFIG[cid_str]
 
-    # Match by city_id (e.g. 9, 8, 12)
+    # Match by integer city_id (e.g. 15 for Dubai, 1 for Abu Dhabi, 9 for Pune)
+    try:
+        cid_int = int(cid_str)
+        if cid_int in DIM_CITY_CONFIG:
+            dcfg = dict(DIM_CITY_CONFIG[cid_int])
+            if dcfg["key"] in CITY_CONFIG:
+                return CITY_CONFIG[dcfg["key"]]
+            return dcfg
+    except (ValueError, TypeError):
+        pass
+
+    # Match by city_id string in CITY_CONFIG (e.g. 9, 8, 12)
     for cfg in CITY_CONFIG.values():
         if str(cfg.get("city_id")) == cid_str:
             return cfg
+
+    # Match by name / key in DIM_CITY_CONFIG
+    for dcfg in DIM_CITY_CONFIG.values():
+        if dcfg["key"] == cid_str or dcfg["display_name"].lower() == cid_str:
+            if dcfg["key"] in CITY_CONFIG:
+                return CITY_CONFIG[dcfg["key"]]
+            return dict(dcfg)
 
     # Partial / alias match
     for key, cfg in CITY_CONFIG.items():
@@ -261,5 +297,145 @@ def render_correction_email_html(
     for key, val in replacements.items():
         html_output = html_output.replace(key, str(val))
     return html_output
+
+
+def send_final_checker_email(
+    file_path: str,
+    city_name: str,
+    location_name: str = None,
+    row_count: int = None,
+    drive_url: str = None,
+    checker_email: str = "deeksha@sigmavalue.co.in",
+    cc_emails: list = None,
+) -> dict:
+    """
+    Sends the final processed file to the checker person (deeksha@sigmavalue.co.in)
+    via Gmail SMTP with the Excel file attached (if <= 24.5MB) and Google Drive link.
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+
+    sender_email = "nilesh@sigmavalue.co.in"
+    sender_password = "nvlf igcl tyxm nnwo"
+    smtp_server = "smtp.gmail.com"
+    smtp_port = 587
+
+    recipient = checker_email.strip() if checker_email else "deeksha@sigmavalue.co.in"
+    if cc_emails is None:
+        cc_emails = ["nilesh@sigmavalue.co.in"]
+    clean_cc = [c.strip() for c in cc_emails if c and c.strip()]
+    all_recipients = list(dict.fromkeys([recipient] + clean_cc))
+
+    file_name = os.path.basename(file_path) if file_path else "final_processed.xlsx"
+    loc_display = location_name if location_name else "All Locations"
+    city_display = str(city_name or "Target City").title()
+    rows_display = f"{row_count:,}" if isinstance(row_count, int) else (str(row_count) if row_count else "N/A")
+    drive_link_display = drive_url or "Google Drive folder link"
+
+    subject = f"[Final Processed File - Ready for Verification] {city_display} - {loc_display} ({file_name})"
+
+    # Check file size for attachment
+    is_attached = False
+    file_exists = file_path and os.path.isfile(file_path)
+    file_size_mb = (os.path.getsize(file_path) / (1024 * 1024)) if file_exists else 0
+
+    delivery_note_plain = (
+        "Please find the final processed Excel file attached to this email."
+        if (file_exists and file_size_mb <= 24.5)
+        else "Please access the file directly from Google Drive using the link above (file exceeds email attachment limit)."
+    )
+    delivery_note_html = (
+        "📎 <strong>Please find the final processed Excel file attached to this email.</strong>"
+        if (file_exists and file_size_mb <= 24.5)
+        else "🌐 <strong>Please access the file directly from Google Drive using the link above (file exceeds email attachment limit).</strong>"
+    )
+
+    plain_body = f"""Hello Deeksha,
+
+The final processed dataset for {city_display} (Location: {loc_display}) has been successfully generated and is ready for your checking and verification.
+
+Summary:
+- City: {city_display}
+- Location: {loc_display}
+- File Name: {file_name}
+- Total Records: {rows_display} rows
+- Google Drive Link: {drive_link_display}
+- File Path: {file_path}
+
+{delivery_note_plain}
+
+Best regards,
+Nilesh K.
+"""
+
+    html_body = f"""<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1f2937; margin: 0; padding: 16px; background-color: #f9fafb;">
+  <div style="max-width: 680px; margin: 0 auto; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+    <p style="margin-top: 0; font-size: 15px;">Hello <strong>Deeksha</strong>,</p>
+    <p style="font-size: 15px;">The final processed dataset for <strong>{city_display}</strong> (Location: <strong>{loc_display}</strong>) has been successfully generated and is ready for your checking and verification.</p>
+
+    <div style="background-color: #f0fdf4; border-left: 4px solid #10b981; padding: 14px 18px; margin: 16px 0; border-radius: 4px; font-size: 13.5px;">
+      <p style="margin: 4px 0;"><strong>🏙️ City:</strong> {city_display}</p>
+      <p style="margin: 4px 0;"><strong>📍 Location:</strong> {loc_display}</p>
+      <p style="margin: 4px 0;"><strong>📄 File Name:</strong> <code>{file_name}</code></p>
+      <p style="margin: 4px 0;"><strong>📊 Total Records:</strong> <strong>{rows_display} rows</strong></p>
+      <p style="margin: 4px 0;"><strong>🌐 Google Drive Folder:</strong> <a href="{drive_link_display}" target="_blank" style="color: #2563eb; text-decoration: underline; word-break: break-all;">{drive_link_display}</a></p>
+      <p style="margin: 4px 0; color: #4b5563;"><strong>📂 Saved Path:</strong> <code style="background: #e5e7eb; padding: 2px 4px; border-radius: 3px; font-size: 12.5px;">{file_path}</code></p>
+    </div>
+
+    <p style="font-size: 14px; color: #374151; margin: 14px 0;">{delivery_note_html}</p>
+
+    <div style="margin-top: 18px; padding-top: 14px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 12.5px;">
+      <p style="margin: 0;">This dataset has passed all standard pipeline transformations (Project Name Resolution, Transaction Categorisation, Area Standardization, RERA Grand Matching, Coordinates Lookup, and DB Columns Filtering).</p>
+    </div>
+
+    <p style="margin-top: 20px;">Best regards,<br><strong>Nilesh K.</strong></p>
+  </div>
+</body>
+</html>
+"""
+
+    msg = MIMEMultipart("mixed")
+    msg["From"] = f"Nilesh <{sender_email}>"
+    msg["To"] = recipient
+    if clean_cc:
+        msg["Cc"] = ", ".join(clean_cc)
+    msg["Subject"] = subject
+
+    body_part = MIMEMultipart("alternative")
+    body_part.attach(MIMEText(plain_body, "plain", "utf-8"))
+    body_part.attach(MIMEText(html_body, "html", "utf-8"))
+    msg.attach(body_part)
+
+    if file_exists and file_size_mb <= 24.5:
+        try:
+            with open(file_path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f'attachment; filename="{file_name}"')
+            msg.attach(part)
+            is_attached = True
+        except Exception:
+            is_attached = False
+
+    server = smtplib.SMTP(smtp_server, smtp_port, timeout=120)
+    server.ehlo()
+    server.starttls()
+    server.ehlo()
+    server.login(sender_email, sender_password)
+    server.sendmail(sender_email, all_recipients, msg.as_string())
+    server.quit()
+
+    return {
+        "status": "sent",
+        "recipient": recipient,
+        "cc": clean_cc,
+        "attached": is_attached,
+    }
 
 

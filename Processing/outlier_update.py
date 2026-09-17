@@ -22,14 +22,9 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 
-# Database connection parameters (matching DB_PARAMS in project.py)
-DB_PARAMS = {
-    "host": "localhost",
-    "port": "5432",
-    "database": "test",
-    "user": "postgres",
-    "password": "nilesh",
-}
+# Database connection parameters (from project.py)
+
+from project import DB_PARAMS
 
 # City configurations (from city_config.py)
 try:

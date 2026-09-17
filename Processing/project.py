@@ -29,7 +29,14 @@ RESET = "\033[0m"
 # ============================================================
 
 from divisor import SALEABLE_TO_CARPET_DIVISOR_BY_CITY
-from city_config import CITY_CONFIG, get_city_config, extract_folder_id, get_manual_correction_drive_url, render_correction_email_html
+from city_config import (
+    CITY_CONFIG,
+    get_city_config,
+    extract_folder_id,
+    get_manual_correction_drive_url,
+    render_correction_email_html,
+    send_final_checker_email,
+)
 
 BUILDUP_TO_CARPET_DIVISOR = 1.2
 
@@ -1685,6 +1692,33 @@ if pipeline_mode in ["1", "2"]:
                 #         print(f"{BLUE}ℹ (Local backup skipped: {backup_err}){RESET}")
 
             print(f"\n{GREEN}{BOLD}🎉 Pipeline Execution Completed Successfully!{RESET}")
+
+            # Automatically share final processed file with checker (Deeksha) in background
+            import threading
+            print(f"\n{CYAN}📧 [Auto-Share] Sending final processed file to checker (deeksha@sigmavalue.co.in) in background...{RESET}")
+
+            def _send_checker_bg(fpath, cname, lname, rcount, durl):
+                try:
+                    res = send_final_checker_email(
+                        file_path=fpath,
+                        city_name=cname,
+                        location_name=lname,
+                        row_count=rcount,
+                        drive_url=durl,
+                        checker_email="deeksha@sigmavalue.co.in",
+                    )
+                    att_note = " (with Excel attached)" if res.get("attached") else " (with Google Drive link)"
+                    print(f"\n{GREEN}✓ [Auto-Share] Email successfully sent to checker deeksha@sigmavalue.co.in{att_note}!{RESET}\n")
+                except Exception as mail_err:
+                    print(f"\n{YELLOW}⚠️ [Auto-Share] Note: Unable to email checker ({mail_err}){RESET}\n")
+
+            drive_share_url = DEFAULT_DRIVE_FOLDER_URL
+            threading.Thread(
+                target=_send_checker_bg,
+                args=(output_path, target_city_name, location_name, len(df), drive_share_url),
+                daemon=False,
+            ).start()
+
             break
         except PermissionError:
             print(

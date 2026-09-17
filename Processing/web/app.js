@@ -112,7 +112,7 @@ const PIPELINE_STEPS = [
   {
     id: 14,
     name: "Project Coordinates (Google Places API)",
-    desc: "Enriches project coordinates via Google Places API (Temporarily commented out in main.py).",
+    desc: "Enriches project coordinates via Google Places API.",
     status: "pending",
     detail: "Waiting...",
     duration: "-"
@@ -602,9 +602,9 @@ function attachEventListeners() {
 
   // Resume pipeline at Step 7
   btnResume.addEventListener("click", async () => {
-    const manualPath = resumeFilePath.value.trim();
+    const manualPath = (resumeFilePath ? resumeFilePath.value.trim() : "") || (manualFilePath ? manualFilePath.value.trim() : "");
     if (!manualPath) {
-      alert("Please enter the path to the manual corrected file.");
+      alert("Please enter or select the path to the manual corrected file.");
       return;
     }
     btnResume.disabled = true;
@@ -615,7 +615,7 @@ function attachEventListeners() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           manual_file: manualPath,
-          location_name: appState.selectedLocation || (pauseLocationSelect?.selectedOptions[0]?.dataset.location) || null,
+          location_name: appState.selectedLocation || (pauseLocationSelect?.selectedOptions[0]?.dataset.location) || (driveManualLocationSelect?.selectedOptions[0]?.dataset.location) || null,
           output_path: outputPath.value.trim(),
           city_id: parseInt(cityIdInput.value, 10) || 9,
           include_geocoding: document.getElementById("include-geocoding") ? document.getElementById("include-geocoding").checked : false,
@@ -648,7 +648,19 @@ function attachEventListeners() {
   // Parquet Verification Buttons (Step 17 pause card)
   if (btnConfirmParquet) {
     btnConfirmParquet.addEventListener("click", async () => {
-      const confirmedPath = parquetConfirmFilePath ? parquetConfirmFilePath.value.trim() : "";
+      const confirmedPath = (parquetConfirmFilePath ? parquetConfirmFilePath.value.trim() : "") || (finalFilePath ? finalFilePath.value.trim() : "");
+
+      // If user selected Mode 3 directly and pipeline is not currently running, launch Mode 3 via startPipeline
+      if (appState.mode === "3" && !appState.isRunning) {
+        if (!confirmedPath) {
+          alert("Please select or enter the final processed file (.xlsx) for Parquet conversion.");
+          return;
+        }
+        if (finalFilePath) finalFilePath.value = confirmedPath;
+        startPipeline();
+        return;
+      }
+
       btnConfirmParquet.disabled = true;
       btnConfirmParquet.innerHTML = '<span class="btn-icon">⏳</span> Converting...';
       try {
@@ -710,6 +722,41 @@ function attachEventListeners() {
     btnRefreshParquetLocs.addEventListener("click", () => {
       loadFinalDriveLocations();
       logToConsole("[Step 18] Refreshed final location folders from Google Drive.", "info");
+    });
+  }
+
+  // Sync Mode 2 manual file inputs between top form & Step 7 card
+  if (resumeFilePath && manualFilePath) {
+    resumeFilePath.addEventListener("input", () => {
+      manualFilePath.value = resumeFilePath.value;
+    });
+    manualFilePath.addEventListener("input", () => {
+      resumeFilePath.value = manualFilePath.value;
+    });
+  }
+  if (pauseLocationSelect) {
+    pauseLocationSelect.addEventListener("change", (e) => {
+      if (manualFilePath) manualFilePath.value = e.target.value;
+    });
+  }
+  if (driveManualLocationSelect) {
+    driveManualLocationSelect.addEventListener("change", (e) => {
+      if (resumeFilePath) resumeFilePath.value = e.target.value;
+    });
+  }
+
+  // Sync Mode 3 final file inputs between top form & Step 18 card
+  if (parquetConfirmFilePath && finalFilePath) {
+    parquetConfirmFilePath.addEventListener("input", () => {
+      finalFilePath.value = parquetConfirmFilePath.value;
+    });
+    finalFilePath.addEventListener("input", () => {
+      parquetConfirmFilePath.value = finalFilePath.value;
+    });
+  }
+  if (driveFinalLocationSelect) {
+    driveFinalLocationSelect.addEventListener("change", (e) => {
+      if (parquetConfirmFilePath) parquetConfirmFilePath.value = e.target.value;
     });
   }
 
@@ -797,15 +844,24 @@ function attachEventListeners() {
 
 function setMode(mode) {
   appState.mode = mode;
+  const currentCityId = cityIdInput ? cityIdInput.value : "9";
+
   if (mode === "1") {
     mode1Label.classList.add("active");
     mode2Label.classList.remove("active");
     if (mode3Label) mode3Label.classList.remove("active");
     if (mode4Label) mode4Label.classList.remove("active");
+
     inputFileGroup.classList.remove("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
     if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
+
+    if (!appState.isRunning) {
+      if (pauseCard) pauseCard.classList.add("hidden");
+      if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
+    }
+
     inputFilePath.required = true;
     manualFilePath.required = false;
     if (finalFilePath) finalFilePath.required = false;
@@ -816,15 +872,43 @@ function setMode(mode) {
       updateStepUI(i, "pending", "Waiting...", "-");
     }
     logToConsole("[Mode] Selected Mode 1: Run from START (Step 1 to Step 20)");
+
+    // Smooth redirect/scroll to Mode 1 Input section
+    setTimeout(() => {
+      inputFileGroup.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (inputFilePath) inputFilePath.focus();
+    }, 120);
+
   } else if (mode === "2") {
     mode2Label.classList.add("active");
     mode1Label.classList.remove("active");
     if (mode3Label) mode3Label.classList.remove("active");
     if (mode4Label) mode4Label.classList.remove("active");
+
     inputFileGroup.classList.add("hidden");
     manualFileGroup.classList.remove("hidden");
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
     if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
+
+    if (!appState.isRunning) {
+      if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
+    }
+
+    // Reveal and prepare the Step 7 Resume Card (Image 2)
+    if (pauseCard) {
+      pauseCard.classList.remove("hidden");
+      const pBadge = document.getElementById("pause-card-badge");
+      if (pBadge) pBadge.textContent = "⚡ Mode 2: Resume Pipeline from Step 7";
+      const pTitle = document.getElementById("pause-card-title");
+      if (pTitle) pTitle.textContent = "Manual Verification & Resume (Steps 7 → 20)";
+      const pSaveStatus = document.getElementById("pause-save-status");
+      if (pSaveStatus && (!appState.isRunning || !appState.v1_saved_at)) pSaveStatus.style.display = "none";
+      const pInstructions = document.getElementById("pause-card-instructions");
+      if (pInstructions) {
+        pInstructions.textContent = "Pick or enter a manual corrected file from Google Drive (3. Manually Corrected) below, then click Resume to continue pipeline execution from Step 7 to 20.";
+      }
+    }
+
     inputFilePath.required = false;
     manualFilePath.required = true;
     if (finalFilePath) finalFilePath.required = false;
@@ -838,15 +922,47 @@ function setMode(mode) {
       updateStepUI(i, "pending", "Waiting...", "-");
     }
     logToConsole("[Mode] Selected Mode 2: Resume from Step 7 (Steps 7 to 20)");
+
+    loadManualDriveLocations(currentCityId);
+
+    // Smooth redirect/scroll right down to the Step 7 Resume Card
+    setTimeout(() => {
+      if (pauseCard) {
+        pauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (resumeFilePath) resumeFilePath.focus();
+      } else {
+        manualFileGroup.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 120);
+
   } else if (mode === "3") {
     if (mode3Label) mode3Label.classList.add("active");
     mode1Label.classList.remove("active");
     mode2Label.classList.remove("active");
     if (mode4Label) mode4Label.classList.remove("active");
+
     inputFileGroup.classList.add("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.remove("hidden");
     if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
+
+    if (!appState.isRunning) {
+      if (pauseCard) pauseCard.classList.add("hidden");
+    }
+
+    // Reveal Parquet Card (parquetPauseCard)
+    if (parquetPauseCard) {
+      parquetPauseCard.classList.remove("hidden");
+      const pqBadge = document.getElementById("parquet-card-badge");
+      if (pqBadge) pqBadge.textContent = "⚡ Mode 3: Direct Parquet Conversion (Step 18 → 20)";
+      const pqTitle = document.getElementById("parquet-card-title");
+      if (pqTitle) pqTitle.textContent = "Select Final Processed File for Parquet Conversion";
+      const pqInstructions = document.getElementById("parquet-card-instructions");
+      if (pqInstructions) {
+        pqInstructions.textContent = "Pick or enter a final processed file from Google Drive (4. Final processed file) below, then click 'Yes, Convert to Parquet' to proceed directly to Step 18.";
+      }
+    }
+
     inputFilePath.required = false;
     manualFilePath.required = false;
     if (finalFilePath) finalFilePath.required = true;
@@ -860,15 +976,35 @@ function setMode(mode) {
     updateStepUI(19, "pending", "Waiting...", "-");
     updateStepUI(20, "pending", "Waiting...", "-");
     logToConsole("[Mode] Selected Mode 3: Parquet Conversion Directly (Step 18 → 20)");
+
+    loadFinalDriveLocations(currentCityId);
+
+    // Smooth redirect/scroll right to the Parquet Card
+    setTimeout(() => {
+      if (parquetPauseCard) {
+        parquetPauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (parquetConfirmFilePath) parquetConfirmFilePath.focus();
+      } else if (finalFileGroup) {
+        finalFileGroup.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 120);
+
   } else if (mode === "4") {
     if (mode4Label) mode4Label.classList.add("active");
     mode1Label.classList.remove("active");
     mode2Label.classList.remove("active");
     if (mode3Label) mode3Label.classList.remove("active");
+
     inputFileGroup.classList.add("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
     if (mode4LocationContainer) mode4LocationContainer.classList.remove("hidden");
+
+    if (!appState.isRunning) {
+      if (pauseCard) pauseCard.classList.add("hidden");
+      if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
+    }
+
     inputFilePath.required = false;
     manualFilePath.required = false;
     if (finalFilePath) finalFilePath.required = false;
@@ -879,8 +1015,15 @@ function setMode(mode) {
       updateStepUI(i, "skipped", "Skipped in Mode 4", "-");
     }
     updateStepUI(20, "pending", "Ready for Outlier Detection...", "-");
-    loadOutlierLocations(cityIdInput ? cityIdInput.value : "9");
+    loadOutlierLocations(currentCityId);
     logToConsole("[Mode] Selected Mode 4: Outlier Detection & Database Update (Step 20 Only)");
+
+    // Smooth redirect/scroll right to Outlier section
+    setTimeout(() => {
+      if (mode4LocationContainer) {
+        mode4LocationContainer.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 120);
   }
 }
 
@@ -905,11 +1048,12 @@ async function startPipeline() {
     effectiveOutlierLoc = isAll ? null : ((mode4LocationInput ? mode4LocationInput.value.trim() : "") || (outlierLocationSelect ? outlierLocationSelect.value.trim() : ""));
   }
 
+  const isMode4 = appState.mode === "4";
   const payload = {
     mode: appState.mode,
-    input_file: inputFilePath.value.trim(),
-    manual_file: manualFilePath.value.trim(),
-    location_name: appState.selectedLocation || (driveInputLocationSelect?.selectedOptions[0]?.dataset.location) || null,
+    input_file: isMode4 ? "" : inputFilePath.value.trim(),
+    manual_file: isMode4 ? "" : manualFilePath.value.trim(),
+    location_name: isMode4 ? effectiveOutlierLoc : (appState.selectedLocation || (driveInputLocationSelect?.selectedOptions[0]?.dataset.location) || null),
     outlier_location: effectiveOutlierLoc,
     city_id: parseInt(cityIdInput.value, 10) || 9,
     output_path: appState.mode === "3" ? ((finalFilePath ? finalFilePath.value.trim() : "") || targetOutput) : targetOutput,
@@ -1012,7 +1156,7 @@ function applyStatusUpdate(status) {
     stepsStatusSummary.textContent = `${completedCount} / ${status.steps.length} Completed`;
   }
 
-  // Handle Step 7 Pause State
+  // Handle Step 7 Pause State (or active Mode 2 when idle)
   if (status.state === "awaiting_manual_file") {
     const isFirstTimePaused = pauseCard.classList.contains("hidden");
     pauseCard.classList.remove("hidden");
@@ -1026,6 +1170,13 @@ function applyStatusUpdate(status) {
     if (pauseSaveTime) {
       pauseSaveTime.textContent = status.v1_saved_at || "Just now";
     }
+    const pSaveStatus = document.getElementById("pause-save-status");
+    if (pSaveStatus) pSaveStatus.style.display = "inline-flex";
+    const pBadge = document.getElementById("pause-card-badge");
+    if (pBadge) pBadge.textContent = "⏸️ Step 6 Complete — Paused at Step 7";
+    const pTitle = document.getElementById("pause-card-title");
+    if (pTitle) pTitle.textContent = "Manual Verification Required";
+
     if (status.location_name) {
       appState.selectedLocation = status.location_name;
     }
@@ -1041,11 +1192,13 @@ function applyStatusUpdate(status) {
       pauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
       logToConsole(`\n⏸️ [Action Required] Step 6 Complete! File saved to Google Drive at ${status.v1_saved_at || "just now"}. Please review/correct project names in Google Drive or select file below.`, "warning");
     }
+  } else if (appState.mode === "2" && !appState.isRunning) {
+    if (pauseCard) pauseCard.classList.remove("hidden");
   } else {
-    pauseCard.classList.add("hidden");
+    if (pauseCard) pauseCard.classList.add("hidden");
   }
 
-  // Handle Step 19 Parquet Confirmation Pause State
+  // Handle Step 18 Parquet Confirmation Pause State (or active Mode 3 when idle)
   if (status.state === "awaiting_parquet_confirmation") {
     if (parquetPauseCard) {
       const isFirstTimePaused = parquetPauseCard.classList.contains("hidden");
@@ -1056,6 +1209,11 @@ function applyStatusUpdate(status) {
           parquetConfirmFilePath.value = status.output_file;
         }
       }
+      const pBadge = document.getElementById("parquet-card-badge");
+      if (pBadge) pBadge.textContent = "⏸️ Step 17 Complete — Parquet Conversion Review";
+      const pTitle = document.getElementById("parquet-card-title");
+      if (pTitle) pTitle.textContent = "Is the Final Processed File Correct?";
+
       const verifyDriveLink = document.getElementById("parquet-verify-drive-link");
       if (verifyDriveLink) {
         const finalUrl = status.final_drive_url || (status.city_id == 8 ? "https://drive.google.com/drive/folders/1Fxf1yTUo4FZWRHjm_XrpA7jq93kG7diO?usp=drive_link" : (status.city_id == 9 ? "https://drive.google.com/drive/folders/1l-HFh36Yk8pSs-NmoSK60if6cP2cjztM" : null));
@@ -1069,6 +1227,8 @@ function applyStatusUpdate(status) {
         parquetPauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }
+  } else if (appState.mode === "3" && !appState.isRunning) {
+    if (parquetPauseCard) parquetPauseCard.classList.remove("hidden");
   } else {
     if (parquetPauseCard) {
       parquetPauseCard.classList.add("hidden");

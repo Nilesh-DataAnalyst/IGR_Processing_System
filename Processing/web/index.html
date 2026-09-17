@@ -336,22 +336,22 @@
         </form>
       </section>
 
-      <!-- STEP 7 PAUSE CARD (Appears when Step 6 finishes in Mode 1) -->
+      <!-- STEP 7 PAUSE CARD (Appears when Step 6 finishes in Mode 1, or when Mode 2 is selected) -->
       <section class="card pause-card hidden" id="pause-card">
         <div class="pause-content">
-          <div class="pause-badge">⏸️ Step 6 Complete — Paused at Step 7</div>
+          <div class="pause-badge" id="pause-card-badge">⏸️ Step 6 Complete — Paused at Step 7</div>
           <div class="save-confirmation-pill" id="pause-save-status"
             style="display: inline-flex; align-items: center; gap: 8px; background: rgba(34, 197, 94, 0.15); border: 1px solid rgba(34, 197, 94, 0.4); color: #4ade80; padding: 6px 14px; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; margin-bottom: 10px;">
             <span>💾 File saved to Google Drive at <strong id="pause-save-time">--:--</strong></span>
           </div>
-          <h3 class="pause-title">Manual Verification Required</h3>
-          <p class="pause-desc">
+          <h3 class="pause-title" id="pause-card-title">Manual Verification Required</h3>
+          <p class="pause-desc" id="pause-card-desc">
             Step 6 saved to Google Drive: <code id="pause-v1-path">_for_manual.xlsx</code>
             <a href="https://drive.google.com/drive/folders/1oQ3JQ_v9shWZQlW4JYDpLPXKFOEdAqRW?usp=drive_link"
               target="_blank" class="drive-external-link" id="pause-drive-link" title="Open Google Drive Folder">🌐 Open
               Drive Folder ↗</a>
           </p>
-          <p class="pause-instructions">
+          <p class="pause-instructions" id="pause-card-instructions">
             Review/correct project names in the file above. You can optionally share this file with team members, or
             pick another location file from Google Drive below before resuming:
           </p>
@@ -469,22 +469,22 @@
         </div>
       </section>
 
-      <!-- STEP 18 PARQUET VERIFICATION PAUSE CARD (Appears before Step 18) -->
+      <!-- STEP 18 PARQUET VERIFICATION PAUSE CARD (Appears before Step 18, or when Mode 3 is selected) -->
       <section class="card pause-card parquet-pause-card hidden" id="parquet-pause-card">
         <div class="pause-content">
-          <div class="pause-badge"
+          <div class="pause-badge" id="parquet-card-badge"
             style="background: rgba(16, 185, 129, 0.2); color: #34d399; border-color: rgba(16, 185, 129, 0.45);">
             ⏸️ Step 17 Complete — Parquet Conversion Review
           </div>
-          <h3 class="pause-title" style="color: #ecfdf5;">Is the Final Processed File Correct?</h3>
-          <p class="pause-desc">
+          <h3 class="pause-title" id="parquet-card-title" style="color: #ecfdf5;">Is the Final Processed File Correct?</h3>
+          <p class="pause-desc" id="parquet-card-desc">
             Final processed dataset saved to Google Drive:
             <code id="parquet-verify-path">..._final_processed.xlsx</code>
             <a href="https://drive.google.com/drive/folders/1Fxf1yTUo4FZWRHjm_XrpA7jq93kG7diO?usp=drive_link"
               target="_blank" class="drive-external-link" id="parquet-verify-drive-link"
               title="Open Google Drive Folder">🌐 Open 4. Final processed file ↗</a>
           </p>
-          <p class="pause-instructions">
+          <p class="pause-instructions" id="parquet-card-instructions">
             Please verify if the final processed file is correct before proceeding to Parquet conversion. If correct,
             click <strong>Yes, Convert to Parquet</strong>. You can also pick an alternate file from Google Drive below
             or skip conversion.
