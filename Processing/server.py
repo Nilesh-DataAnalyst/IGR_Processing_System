@@ -735,6 +735,14 @@ def run_pipeline_worker(params):
     output_path = params.get("output_path")
     include_geocoding = params.get("include_geocoding", False)
 
+    # Initialize variables used across steps and modes to prevent UnboundLocalError
+    final_drive_url = city_cfg.get("final_drive_url")
+    drive_out = None
+    local_out = None
+    drive_saved = False
+    target_out = None
+    parquet_target = None
+
     if not location_name:
         location_name = "Bandra" if "bandra" in path_lower else ("Borivali" if "borivali" in path_lower else ("Mohmadwadi" if city_id == 9 else "General"))
 
@@ -1325,7 +1333,7 @@ def run_pipeline_worker(params):
         # ============================================================
         # STEP 18 VERIFICATION: PAUSE AND WAIT FOR USER CONFIRMATION
         # ============================================================
-        candidate_parquet_file = (drive_out if (locals().get("drive_saved") and locals().get("drive_out") and os.path.exists(drive_out)) else target_out)
+        candidate_parquet_file = (drive_out if (drive_saved and drive_out and os.path.exists(drive_out)) else target_out)
         resume_step18_event.clear()
         with state_lock:
             pipeline_state["state"] = "awaiting_parquet_confirmation"
@@ -1365,8 +1373,7 @@ def run_pipeline_worker(params):
 
             from parquet_conersion import convert_csv_to_parquet
 
-            # Resolve city name dynamically from city_id or dataframe
-            city_name = "Pune"
+            # Resolve city name dynamically from city_id or dataframe, preserving existing city_name fallback
             try:
                 conn = psycopg2.connect(**core.DB_PARAMS)
                 cur = conn.cursor()

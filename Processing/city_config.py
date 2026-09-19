@@ -19,6 +19,42 @@ def extract_folder_id(url_or_id: str) -> str:
     return match.group(1) if match else str(url_or_id).strip()
 
 
+def resolve_drive_directory(drive_target: str = None) -> str | None:
+    """
+    Resolves a Google Drive folder URL, folder ID, or local Drive path to a writable local directory on G: (Google Drive Desktop).
+    Used across Pune, Mumbai, Thane, and Dubai for direct desktop sync without requiring API tokens.
+    """
+    if not drive_target or not str(drive_target).strip():
+        return None
+
+    clean_target = str(drive_target).strip()
+    if os.path.isdir(clean_target):
+        return clean_target
+
+    folder_id = extract_folder_id(clean_target)
+    if not folder_id:
+        return None
+
+    base_shortcut_path = os.path.join(r"G:\.shortcut-targets-by-id", folder_id)
+    if os.path.exists(base_shortcut_path):
+        try:
+            sub_items = [
+                os.path.join(base_shortcut_path, d)
+                for d in os.listdir(base_shortcut_path)
+                if os.path.isdir(os.path.join(base_shortcut_path, d))
+            ]
+            for sub in sub_items:
+                sub_name = os.path.basename(sub).lower()
+                if any(term in sub_name for term in ["download", "raw", "row", "llm processed", "input", "final processed", "manually corrected"]):
+                    return sub
+            if sub_items:
+                return sub_items[0]
+        except Exception:
+            pass
+        return base_shortcut_path
+    return None
+
+
 CITY_CONFIG = {
     "pune": {
         "city_id": 9,
@@ -62,6 +98,19 @@ CITY_CONFIG = {
         "rera_grand_file": None,
         "saleable_to_carpet_divisor": SALEABLE_TO_CARPET_DIVISOR_BY_CITY.get("thane", 1.4),
     },
+    "dubai": {
+        "city_id": 15,
+        "display_name": "Dubai",
+        # Main Parent Dubai Folder
+        "parent_drive_url": "https://drive.google.com/drive/folders/1q-rgFMUS5gyZq9ngoIozgzDwb-cSguim?usp=drive_link",
+        # 2. LLM Processed Data (Raw Input)
+        "input_drive_url": "https://drive.google.com/drive/folders/1CyL3ecimjHLcpUv2AfP8d6fJXNbOcVVE?usp=drive_link",
+        # 3. Final Processed File
+        "final_drive_url": "https://drive.google.com/drive/folders/1TvDEGGW5dahnxRO4JfxJ8TUinK3DKXO8?usp=drive_link",
+        "manual_correction_drive_url": None,
+        "rera_grand_file": None,
+        "saleable_to_carpet_divisor": SALEABLE_TO_CARPET_DIVISOR_BY_CITY.get("dubai", 1.0),
+    },
 }
 
 # Specific location Google Drive configurations (e.g. Bandra in Mumbai)
@@ -98,7 +147,7 @@ DIM_CITY_CONFIG = {
     11: {"city_id": 11, "key": "sangareddy", "display_name": "Sangareddy", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
     12: {"city_id": 12, "key": "thane", "display_name": "Thane", "saleable_to_carpet_divisor": 1.40, "input_drive_url": CITY_CONFIG["thane"]["input_drive_url"], "manual_correction_drive_url": CITY_CONFIG["thane"]["manual_correction_drive_url"], "final_drive_url": CITY_CONFIG["thane"]["final_drive_url"]},
     13: {"city_id": 13, "key": "yadadri_bhuvanagiri", "display_name": "Yadadri_Bhuvanagiri", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
-    15: {"city_id": 15, "key": "dubai", "display_name": "Dubai", "saleable_to_carpet_divisor": 1.0, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    15: {"city_id": 15, "key": "dubai", "display_name": "Dubai", "saleable_to_carpet_divisor": 1.0, "input_drive_url": CITY_CONFIG["dubai"]["input_drive_url"], "manual_correction_drive_url": CITY_CONFIG["dubai"]["manual_correction_drive_url"], "final_drive_url": CITY_CONFIG["dubai"]["final_drive_url"]},
 }
 
 

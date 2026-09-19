@@ -8,6 +8,12 @@ Description:
     open data from the Dubai Land Department portal and automatically uploads the resulting
     CSV datasets to Google Drive (via OAuth or Service Account).
 
+Features & Optimizations:
+    - Smart reCAPTCHA resolution with automatic bypass detection and manual Image Challenge handling loop.
+    - Glowing visual element and button highlighting so the user can easily monitor automation actions.
+    - High-speed dynamic WebDriverWait synchronization eliminating unnecessary multi-second delays.
+    - Direct Google Drive Cloud upload and local sync directory support.
+
 Quick Install Dependencies:
     pip install selenium webdriver-manager google-api-python-client google-auth-oauthlib google-auth-httplib2
 
@@ -16,17 +22,18 @@ How to Run:
        python dubai_scraper_all_in_one.py
 
     2. Automated / Background Mode (using predefined config or CLI arguments):
-       python dubai_scraper_all_in_one.py --from-date 01/01/2025 --to-date 15/09/2026 --headless
+       python dubai_scraper_all_in_one.py --from-date 01/01/2025 --to-date 15/09/2026
 
 ========================================================================================
 TABLE OF CONTENTS / SEARCH INDEX (Use Ctrl+F to find sections):
     [SECTION 1] - IMPORTS & SYSTEM CONFIGURATION
     [SECTION 2] - USER CONFIGURATION & SETTINGS
     [SECTION 3] - GOOGLE DRIVE UPLOAD & AUTHENTICATION ENGINE
-    [SECTION 4] - BROWSER & SELENIUM DRIVER SETUP
-    [SECTION 5] - TERMINAL USER INTERFACE & INPUT VALIDATION
-    [SECTION 6] - CORE SCRAPER AUTOMATION WORKFLOW
-    [SECTION 7] - CLI ARGUMENT PARSING & SCRIPT ENTRYPOINT
+    [SECTION 4] - VISUAL HIGHLIGHTING & AUTOMATION UTILITIES
+    [SECTION 5] - BROWSER & SELENIUM DRIVER SETUP
+    [SECTION 6] - TERMINAL USER INTERFACE & INPUT VALIDATION
+    [SECTION 7] - CORE SCRAPER AUTOMATION WORKFLOW
+    [SECTION 8] - CLI ARGUMENT PARSING & SCRIPT ENTRYPOINT
 ========================================================================================
 """
 
@@ -66,6 +73,14 @@ if sys.platform.startswith('win'):
     except Exception:
         pass
 
+# Ensure Processing directory is on sys.path to access city_config
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROCESSING_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+if PROCESSING_DIR not in sys.path:
+    sys.path.insert(0, PROCESSING_DIR)
+
+from city_config import CITY_CONFIG, get_city_config, resolve_drive_directory, extract_folder_id
+
 
 # ==============================================================================
 # [SECTION 2] - USER CONFIGURATION & SETTINGS
@@ -88,31 +103,41 @@ TARGET_TAB = "Transactions"
 # Run browser in headless mode (False = visible Chrome window, True = background)
 HEADLESS = False
 
-# ------------------------------------------------------------------------------
-# 2.3 Google Drive Cloud Storage Settings
-# ------------------------------------------------------------------------------
-# Paste your Shared Google Drive Folder ID or full URL here:
-# Example: "https://drive.google.com/drive/folders/15p5cTByYqE-9i74seXQGXXhYRnmlc1Zc?usp=drive_link"
-GOOGLE_DRIVE_FOLDER_ID = "https://drive.google.com/drive/folders/15p5cTByYqE-9i74seXQGXXhYRnmlc1Zc?usp=drive_link"
+# Maximum time (in seconds) to wait for user to solve image CAPTCHA challenge if presented
+CAPTCHA_TIMEOUT = 120
 
-# Authentication Method: "oauth" or "service_account"
+# ------------------------------------------------------------------------------
+# 2.3 Google Drive Cloud Storage Settings (Loaded dynamically from CITY_CONFIG)
+# ------------------------------------------------------------------------------
+DUBAI_CITY_CONFIG = get_city_config("dubai")
+
+# Retrieve Drive paths from CITY_CONFIG
+# Scraped raw data will be uploaded to Dubai's input_drive_url (raw input folder)
+GOOGLE_DRIVE_FOLDER_ID = DUBAI_CITY_CONFIG.get("input_drive_url") or DUBAI_CITY_CONFIG.get("parent_drive_url") or ""
+GOOGLE_DRIVE_PARENT_FOLDER_ID = DUBAI_CITY_CONFIG.get("parent_drive_url") or ""
+GOOGLE_DRIVE_FINAL_FOLDER_ID = DUBAI_CITY_CONFIG.get("final_drive_url") or ""
+
+# Local Google Drive Desktop sync path on G: (Standard used for Pune and Mumbai)
+LOCAL_GDRIVE_PATH = resolve_drive_directory(GOOGLE_DRIVE_FOLDER_ID) or ""
+
+# Authentication Method: "oauth" or "service_account" (used only as fallback if G: desktop sync is unavailable)
 # - "oauth": Uses credentials.json and prompts browser login on first run (saves token.json)
 # - "service_account": Uses service_account.json downloaded from Google Cloud Console
 AUTH_TYPE = "oauth"
 
-# Credential file paths
-SERVICE_ACCOUNT_FILE = "service_account.json"
-OAUTH_CREDENTIALS_FILE = "credentials.json"
-OAUTH_TOKEN_FILE = "token.json"
+# Credential file paths (auto-resolves in script directory or working directory)
+def _resolve_cred(name: str) -> str:
+    p = os.path.join(SCRIPT_DIR, name)
+    return p if os.path.exists(p) else name
 
-# (Optional) Local Google Drive sync path (if you use Google Drive Desktop App)
-# Example: r"G:\Shared drives\MyTeamFolder" or r"C:\Users\Username\Google Drive\MyFolder"
-LOCAL_GDRIVE_PATH = ""
+SERVICE_ACCOUNT_FILE = _resolve_cred("service_account.json")
+OAUTH_CREDENTIALS_FILE = _resolve_cred("credentials.json")
+OAUTH_TOKEN_FILE = _resolve_cred("token.json")
 
 # ------------------------------------------------------------------------------
 # 2.4 Local Download Directory
 # ------------------------------------------------------------------------------
-DOWNLOAD_DIR_NAME = "downloads"
+DOWNLOAD_DIR_NAME = os.path.join(SCRIPT_DIR, "downloads")
 
 
 # ==============================================================================
@@ -191,13 +216,44 @@ def get_drive_service(auth_type: str = AUTH_TYPE,
     return service
 
 
+def format_range_filename(from_date: str, to_date: str, original_filename: str = "") -> str:
+    """
+    Generates a filename based on the scraping date range with 2-digit year (e.g. '13aug26_14sept26.csv').
+    """
+    ext = os.path.splitext(original_filename)[1] if original_filename else ".csv"
+    if not ext:
+        ext = ".csv"
+
+    MONTH_MAP = {
+        1: "jan", 2: "feb", 3: "mar", 4: "apr", 5: "may", 6: "jun",
+        7: "jul", 8: "aug", 9: "sept", 10: "oct", 11: "nov", 12: "dec"
+    }
+
+    try:
+        dt_from = datetime.strptime(str(from_date).strip(), "%d/%m/%Y")
+        dt_to = datetime.strptime(str(to_date).strip(), "%d/%m/%Y")
+
+        m_from = MONTH_MAP.get(dt_from.month, dt_from.strftime("%b").lower())
+        m_to = MONTH_MAP.get(dt_to.month, dt_to.strftime("%b").lower())
+
+        y_from = dt_from.strftime("%y")
+        y_to = dt_to.strftime("%y")
+
+        return f"{dt_from.day}{m_from}{y_from}_{dt_to.day}{m_to}{y_to}{ext}"
+    except Exception:
+        clean_from = re.sub(r'[/\\:\s]+', '_', str(from_date).strip())
+        clean_to = re.sub(r'[/\\:\s]+', '_', str(to_date).strip())
+        return f"{clean_from}_{clean_to}{ext}"
+
+
 def upload_file_to_gdrive(local_file_path: str,
                           folder_id: str = GOOGLE_DRIVE_FOLDER_ID,
                           auth_type: str = AUTH_TYPE,
                           service_account_file: str = SERVICE_ACCOUNT_FILE,
                           oauth_credentials_file: str = OAUTH_CREDENTIALS_FILE,
                           oauth_token_file: str = OAUTH_TOKEN_FILE,
-                          local_gdrive_path: str = LOCAL_GDRIVE_PATH) -> bool:
+                          local_gdrive_path: str = LOCAL_GDRIVE_PATH,
+                          target_filename: str = None) -> bool:
     """
     Uploads a downloaded file to Google Drive.
     Supports Google Drive API direct cloud upload to folder_id and/or copying to local Google Drive desktop sync path.
@@ -206,19 +262,21 @@ def upload_file_to_gdrive(local_file_path: str,
         print(f"[!] Error: File '{local_file_path}' does not exist.")
         return False
 
-    filename = os.path.basename(local_file_path)
-    clean_folder_id = extract_folder_id(folder_id)
-
-    # 1. Check if user configured local Google Drive desktop sync folder
-    if local_gdrive_path and os.path.exists(local_gdrive_path):
-        target_dest = os.path.join(local_gdrive_path, filename)
+    filename = target_filename or os.path.basename(local_file_path)
+    # 1. Primary: Check Google Drive Desktop Sync (G:\) - Same as Pune and Mumbai
+    desktop_sync_dir = local_gdrive_path or resolve_drive_directory(folder_id or GOOGLE_DRIVE_FOLDER_ID) or LOCAL_GDRIVE_PATH
+    if desktop_sync_dir and os.path.exists(desktop_sync_dir):
+        target_dest = os.path.join(desktop_sync_dir, filename)
         shutil.copy2(local_file_path, target_dest)
-        print(f"[+] Successfully copied '{filename}' to local Google Drive sync folder: {target_dest}")
+        print(f"[✔] Successfully saved '{filename}' to Google Drive Desktop folder (G:):")
+        print(f"    Path    : {target_dest}")
+        print(f"    Status  : Synchronized with Google Drive Desktop (same standard as Pune/Mumbai).")
+        return True
 
-    # 2. Upload via Google Drive API
+    # 2. Secondary: Upload via Google Drive API (Fallback if G: is not mounted)
+    clean_folder_id = extract_folder_id(folder_id or GOOGLE_DRIVE_FOLDER_ID)
     if not clean_folder_id:
         print("\n[i] Note: GOOGLE_DRIVE_FOLDER_ID is not configured.")
-        print("    If you want automatic cloud upload, set GOOGLE_DRIVE_FOLDER_ID in [SECTION 2].")
         print(f"    Downloaded file is safely preserved locally at: {os.path.abspath(local_file_path)}")
         return True
 
@@ -269,7 +327,205 @@ def upload_file_to_gdrive(local_file_path: str,
 
 
 # ==============================================================================
-# [SECTION 4] - BROWSER & SELENIUM DRIVER SETUP
+# [SECTION 4] - VISUAL HIGHLIGHTING & AUTOMATION UTILITIES
+# ==============================================================================
+def highlight_and_scroll(driver, element, color="#FF5722", border="3px solid #FF5722", bg_color="rgba(255, 87, 34, 0.15)", duration=0.3):
+    """
+    Smoothly scrolls element into center of the viewport and applies a glowing visual
+    highlight so the user can easily see what the script is interacting with.
+    """
+    try:
+        driver.execute_script("""
+            var el = arguments[0];
+            el.scrollIntoView({behavior: 'smooth', block: 'center'});
+            var origBorder = el.style.border;
+            var origBoxShadow = el.style.boxShadow;
+            var origBg = el.style.backgroundColor;
+            var origTransition = el.style.transition;
+            
+            el.style.transition = 'all 0.25s ease-in-out';
+            el.style.border = arguments[1];
+            el.style.boxShadow = '0 0 16px ' + arguments[2];
+            el.style.backgroundColor = arguments[3];
+            
+            el._origStyles = {border: origBorder, boxShadow: origBoxShadow, bg: origBg, transition: origTransition};
+        """, element, border, color, bg_color)
+        
+        if duration > 0:
+            time.sleep(duration)
+    except Exception:
+        pass
+
+
+def unhighlight(driver, element):
+    """Restores the element's original visual styling after interaction."""
+    try:
+        driver.execute_script("""
+            var el = arguments[0];
+            if (el._origStyles) {
+                el.style.border = el._origStyles.border || '';
+                el.style.boxShadow = el._origStyles.boxShadow || '';
+                el.style.backgroundColor = el._origStyles.bg || '';
+                el.style.transition = el._origStyles.transition || '';
+            } else {
+                el.style.boxShadow = '';
+                el.style.border = '';
+            }
+        """, element)
+    except Exception:
+        pass
+
+
+def click_visible(driver, element, name="Button", highlight_color="#28a745", duration=0.3):
+    """
+    Smoothly scrolls to element, applies glowing visual feedback, clicks it, and restores styling.
+    """
+    highlight_and_scroll(
+        driver, 
+        element, 
+        color=highlight_color, 
+        border=f"3px solid {highlight_color}", 
+        bg_color="rgba(40, 167, 69, 0.18)", 
+        duration=duration
+    )
+    try:
+        element.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", element)
+    time.sleep(0.15)
+    unhighlight(driver, element)
+
+
+def is_recaptcha_solved(driver) -> bool:
+    """
+    Checks if Google reCAPTCHA has been successfully solved:
+    1. Evaluates grecaptcha.getResponse() and g-recaptcha-response textarea tokens in DOM.
+    2. Checks aria-checked attribute on the reCAPTCHA checkbox inside iframe.
+    """
+    try:
+        token = driver.execute_script("""
+            try {
+                if (typeof grecaptcha !== 'undefined' && typeof grecaptcha.getResponse === 'function') {
+                    var resp = grecaptcha.getResponse();
+                    if (resp && resp.length > 0) return resp;
+                }
+                var textareas = document.querySelectorAll('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
+                for (var i = 0; i < textareas.length; i++) {
+                    if (textareas[i].value && textareas[i].value.trim().length > 0) {
+                        return textareas[i].value.trim();
+                    }
+                }
+            } catch(e) {}
+            return '';
+        """)
+        if token and len(token) > 0:
+            return True
+    except Exception:
+        pass
+
+    try:
+        iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[title='reCAPTCHA'], iframe[src*='recaptcha/api2/anchor']")
+        for frame in iframes:
+            try:
+                driver.switch_to.frame(frame)
+                checkbox = driver.find_elements(By.CSS_SELECTOR, "#recaptcha-anchor, .recaptcha-checkbox")
+                if checkbox:
+                    aria_checked = checkbox[0].get_attribute("aria-checked")
+                    if aria_checked == "true":
+                        driver.switch_to.default_content()
+                        return True
+            except Exception:
+                pass
+            finally:
+                driver.switch_to.default_content()
+    except Exception:
+        pass
+
+    return False
+
+
+def handle_recaptcha(driver, wait, timeout=120):
+    """
+    Locates and clicks the reCAPTCHA checkbox, then checks if it auto-resolves or requires
+    manual image challenge resolution. If an Image Challenge appears, actively monitors and
+    gives the user sufficient time to solve it in the browser window before proceeding.
+    """
+    print("\n[Step 4/6] 🤖 Locating and verifying reCAPTCHA...")
+    iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[title='reCAPTCHA'], iframe[src*='recaptcha']")
+    recaptcha_frame = None
+    for frame in iframes:
+        if frame.is_displayed():
+            recaptcha_frame = frame
+            break
+
+    if not recaptcha_frame:
+        print("   ℹ️ No visible reCAPTCHA iframe detected, continuing...")
+        return True
+
+    # Visually highlight reCAPTCHA iframe
+    highlight_and_scroll(
+        driver, 
+        recaptcha_frame, 
+        color="#007bff", 
+        border="3px solid #007bff", 
+        bg_color="rgba(0, 123, 255, 0.12)", 
+        duration=0.3
+    )
+
+    # Switch inside iframe and click checkbox
+    driver.switch_to.frame(recaptcha_frame)
+    try:
+        checkbox = wait.until(EC.presence_of_element_located((
+            By.CSS_SELECTOR, ".recaptcha-checkbox-border, #recaptcha-anchor, .recaptcha-checkbox"
+        )))
+        try:
+            checkbox.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", checkbox)
+        print("   ✔ Clicked reCAPTCHA checkbox!")
+    except Exception as e:
+        print(f"   ⚠️ Could not click checkbox directly: {e}")
+    finally:
+        driver.switch_to.default_content()
+        unhighlight(driver, recaptcha_frame)
+
+    # Wait briefly for Google response
+    time.sleep(1.5)
+    if is_recaptcha_solved(driver):
+        print("   ✔ [AUTO-VERIFIED] CAPTCHA passed automatically (Green checkmark)!")
+        return True
+
+    # Image puzzle challenge detected -> Prompt user and poll dynamically
+    print("\n" + "=" * 75)
+    print(" 🧩 [MANUAL CAPTCHA ACTION REQUIRED]")
+    print(" 👉 An Image Selection CAPTCHA challenge appeared in the Chrome browser!")
+    print(" 👉 Please solve the image puzzle directly in your open Chrome window.")
+    print(f" ⏳ Script is actively waiting for resolution (Timeout: {timeout}s)...")
+    print("=" * 75)
+
+    start_wait = time.time()
+    last_print_time = 0
+    while time.time() - start_wait < timeout:
+        if is_recaptcha_solved(driver):
+            elapsed = time.time() - start_wait
+            print(f"\n   ✔ [CAPTCHA SOLVED] Successfully verified (took {elapsed:.1f}s)! Resuming...")
+            time.sleep(0.4)
+            return True
+        
+        current_time = time.time()
+        if current_time - last_print_time >= 2:
+            time_left = int(timeout - (current_time - start_wait))
+            print(f"\r   ⏳ Waiting for user to solve CAPTCHA puzzle... ({time_left}s remaining)", end="", flush=True)
+            last_print_time = current_time
+
+        time.sleep(0.8)
+
+    print(f"\n   ⚠️ CAPTCHA wait timeout ({timeout}s) reached. Continuing with search...")
+    return False
+
+
+# ==============================================================================
+# [SECTION 5] - BROWSER & SELENIUM DRIVER SETUP
 # ==============================================================================
 def get_driver(download_dir: str, headless: bool = False):
     """
@@ -282,8 +538,12 @@ def get_driver(download_dir: str, headless: bool = False):
     if headless:
         chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--start-maximized")
+    chrome_options.add_argument("--window-size=1440,900")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--log-level=3")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     chrome_options.add_experimental_option("useAutomationExtension", False)
 
     prefs = {
@@ -300,7 +560,7 @@ def get_driver(download_dir: str, headless: bool = False):
 
 def wait_for_new_download(download_dir: str, existing_files: set, timeout: int = 60) -> str:
     """
-    Monitors the download folder and waits until a new file finishes downloading.
+    Monitors the download folder with high-frequency polling and waits until a new file finishes downloading.
     Ignores temporary/partial download extensions (.crdownload, .tmp).
     """
     start_time = time.time()
@@ -315,18 +575,18 @@ def wait_for_new_download(download_dir: str, existing_files: set, timeout: int =
         if valid_files:
             downloaded_file = valid_files[0]
             file_path = os.path.join(download_dir, downloaded_file)
-            time.sleep(1)
+            time.sleep(0.4)
             if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                 print(" Done!")
                 return file_path
         print(".", end="", flush=True)
-        time.sleep(1)
+        time.sleep(0.4)
     print(" Timed out.")
     return ""
 
 
 # ==============================================================================
-# [SECTION 5] - TERMINAL USER INTERFACE & INPUT VALIDATION
+# [SECTION 6] - TERMINAL USER INTERFACE & INPUT VALIDATION
 # ==============================================================================
 def print_banner():
     """Prints a styled CLI banner for the scraper."""
@@ -395,26 +655,30 @@ def get_terminal_inputs():
     print(f"   • To Date    : {to_date}")
     print(f"   • Headless   : {is_headless}")
     print(f"   • GDrive URL : {GOOGLE_DRIVE_FOLDER_ID or 'Not configured'}")
+    if LOCAL_GDRIVE_PATH and os.path.exists(LOCAL_GDRIVE_PATH):
+        print(f"   • Desktop G: : {LOCAL_GDRIVE_PATH}")
     print("-" * 75)
     input("⚡ Press [ENTER] to start scraping...")
     return from_date, to_date, selected_tab, is_headless
 
 
 # ==============================================================================
-# [SECTION 6] - CORE SCRAPER AUTOMATION WORKFLOW
+# [SECTION 7] - CORE SCRAPER AUTOMATION WORKFLOW
 # ==============================================================================
 def run_scraper(from_date: str = FROM_DATE,
                 to_date: str = TO_DATE,
                 tab_name: str = TARGET_TAB,
-                headless: bool = HEADLESS):
+                headless: bool = HEADLESS,
+                captcha_timeout: int = CAPTCHA_TIMEOUT,
+                drive_folder_id: str = None):
     """
     Main automation engine for Dubai Land Department Open Data portal:
     1. Launches Chrome with custom download settings
-    2. Switches to requested data tab (Transactions, Rents, etc.)
-    3. Injects date ranges with DOM dispatch events
-    4. Automatically clicks Google reCAPTCHA checkbox inside iframe
-    5. Submits search query
-    6. Downloads exported CSV file and uploads directly to Google Drive
+    2. Switches to requested data tab (Transactions, Rents, etc.) with visual feedback
+    3. Injects date ranges with DOM dispatch events and visible highlights
+    4. Automatically clicks Google reCAPTCHA checkbox & handles manual image challenges
+    5. Submits search query and dynamically waits for data table rendering
+    6. Downloads exported CSV file with visual highlight and uploads directly to Google Drive
     """
     start_time = time.time()
     download_dir = os.path.abspath(DOWNLOAD_DIR_NAME)
@@ -433,8 +697,12 @@ def run_scraper(from_date: str = FROM_DATE,
 
     try:
         driver.get(WEBSITE_URL)
-        time.sleep(5)
-        print("   ✔ Webpage loaded successfully.")
+        
+        # Dynamic explicit wait for initial page elements to load
+        wait.until(EC.presence_of_element_located((
+            By.CSS_SELECTOR, "input[placeholder*='Date'], input[id*='pFromDate'], .nav-tabs, form"
+        )))
+        print("   ✔ Webpage loaded and form controls ready.")
 
         # Step 2: Tab Switching
         tab_prefix_map = {
@@ -452,9 +720,11 @@ def run_scraper(from_date: str = FROM_DATE,
             tab_element = wait.until(EC.element_to_be_clickable((
                 By.XPATH, f"//a[contains(text(),'{tab_name}') or contains(@aria-controls,'{tab_name.lower()}')]"
             )))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tab_element)
-            driver.execute_script("arguments[0].click();", tab_element)
-            time.sleep(2)
+            click_visible(driver, tab_element, name=f"Tab '{tab_name}'", highlight_color="#007bff", duration=0.3)
+            # Wait for tab's input to become ready
+            wait.until(EC.presence_of_element_located((
+                By.CSS_SELECTOR, f"#{prefix}_pFromDate, input[placeholder*='From Date']"
+            )))
             print(f"   ✔ Switched to '{tab_name}' tab.")
         else:
             print(f"   ✔ Default tab '{tab_name}' active.")
@@ -471,54 +741,30 @@ def run_scraper(from_date: str = FROM_DATE,
             from_date_input = driver.find_element(By.CSS_SELECTOR, "input[placeholder*='From Date']")
             to_date_input = driver.find_element(By.CSS_SELECTOR, "input[placeholder*='To Date']")
 
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", from_date_input)
+        # Highlight & set From Date
+        highlight_and_scroll(driver, from_date_input, color="#fd7e14", border="3px solid #fd7e14", bg_color="rgba(253, 126, 20, 0.15)", duration=0.2)
         driver.execute_script("""
             arguments[0].value = arguments[1];
             arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
             arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
         """, from_date_input, from_date)
+        unhighlight(driver, from_date_input)
 
+        # Highlight & set To Date
+        highlight_and_scroll(driver, to_date_input, color="#fd7e14", border="3px solid #fd7e14", bg_color="rgba(253, 126, 20, 0.15)", duration=0.2)
         driver.execute_script("""
             arguments[0].value = arguments[1];
             arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
             arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
         """, to_date_input, to_date)
+        unhighlight(driver, to_date_input)
+
         print(f"   ✔ Dates populated: From '{from_date}' | To '{to_date}'")
-        time.sleep(1)
 
-        # Step 4: Locate and Click Google reCAPTCHA Checkbox
-        print("\n[Step 4/6] 🤖 Locating and clicking reCAPTCHA checkbox...")
-        iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[title='reCAPTCHA'], iframe[src*='recaptcha']")
-        recaptcha_frame = None
-        for frame in iframes:
-            if frame.is_displayed():
-                recaptcha_frame = frame
-                break
+        # Step 4: Locate and Verify Google reCAPTCHA
+        handle_recaptcha(driver, wait, timeout=captcha_timeout)
 
-        if recaptcha_frame:
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", recaptcha_frame)
-            time.sleep(1)
-            driver.switch_to.frame(recaptcha_frame)
-
-            try:
-                checkbox = wait.until(EC.presence_of_element_located((
-                    By.CSS_SELECTOR, ".recaptcha-checkbox-border, #recaptcha-anchor"
-                )))
-                try:
-                    checkbox.click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", checkbox)
-                print("   ✔ Successfully clicked <div class='recaptcha-checkbox-border'>!")
-            except Exception as e:
-                print(f"   ⚠️ Warning clicking reCAPTCHA checkbox: {e}")
-
-            driver.switch_to.default_content()
-        else:
-            print("   ⚠️ No visible reCAPTCHA iframe detected, continuing...")
-
-        time.sleep(3)
-
-        # Step 5: Submit Search
+        # Step 5: Submit Search Request
         print("\n[Step 5/6] 🔍 Submitting Search Request...")
         search_buttons = driver.find_elements(
             By.XPATH, "//button[contains(text(),'Search') and not(contains(@class,'mobile'))]"
@@ -532,38 +778,39 @@ def run_scraper(from_date: str = FROM_DATE,
         if not visible_search_btn:
             visible_search_btn = driver.find_element(By.CSS_SELECTOR, "button.btn.btn_1")
 
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", visible_search_btn)
-        time.sleep(1)
-        try:
-            visible_search_btn.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", visible_search_btn)
+        # Visually highlight and click Search button
+        click_visible(driver, visible_search_btn, name="Search Button", highlight_color="#28a745", duration=0.35)
         print("   ✔ Search button clicked! Waiting for database response...")
 
-        # Allow time for data table to render
-        time.sleep(8)
+        # Dynamic wait for Download CSV button / data table to become ready (avoids rigid sleep)
+        print("   ⏳ Dynamically awaiting search results & export button...")
+        try:
+            visible_csv_btn = WebDriverWait(driver, 40).until(
+                EC.element_to_be_clickable((
+                    By.XPATH, "//button[contains(text(),'Download as CSV') or contains(@class,'js-ExportCsv')]"
+                ))
+            )
+            print("   ✔ Data loaded and 'Download as CSV' button is ready!")
+        except Exception:
+            # Fallback search if already rendered
+            csv_buttons = driver.find_elements(
+                By.XPATH, "//button[contains(text(),'Download as CSV') or contains(@class,'js-ExportCsv')]"
+            )
+            visible_csv_btn = csv_buttons[0] if csv_buttons else None
 
         # Step 6: Locate & Trigger CSV Download
         print("\n[Step 6/6] 📥 Triggering CSV Download...")
-        csv_buttons = driver.find_elements(
-            By.XPATH, "//button[contains(text(),'Download as CSV') or contains(@class,'js-ExportCsv')]"
-        )
-        visible_csv_btn = None
-        for btn in csv_buttons:
-            if btn.is_displayed():
-                visible_csv_btn = btn
-                break
-
-        if not visible_csv_btn and csv_buttons:
-            visible_csv_btn = csv_buttons[0]
+        if not visible_csv_btn:
+            csv_buttons = driver.find_elements(
+                By.XPATH, "//button[contains(text(),'Download as CSV') or contains(@class,'js-ExportCsv')]"
+            )
+            for btn in csv_buttons:
+                if btn.is_displayed():
+                    visible_csv_btn = btn
+                    break
 
         if visible_csv_btn:
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", visible_csv_btn)
-            time.sleep(1)
-            try:
-                visible_csv_btn.click()
-            except Exception:
-                driver.execute_script("arguments[0].click();", visible_csv_btn)
+            click_visible(driver, visible_csv_btn, name="Download as CSV", highlight_color="#17a2b8", duration=0.35)
             print("   ✔ 'Download as CSV' button clicked!")
         else:
             raise RuntimeError("Could not locate 'Download as CSV' button on webpage.")
@@ -581,7 +828,22 @@ def run_scraper(from_date: str = FROM_DATE,
 
         if downloaded_file_path and os.path.exists(downloaded_file_path):
             file_size_kb = os.path.getsize(downloaded_file_path) / 1024
-            filename = os.path.basename(downloaded_file_path)
+            orig_filename = os.path.basename(downloaded_file_path)
+
+            # Generate filename based on scraping date range (e.g. 15aug_to_15sept.csv)
+            target_filename = format_range_filename(from_date, to_date, orig_filename)
+
+            # Rename local downloaded file
+            renamed_local_path = os.path.join(os.path.dirname(downloaded_file_path), target_filename)
+            try:
+                if os.path.exists(renamed_local_path) and os.path.abspath(renamed_local_path) != os.path.abspath(downloaded_file_path):
+                    os.remove(renamed_local_path)
+                os.rename(downloaded_file_path, renamed_local_path)
+                downloaded_file_path = renamed_local_path
+                filename = target_filename
+            except Exception:
+                filename = target_filename
+
             print(f"\n   🎉 File Downloaded: {filename} ({file_size_kb:.2f} KB)")
             print(f"   📁 Local Path     : {downloaded_file_path}")
 
@@ -589,14 +851,16 @@ def run_scraper(from_date: str = FROM_DATE,
             print("\n" + "=" * 75)
             print(" ☁️   GOOGLE DRIVE UPLOADER")
             print("=" * 75)
+            upload_target_folder = drive_folder_id or GOOGLE_DRIVE_FOLDER_ID
             upload_success = upload_file_to_gdrive(
                 local_file_path=downloaded_file_path,
-                folder_id=GOOGLE_DRIVE_FOLDER_ID,
+                folder_id=upload_target_folder,
                 auth_type=AUTH_TYPE,
                 service_account_file=SERVICE_ACCOUNT_FILE,
                 oauth_credentials_file=OAUTH_CREDENTIALS_FILE,
                 oauth_token_file=OAUTH_TOKEN_FILE,
-                local_gdrive_path=LOCAL_GDRIVE_PATH
+                local_gdrive_path=LOCAL_GDRIVE_PATH,
+                target_filename=target_filename
             )
 
             elapsed = time.time() - start_time
@@ -610,11 +874,14 @@ def run_scraper(from_date: str = FROM_DATE,
 
     finally:
         print("\n🔒 Closing browser session.")
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 
 # ==============================================================================
-# [SECTION 7] - CLI ARGUMENT PARSING & SCRIPT ENTRYPOINT
+# [SECTION 8] - CLI ARGUMENT PARSING & SCRIPT ENTRYPOINT
 # ==============================================================================
 if __name__ == "__main__":
     print_banner()
@@ -627,6 +894,8 @@ if __name__ == "__main__":
     parser.add_argument("--tab", type=str, help="Data Tab (Transactions, Rents, Project, Valuations, Building, Developer)")
     parser.add_argument("--headless", action="store_true", help="Run Chrome in background headless mode")
     parser.add_argument("--non-interactive", action="store_true", help="Skip interactive terminal prompts and use config defaults")
+    parser.add_argument("--captcha-timeout", type=int, default=CAPTCHA_TIMEOUT, help="Maximum seconds to wait for manual CAPTCHA solving")
+    parser.add_argument("--drive-folder-id", type=str, default=None, help="Google Drive folder ID or URL (defaults to Dubai input folder from CITY_CONFIG)")
 
     args = parser.parse_args()
 
@@ -644,5 +913,7 @@ if __name__ == "__main__":
         from_date=f_date,
         to_date=t_date,
         tab_name=tab,
-        headless=head
+        headless=head,
+        captcha_timeout=args.captcha_timeout,
+        drive_folder_id=args.drive_folder_id or GOOGLE_DRIVE_FOLDER_ID
     )

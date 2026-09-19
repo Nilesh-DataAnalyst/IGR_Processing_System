@@ -22,9 +22,8 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 
-# Database connection parameters (from project.py)
-
-from project import DB_PARAMS
+# Database connection parameters (from pipeline_core to avoid interactive CLI prompt in project.py)
+from pipeline_core import DB_PARAMS
 
 # City configurations (from city_config.py)
 try:

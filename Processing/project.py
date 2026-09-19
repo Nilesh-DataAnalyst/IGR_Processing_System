@@ -43,7 +43,7 @@ BUILDUP_TO_CARPET_DIVISOR = 1.2
 DB_PARAMS = {
     "host": "localhost",
     "port": "5432",
-    "database": "test",
+    "database": "nilesh",
     "user": "postgres",
     "password": "nilesh",
 }
@@ -818,7 +818,19 @@ def _map_property_type(value):
     ]:
         return "Plot"
     return "Others"
-
+## map unit configuration
+def map_unit(x):
+    if pd.isna(x): return "Others"
+    x = str(x).lower().replace(" ", "")
+    if "office" in x: return "Office"
+    if "shop" in x: return "Shop"
+    if "flat" in x: return "Flat"
+    m = re.search(r'(\d+(?:\.\d+)?)bhk', x)
+    if not m: return "Others"
+    n = float(m.group(1))
+    if n < 1: return "<1Bhk"
+    if n > 3: return ">3Bhk"
+    return {1:"1Bhk",1.5:"1.5Bhk",2:"2Bhk",2.25:"2.25Bhk",2.5:"2.5Bhk",2.75:"2.75Bhk",3:"3Bhk"}.get(n,"Others")
 
 def assign_nr_indexes(
     df: pd.DataFrame, target_city_id: int, db_params: dict
@@ -1491,7 +1503,6 @@ if pipeline_mode in ["1", "2"]:
         "sourcing_cost": np.nan,
         "sourcing_time": np.nan,
         "data_type": "Registered Document",
-        "normalized_unit_configuration": df.get("unit_configuration", pd.NA),
         "city_name": target_city_name.title(),
         "project_stage": pd.NA,
         "is_llm_processed": "Yes",
@@ -1501,6 +1512,7 @@ if pipeline_mode in ["1", "2"]:
     for col, value in defaults.items():
         if col not in df.columns:
             df[col] = value
+    df["normalized_unit_configuration"] = df["unit_configuration"].apply(map_unit)
 
     # ============================================================
     # STEP 12 - Assign NR Indexes via PostgreSQL
