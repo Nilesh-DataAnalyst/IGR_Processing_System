@@ -67,22 +67,227 @@ FIXES APPLIED IN THIS VERSION (vs the earlier combined draft):
 -----------------------------------------------------------------------------
 """
 
-import os, re
+import os, re, sys
+from datetime import datetime
 import numpy as np
 import pandas as pd
 import psycopg2
 from sqlalchemy import create_engine
 
-# ============================== CONFIG ==============================
-RAW_CSV_PATH = r"D:\Database\Dubai_update\13aug_to_14sept\13aug_14sept.csv"
-FINAL_OUTPUT_PATH = r"D:\Database\Dubai_update\13aug_to_14sept\13aug_14sept_processed.xlsx"
-TEST_MERGE_PATH = r"D:\Database\Dubai_update\13aug_to_14sept\13aug_14sept_test_merge.xlsx"
-CITY_ID, CITY_NAME = 15, "Dubai"
+# Windows console UTF-8 safety
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+if any(h in sys.argv for h in ["-h", "--help"]):
+    print("""
+Usage: python dld_pipeline.py [OPTIONS]
+
+Dubai Land Department (DLD) Transaction Data Processing Pipeline.
+
+Options:
+  --input, --input-file <PATH>   Specify custom raw CSV input file path.
+  --auto-confirm, -y             Automatically confirm the latest detected input file.
+  --non-interactive              Run in non-interactive mode without terminal prompts.
+  -h, --help                     Show this help message and exit.
+""")
+    sys.exit(0)
+
+# ============================== CONFIG & DYNAMIC DRIVE PATH RESOLUTION ==============================
+DUBAI_PARENT_DRIVE_URL = "https://drive.google.com/drive/folders/1q-rgFMUS5gyZq9ngoIozgzDwb-cSguim?usp=drive_link"
+PARENT_FOLDER_ID = "1q-rgFMUS5gyZq9ngoIozgzDwb-cSguim"
+
+def resolve_dubai_drive_paths(folder_id: str = PARENT_FOLDER_ID):
+    """
+    Locates the input '1. Download Files(Row)' and output '2.Processed Files'
+    directories from Google Drive Desktop on G:.
+    """
+    input_dir = None
+    output_dir = None
+
+    # 1. Primary: Check G:\.shortcut-targets-by-id\<parent_folder_id>
+    parent_shortcut = os.path.join(r"G:\.shortcut-targets-by-id", folder_id)
+    candidates = [parent_shortcut]
+    if os.path.exists(parent_shortcut):
+        try:
+            for sub in os.listdir(parent_shortcut):
+                sub_path = os.path.join(parent_shortcut, sub)
+                if os.path.isdir(sub_path):
+                    candidates.append(sub_path)
+        except Exception:
+            pass
+
+    for candidate in candidates:
+        if not os.path.exists(candidate):
+            continue
+        try:
+            for item in os.listdir(candidate):
+                item_path = os.path.join(candidate, item)
+                if not os.path.isdir(item_path):
+                    continue
+                item_lower = item.lower()
+                if "download" in item_lower or "row" in item_lower:
+                    input_dir = item_path
+                elif "processed" in item_lower:
+                    output_dir = item_path
+        except Exception:
+            pass
+
+    # 2. Secondary: Fallback to direct shortcut folder IDs if not found above
+    if not input_dir:
+        direct_input = os.path.join(r"G:\.shortcut-targets-by-id", "1CyL3ecimjHLcpUv2AfP8d6fJXNbOcVVE", "1. Download Files(Row)")
+        if os.path.exists(direct_input):
+            input_dir = direct_input
+
+    if not output_dir:
+        direct_output = os.path.join(r"G:\.shortcut-targets-by-id", "1TvDEGGW5dahnxRO4JfxJ8TUinK3DKXO8", "2.Processed Files")
+        if os.path.exists(direct_output):
+            output_dir = direct_output
+            
+    if not output_dir:
+        output_dir = input_dir
+
+    return input_dir, output_dir
+
+
+def get_latest_csv_file(directory: str) -> str:
+    """
+    Finds the last updated (newest by modification time) CSV file in the given directory.
+    """
+    if not os.path.exists(directory):
+        raise FileNotFoundError(f"Input directory does not exist: {directory}")
+
+    csv_files = [
+        os.path.join(directory, f)
+        for f in os.listdir(directory)
+        if f.lower().endswith(".csv")
+        and not f.startswith(".")
+        and not f.endswith(".tmp")
+        and not f.endswith(".crdownload")
+        and f.lower() != "desktop.ini"
+    ]
+
+    if not csv_files:
+        raise FileNotFoundError(f"No valid CSV files found in '{directory}'.")
+
+    # Sort by modification time descending (latest updated file first)
+    csv_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return csv_files[0]
+
+
+def confirm_or_choose_input_file(detected_file: str, directory: str) -> str:
+    """
+    Confirms the detected latest input file with the user in the terminal,
+    or allows selecting another CSV from the directory or providing a custom path.
+    """
+    filename = os.path.basename(detected_file)
+    print("\n" + "=" * 75)
+    print(f"📄 DETECTED LATEST INPUT FILE:")
+    print(f"   • File Name : {filename}")
+    print(f"   • Full Path : {detected_file}")
+    print("=" * 75)
+
+    # Automatically confirm without prompting if run non-interactively or with flag
+    if "--auto-confirm" in sys.argv or "--non-interactive" in sys.argv or not sys.stdin.isatty():
+        print(f"   ✔ Automatically confirmed input file: {filename}\n")
+        return detected_file
+
+    choice = input("👉 Is this input file correct? (Y/n) [Default: Y]: ").strip().lower()
+    if choice in ["", "y", "yes"]:
+        print(f"   ✔ Using confirmed input file: {filename}\n")
+        return detected_file
+
+    # List all available CSV files in the input folder
+    all_csvs = [
+        os.path.join(directory, f)
+        for f in os.listdir(directory)
+        if f.lower().endswith(".csv")
+        and not f.startswith(".")
+        and not f.endswith(".tmp")
+        and not f.endswith(".crdownload")
+        and f.lower() != "desktop.ini"
+    ]
+    all_csvs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+
+    print("\n📋 Available CSV files in '1. Download Files(Row)':")
+    for idx, filepath in enumerate(all_csvs, 1):
+        mtime_str = datetime.fromtimestamp(os.path.getmtime(filepath)).strftime("%d/%m/%Y %H:%M")
+        print(f"   [{idx}] {os.path.basename(filepath)}  (Modified: {mtime_str})")
+    print(f"   [0] Enter a custom file path")
+
+    while True:
+        sel = input(f"\n👉 Select file number [1-{len(all_csvs)}] or [0]: ").strip()
+        if sel.isdigit():
+            val = int(sel)
+            if 1 <= val <= len(all_csvs):
+                chosen = all_csvs[val - 1]
+                print(f"   ✔ Selected input file: {os.path.basename(chosen)}\n")
+                return chosen
+            elif val == 0:
+                custom_p = input("👉 Enter custom CSV file path: ").strip().strip('"').strip("'")
+                if os.path.isfile(custom_p):
+                    print(f"   ✔ Selected custom input file: {os.path.basename(custom_p)}\n")
+                    return custom_p
+                print(f"   ❌ File does not exist: {custom_p}")
+        elif os.path.isfile(sel.strip('"').strip("'")):
+            clean_sel = sel.strip('"').strip("'")
+            print(f"   ✔ Selected custom input file: {os.path.basename(clean_sel)}\n")
+            return clean_sel
+        else:
+            print("   ❌ Invalid selection! Please enter a valid number or path.")
+
+
+# Resolve paths automatically from Google Drive
+INPUT_DIR, OUTPUT_DIR = resolve_dubai_drive_paths(PARENT_FOLDER_ID)
+_detected_csv = None
+for _idx, _arg in enumerate(sys.argv):
+    if _arg in ["--input", "--input-file"] and _idx + 1 < len(sys.argv):
+        if os.path.exists(sys.argv[_idx + 1]):
+            _detected_csv = sys.argv[_idx + 1]
+            break
+if not _detected_csv:
+    _detected_csv = get_latest_csv_file(INPUT_DIR)
+RAW_CSV_PATH = confirm_or_choose_input_file(_detected_csv, INPUT_DIR)
+
+# Generate output paths: same filename as input, with '_processed.xlsx' and '_test_merge.xlsx'
+_raw_basename = os.path.basename(RAW_CSV_PATH)
+_raw_stem, _ = os.path.splitext(_raw_basename)
+FINAL_OUTPUT_PATH = os.path.join(OUTPUT_DIR, f"{_raw_stem}_processed.xlsx")
+TEST_MERGE_PATH = os.path.join(OUTPUT_DIR, f"{_raw_stem}_test_merge.xlsx")
+
+# Database Configuration & Runtime City ID
+CITY_NAME = "Dubai"
 
 db_params = {
     "host": "localhost", "port": "5432", "database": "nilesh",
     "user": "postgres", "password": "nilesh"
 }
+
+def get_runtime_city_id(city_name: str = "Dubai", params: dict = None) -> int:
+    try:
+        with psycopg2.connect(**(params or db_params), connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT city_id FROM public.dim_city WHERE lower(city_name) = lower(%s) LIMIT 1;", (city_name,))
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    return int(row[0])
+    except Exception:
+        pass
+    return 15
+
+CITY_ID = get_runtime_city_id(CITY_NAME, db_params)
+
+print("=" * 75)
+print(f"📁 DUBAI DATA PROCESSING PIPELINE")
+print(f"   • Raw Input Dir  : {INPUT_DIR}")
+print(f"   • Latest CSV File: {RAW_CSV_PATH}")
+print(f"   • Output Dir     : {OUTPUT_DIR}")
+print(f"   • Final Excel    : {FINAL_OUTPUT_PATH}")
+print(f"   • Runtime City ID: {CITY_ID} ({CITY_NAME})")
+print("=" * 75)
 
 # ============================== STEP 1: LOAD ==============================
 if not os.path.exists(RAW_CSV_PATH):
@@ -109,7 +314,14 @@ df = df.drop_duplicates(subset=dedup_columns, keep="first").reset_index(drop=Tru
 print(f"[step1b] before={before}, after={len(df)}, removed={before-len(df)}")
 
 # ============================== STEP 2: DATE ==============================
-df["INSTANCE_DATE"] = pd.to_datetime(df["INSTANCE_DATE"], format="%d-%m-%Y %H:%M", errors="coerce")
+# Robust multi-format parsing covering ISO (%Y-%m-%d %H:%M:%S), European (%d-%m-%Y %H:%M), and slash formats
+_date_series = pd.to_datetime(df["INSTANCE_DATE"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
+for _fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%d", "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"]:
+    if _date_series.isna().any():
+        _date_series = _date_series.fillna(pd.to_datetime(df["INSTANCE_DATE"], format=_fmt, errors="coerce"))
+if _date_series.isna().any():
+    _date_series = _date_series.fillna(pd.to_datetime(df["INSTANCE_DATE"], dayfirst=True, errors="coerce"))
+df["INSTANCE_DATE"] = _date_series
 df["year"] = df["INSTANCE_DATE"].dt.year.astype("Int64")
 df["quarter"] = "Q" + df["INSTANCE_DATE"].dt.quarter.astype("Int64").astype(str) + "-" + df["year"].astype(str)
 df.loc[df["INSTANCE_DATE"].isna(), "quarter"] = None
@@ -429,13 +641,16 @@ column_order = [
     "data_source","normalized_unit_configuration","project_stage"
 ]
 
-# Add missing columns
+# ============================== FINAL SCHEMA REORDER & SAVE ==============================
+# Ensure all column_order columns are present
 for col in column_order:
     if col not in df.columns:
         df[col] = None
 
-# Required columns first, remaining columns after project_stage
-df = df[column_order + [c for c in df.columns if c not in column_order]]
+# column_order first, rest of columns kept at the last
+final_columns = column_order + [c for c in df.columns if c not in column_order]
+df = df[final_columns]
+
 
 # =============================================================================
 # FINAL TITLE CASE
@@ -445,6 +660,162 @@ for col in df.select_dtypes(include=["object", "string"]).columns:
     df[col] = df[col].apply(
         lambda x: x.title() if isinstance(x, str) else x
     )
+# =============================================================================
+# STEP D: FILL PROJECT COORDINATES USING GOOGLE PLACES API
+# =============================================================================
+import time
+import requests
+
+GOOGLE_MAPS_API_KEY = "AIzaSyBS63yAQTYMnYAKDv5gQ7G1Qw2ngup15-w"
+
+skip_geocoding = any(arg in sys.argv for arg in ["--skip-geocoding", "--no-geocoding"])
+
+if skip_geocoding:
+    print("[stepD] Google Places geocoding skipped via CLI flag (--skip-geocoding).")
+else:
+    print(f"\n{'=' * 60}")
+    print("📍 [stepD] Enriching Project Coordinates via Google Places API...")
+    print(f"{'=' * 60}")
+
+    def build_query(row):
+        """
+        Build the Google Places search query using project_name for ALL cities
+        (including Dubai). location_name and city_name are added as context only.
+        """
+        city = str(row.get("city_name", "") or "").strip()
+        city_lower = city.lower()
+        project_name = str(row.get("project_name", "") or "").strip()
+        location_name = str(row.get("location_name", "") or "").strip()
+
+        if not project_name or project_name.lower() in ["nan", "none", "<na>", "null", ""]:
+            return None
+
+        parts = [project_name]
+
+        if location_name and location_name.lower() not in ["nan", "none", "<na>", "null", ""]:
+            parts.append(location_name)
+
+        if city_lower == "dubai":
+            parts.append("Dubai, UAE")
+        else:
+            if city and city_lower not in ["nan", "none", "<na>", "null", ""]:
+                parts.append(city)
+            parts.append("India")
+
+        return ", ".join(parts)
+
+
+    def get_coordinates(query):
+        url = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
+        params = {
+            "input": query,
+            "inputtype": "textquery",
+            "fields": "geometry,name,formatted_address,place_id",
+            "key": GOOGLE_MAPS_API_KEY
+        }
+        base_res = {
+            "google_latitude": None,
+            "google_longitude": None,
+            "google_project_name": None,
+            "google_address": None,
+            "google_place_id": None,
+            "searched_query": query,
+            "coordinate_status": "NOT_FOUND"
+        }
+        try:
+            data = requests.get(url, params=params, timeout=10).json()
+            if data.get("status") == "OK" and data.get("candidates"):
+                result = data["candidates"][0]
+                location = result.get("geometry", {}).get("location", {})
+                base_res["google_latitude"] = location.get("lat")
+                base_res["google_longitude"] = location.get("lng")
+                base_res["google_project_name"] = result.get("name")
+                base_res["google_address"] = result.get("formatted_address")
+                base_res["google_place_id"] = result.get("place_id")
+                base_res["coordinate_status"] = "FOUND"
+            elif data.get("error_message"):
+                base_res["coordinate_status"] = "FAILED"
+                base_res["coordinate_error"] = data.get("error_message")
+            return base_res
+        except Exception as error:
+            base_res["coordinate_status"] = "FAILED"
+            base_res["coordinate_error"] = str(error)
+            return base_res
+
+
+    df = df.copy()
+
+    df["project_name"] = df["project_name"].astype("string").str.strip()
+    if "location_name" in df.columns:
+        df["location_name"] = df["location_name"].astype("string").str.strip()
+    if "city_name" in df.columns:
+        df["city_name"] = df["city_name"].astype("string").str.strip()
+
+    for col in ["project_latitude", "project_longitude"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Every row (Dubai included) now requires project_name to be geocoded if coordinates are missing
+    mask = (
+        df["project_name"].notna()
+        & df["project_name"].astype(str).str.strip().ne("")
+        & ~df["project_name"].astype(str).str.strip().str.lower().isin(["nan", "none", "<na>", "null"])
+        & (df["project_latitude"].isna() | df["project_longitude"].isna())
+    )
+
+    # Geocode key: city + project_name, so same project name in different cities doesn't collide
+    df["_geocode_key"] = (
+        df["city_name"].astype("string").str.strip().str.lower().fillna("")
+        + "|" + df["project_name"].astype("string").str.strip().str.lower().fillna("")
+    )
+
+    subset = df.loc[mask, ["city_name", "project_name", "location_name", "_geocode_key"]].drop_duplicates(
+        subset=["_geocode_key"]
+    )
+
+    print(f"[stepD] Distinct projects needing Google geocoding: {len(subset)}")
+
+    results = []
+    found_count = 0
+    for i, row_dict in enumerate(subset.to_dict("records"), 1):
+        query = build_query(row_dict)
+        if query is None:
+            print(f"[{i}/{len(subset)}] SKIPPED (no valid project_name)")
+            continue
+
+        result = get_coordinates(query)
+        result["_geocode_key"] = row_dict["_geocode_key"]
+        results.append(result)
+        if result.get("coordinate_status") == "FOUND":
+            found_count += 1
+            print(f"[{i}/{len(subset)}] 🔍 {query} -> ✔ Found ({result['google_latitude']}, {result['google_longitude']})")
+        else:
+            print(f"[{i}/{len(subset)}] 🔍 {query} -> ⚠️ {result.get('coordinate_status')}")
+        time.sleep(0.1)
+
+    if results:
+        lookup = pd.DataFrame(results)
+        df = df.merge(lookup, on="_geocode_key", how="left", validate="many_to_one")
+        if "google_latitude" in df.columns:
+            df["project_latitude"] = df["project_latitude"].fillna(df["google_latitude"])
+            df.drop(columns=["google_latitude"], errors="ignore", inplace=True)
+        if "google_longitude" in df.columns:
+            df["project_longitude"] = df["project_longitude"].fillna(df["google_longitude"])
+            df.drop(columns=["google_longitude"], errors="ignore", inplace=True)
+
+    df.drop(columns=["_geocode_key"], errors="ignore", inplace=True)
+    print(f"[stepD] Geocoding complete: {found_count} / {len(subset)} projects found coordinates.")
+    print(f"[stepD] Remaining blank project_latitude: {df['project_latitude'].isna().sum()}")
+    print(f"[stepD] Remaining blank project_longitude: {df['project_longitude'].isna().sum()}")
+
+# ============================== FINAL SCHEMA REORDER & SAVE ==============================
+# Ensure all column_order columns are present
+for col in column_order:
+    if col not in df.columns:
+        df[col] = None
+
+# column_order first, rest of columns kept at the last
+final_columns = column_order + [c for c in df.columns if c not in column_order]
+df = df[final_columns]
 
 # ============================== SAVE FINAL ==============================
 df.to_excel(FINAL_OUTPUT_PATH, index=False)

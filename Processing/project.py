@@ -1093,6 +1093,62 @@ target_city_name = CURRENT_CITY_CONFIG["display_name"]
 active_divisor = SALEABLE_TO_CARPET_DIVISOR_BY_CITY.get(active_city_key, 1.35)
 print(f"{GREEN}✓ Active City set to: {BOLD}{target_city_name}{RESET}{GREEN} (ID: {target_city_id}, Divisor: {active_divisor}){RESET}")
 
+# ============================================================
+# SPECIAL WORKFLOW: DUBAI (2 STEPS: SCRAPING & PROCESSING)
+# ============================================================
+if active_city_key == "dubai" or target_city_id == 15:
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   🏙️  DUBAI WORKFLOW (2 STEPS: SCRAPING & PROCESSING){RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"  {CYAN}[1]{RESET} Run FULL Workflow (Step 1: Scraping ➔ Step 2: Processing) [Default]")
+    print(f"  {CYAN}[2]{RESET} Run Step 1 ONLY: Scraping (dubai_scraper.py)")
+    print(f"  {CYAN}[3]{RESET} Run Step 2 ONLY: Processing (dld_pipeline.py)")
+    print(f"  {CYAN}[0]{RESET} Cancel")
+    print(f"{HEADER}{'=' * 60}{RESET}")
+
+    dubai_choice = input(f"\n{YELLOW}Select option (1, 2, 3, or 0) [default: 1]: {RESET}").strip()
+    if dubai_choice in ["0", "cancel", "q", "exit"]:
+        print(f"{BLUE}ℹ Operation cancelled.{RESET}")
+        sys.exit(0)
+
+    dubai_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Dubai_processing")
+    scraper_script = os.path.join(dubai_dir, "dubai_scraper.py")
+    pipeline_script = os.path.join(dubai_dir, "dld_pipeline.py")
+
+    if dubai_choice in ["1", "", "all"]:
+        # Step 1: Scraping
+        print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+        print(f"{HEADER}{BOLD}   📥 [STEP 1/2] Launching Dubai Data Scraper...{RESET}")
+        print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+        subprocess.run([sys.executable, scraper_script], cwd=dubai_dir, check=True)
+
+        # Step 2: Processing
+        print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+        print(f"{HEADER}{BOLD}   ⚙️  [STEP 2/2] Launching Dubai Data Processing Pipeline...{RESET}")
+        print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+        subprocess.run([sys.executable, pipeline_script], cwd=dubai_dir, check=True)
+
+        print(f"\n{GREEN}{BOLD}🎉 Dubai 2-step workflow completed successfully!{RESET}\n")
+        sys.exit(0)
+
+    elif dubai_choice == "2":
+        # Step 1 ONLY: Scraping
+        print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+        print(f"{HEADER}{BOLD}   📥 [STEP 1/2] Launching Dubai Data Scraper...{RESET}")
+        print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+        subprocess.run([sys.executable, scraper_script], cwd=dubai_dir, check=True)
+        print(f"\n{GREEN}{BOLD}🎉 Dubai Scraping finished!{RESET}\n")
+        sys.exit(0)
+
+    elif dubai_choice == "3":
+        # Step 2 ONLY: Processing
+        print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+        print(f"{HEADER}{BOLD}   ⚙️  [STEP 2/2] Launching Dubai Data Processing Pipeline...{RESET}")
+        print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+        subprocess.run([sys.executable, pipeline_script], cwd=dubai_dir, check=True)
+        print(f"\n{GREEN}{BOLD}🎉 Dubai Processing finished!{RESET}\n")
+        sys.exit(0)
+
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
 print(f"{HEADER}{BOLD}   🏗️  DATA PROCESSING PIPELINE - {target_city_name.upper()}{RESET}")
 print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")

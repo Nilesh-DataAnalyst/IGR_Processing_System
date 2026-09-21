@@ -167,6 +167,26 @@ const PIPELINE_STEPS = [
   }
 ];
 
+// Dubai Land Department (DLD) 2-Step Pipeline Definitions
+const DUBAI_STEPS = [
+  {
+    id: 1,
+    name: "Dubai Portal Scraping (dubai_scraper.py)",
+    desc: "Extracts latest transactions from DLD portal (open.data.gov.ae) using auto-detected start date and saves raw CSV to Google Drive (1. Download Files(Row)).",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 2,
+    name: "Dubai Pipeline Processing (dld_pipeline.py)",
+    desc: "Loads latest raw CSV from 1. Download Files(Row), standardizes columns, assigns NR IDs, enriches coordinates via dim_location & Google Places API, and saves processed Excel to 2.Processed Files.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  }
+];
+
 // App State
 let appState = {
   mode: "1",
@@ -271,6 +291,18 @@ const shareEmailDeadline = document.getElementById("share-email-deadline");
 const shareEmailCc = document.getElementById("share-email-cc");
 const shareStatusMsg = document.getElementById("share-status-msg");
 
+// Dubai Land Department 2-Step Workflow Elements
+const dubaiWorkflowCard = document.getElementById("dubai-workflow-card");
+const dubaiRunScraping = document.getElementById("dubai-run-scraping");
+const dubaiFromDate = document.getElementById("dubai-from-date");
+const dubaiToDate = document.getElementById("dubai-to-date");
+const dubaiRunProcessing = document.getElementById("dubai-run-processing");
+const dubaiCustomCsv = document.getElementById("dubai-custom-csv");
+const stepsSectionTitle = document.getElementById("steps-section-title");
+const modeSwitchGroup = document.querySelector(".mode-switch-group");
+const outputPathGroup = document.getElementById("output-path-group");
+const advancedSettingsWrapper = document.getElementById("advanced-settings-wrapper");
+
 // Auto-detect city from input path or filename
 function detectCityFromPath(filepath) {
   if (!filepath || !cityIdInput) return;
@@ -297,9 +329,7 @@ function detectCityFromPath(filepath) {
       const prevId = cityIdInput.value;
       if (prevId !== item.id) {
         cityIdInput.value = item.id;
-        loadInputDriveLocations(item.id);
-        loadManualDriveLocations(item.id);
-        loadFinalDriveLocations(item.id);
+        handleCityChange(item.id);
       }
       if (cityDetectBadge) {
         cityDetectBadge.classList.remove("hidden");
@@ -318,20 +348,36 @@ document.addEventListener("DOMContentLoaded", () => {
   renderStepCards();
   initDefaultPaths();
   attachEventListeners();
-  loadInputDriveLocations();
-  loadManualDriveLocations();
-  loadFinalDriveLocations();
-  loadOutlierLocations();
+  handleCityChange(cityIdInput ? cityIdInput.value : "9");
   checkServerHealth();
 });
 
-// Render the 20 step cards in the grid
-function renderStepCards() {
+// Render the step cards in the grid (20 steps for India, 2 steps for Dubai)
+function renderStepCards(isDubai = false) {
   stepsGrid.innerHTML = "";
-  PIPELINE_STEPS.forEach(step => {
+  const steps = isDubai ? DUBAI_STEPS : PIPELINE_STEPS;
+
+  steps.forEach(step => {
     const card = document.createElement("div");
     card.className = `step-card ${step.status}`;
     card.id = `step-card-${step.id}`;
+
+    let actionsHtml = "";
+    if (!isDubai && step.id === 19) {
+      actionsHtml = `
+        <div class="step-actions-row">
+          <button type="button" class="btn-step-action" onclick="launchUploadPipeline()" title="Launch final_code.py in interactive console">
+            🚀 Launch final_code.py
+          </button>
+        </div>`;
+    } else if (!isDubai && step.id === 20) {
+      actionsHtml = `
+        <div class="step-actions-row">
+          <button type="button" class="btn-step-action" onclick="runOutlierDetection()" title="Run Outlier Detection on Database">
+            📊 Run Outlier Update
+          </button>
+        </div>`;
+    }
 
     card.innerHTML = `
       <div class="step-top">
@@ -344,18 +390,7 @@ function renderStepCards() {
         </span>
       </div>
       <p class="step-desc">${step.desc}</p>
-      ${step.id === 19 ? `
-        <div class="step-actions-row">
-          <button type="button" class="btn-step-action" onclick="launchUploadPipeline()" title="Launch final_code.py in interactive console">
-            🚀 Launch final_code.py
-          </button>
-        </div>` : ''}
-      ${step.id === 20 ? `
-        <div class="step-actions-row">
-          <button type="button" class="btn-step-action" onclick="runOutlierDetection()" title="Run Outlier Detection on Database">
-            📊 Run Outlier Update
-          </button>
-        </div>` : ''}
+      ${actionsHtml}
       <div class="step-bottom">
         <span class="step-detail" id="step-detail-${step.id}">${step.detail}</span>
         <span class="step-duration" id="step-duration-${step.id}">${step.duration}</span>
@@ -364,6 +399,82 @@ function renderStepCards() {
 
     stepsGrid.appendChild(card);
   });
+
+  if (stepsStatusSummary) {
+    stepsStatusSummary.textContent = `0 / ${steps.length} Completed`;
+  }
+}
+
+// Dubai 2-Step Workflow Controller Functions
+async function fetchDubaiConfig() {
+  try {
+    const res = await fetch("/api/dubai/config");
+    if (!res.ok) return;
+    const data = await res.json();
+    if (dubaiFromDate && data.from_date && !dubaiFromDate.value) {
+      dubaiFromDate.value = data.from_date;
+    }
+    if (dubaiToDate && data.to_date && !dubaiToDate.value) {
+      dubaiToDate.value = data.to_date;
+    }
+    logToConsole(`[Dubai DB] Auto-detected start date from transactions DB: ${data.from_date || "N/A"}`);
+  } catch (err) {
+    console.error("Failed to fetch Dubai config:", err);
+  }
+}
+
+function enableDubaiView() {
+  appState.mode = "dubai";
+  if (dubaiWorkflowCard) dubaiWorkflowCard.classList.remove("hidden");
+  if (inputFileGroup) inputFileGroup.classList.add("hidden");
+  if (manualFileGroup) manualFileGroup.classList.add("hidden");
+  if (finalFileGroup) finalFileGroup.classList.add("hidden");
+  if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
+  if (modeSwitchGroup) modeSwitchGroup.classList.add("hidden");
+  if (outputPathGroup) outputPathGroup.classList.add("hidden");
+  if (advancedSettingsWrapper) advancedSettingsWrapper.classList.add("hidden");
+  if (pauseCard) pauseCard.classList.add("hidden");
+  if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
+  const quickToolsStrip = document.querySelector(".quick-tools-strip");
+  if (quickToolsStrip) quickToolsStrip.classList.add("hidden");
+
+  if (inputFilePath) inputFilePath.required = false;
+  if (manualFilePath) manualFilePath.required = false;
+  if (finalFilePath) finalFilePath.required = false;
+
+  btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Dubai 2-Step Execution</span>';
+  if (stepsSectionTitle) stepsSectionTitle.textContent = "🏙️ Dubai Land Department Pipeline Steps (1 to 2)";
+
+  renderStepCards(true);
+  fetchDubaiConfig();
+  logToConsole("[Dubai] Switched to Dubai Land Department (DLD) 2-Step Pipeline: 1. Scraping -> 2. Processing");
+}
+
+function disableDubaiView() {
+  if (appState.mode === "dubai") appState.mode = "1";
+  if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
+  if (modeSwitchGroup) modeSwitchGroup.classList.remove("hidden");
+  if (outputPathGroup) outputPathGroup.classList.remove("hidden");
+  if (advancedSettingsWrapper) advancedSettingsWrapper.classList.remove("hidden");
+  const quickToolsStrip = document.querySelector(".quick-tools-strip");
+  if (quickToolsStrip) quickToolsStrip.classList.remove("hidden");
+  if (stepsSectionTitle) stepsSectionTitle.textContent = "Pipeline Execution Steps (1 to 20)";
+
+  renderStepCards(false);
+  setMode(appState.mode);
+}
+
+function handleCityChange(cid) {
+  cid = String(cid || (cityIdInput ? cityIdInput.value : "9"));
+  if (cid === "15") {
+    enableDubaiView();
+  } else {
+    disableDubaiView();
+    loadInputDriveLocations(cid);
+    loadManualDriveLocations(cid);
+    loadFinalDriveLocations(cid);
+    loadOutlierLocations(cid);
+  }
 }
 
 function getBadgeIcon(status) {
@@ -400,10 +511,7 @@ function attachEventListeners() {
   cityIdInput.addEventListener("change", () => {
     if (cityDetectBadge) cityDetectBadge.classList.add("hidden");
     const cid = cityIdInput.value;
-    loadInputDriveLocations(cid);
-    loadManualDriveLocations(cid);
-    loadFinalDriveLocations(cid);
-    loadOutlierLocations(cid);
+    handleCityChange(cid);
   });
 
   // Google Drive Location Dropdowns
@@ -1031,6 +1139,70 @@ function setMode(mode) {
 // PIPELINE RUNNER & POLLING
 // =========================================================
 async function startPipeline() {
+  const isDubai = cityIdInput && cityIdInput.value === "15";
+
+  if (isDubai) {
+    const runScraping = dubaiRunScraping ? dubaiRunScraping.checked : true;
+    const runProcessing = dubaiRunProcessing ? dubaiRunProcessing.checked : true;
+
+    if (!runScraping && !runProcessing) {
+      alert("Please enable at least Step 1 (Scraping) or Step 2 (Processing).");
+      return;
+    }
+
+    const fromDate = dubaiFromDate ? dubaiFromDate.value.trim() : "";
+    const toDate = dubaiToDate ? dubaiToDate.value.trim() : "";
+    const customCsv = dubaiCustomCsv ? dubaiCustomCsv.value.trim() : "";
+    const dubaiGeocodingCb = document.getElementById("dubai-include-geocoding");
+    const includeGeocoding = dubaiGeocodingCb ? dubaiGeocodingCb.checked : true;
+
+    const payload = {
+      city_id: 15,
+      city_name: "Dubai",
+      city_key: "dubai",
+      mode: "dubai",
+      from_date: fromDate,
+      to_date: toDate,
+      input_file: customCsv,
+      skip_scraping: !runScraping,
+      skip_processing: !runProcessing,
+      include_geocoding: includeGeocoding
+    };
+
+    // Reset UI
+    appState.isRunning = true;
+    appState.lastLogIndex = 0;
+    btnRun.disabled = true;
+    btnStop.disabled = false;
+    btnStop.classList.remove("hidden");
+    startTimer();
+
+    logToConsole(`\n[Execution] Triggering Dubai Land Department (DLD) 2-Step Pipeline...`);
+    if (runScraping) logToConsole(`  - Step 1 (Scraping): Date range ${fromDate || "Auto DB"} to ${toDate || "Today"}`);
+    if (runProcessing) logToConsole(`  - Step 2 (Processing): Input ${customCsv ? customCsv : "Latest from 1. Download Files(Row)"}`);
+
+    try {
+      const res = await fetch("/api/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to start Dubai pipeline.");
+      }
+
+      logToConsole(`[Server] Dubai pipeline worker thread started successfully.`);
+      startPolling();
+    } catch (err) {
+      logToConsole(`[Error] ${err.message}`, "error");
+      alert(`Could not start Dubai pipeline: ${err.message}`);
+      resetRunState();
+    }
+    return;
+  }
+
   const targetOutput = outputPath.value.trim();
   if (targetOutput && !targetOutput.toLowerCase().endsWith(".xlsx")) {
     alert("Output file path must end with '.xlsx'. Please correct it.");
@@ -1133,6 +1305,17 @@ function startPolling() {
 }
 
 function applyStatusUpdate(status) {
+  // Check if status is for Dubai
+  const isDubaiStatus = status.city_id === 15 || status.city_key === "dubai" || (status.steps && status.steps.length === 2);
+  const currentlyShowingDubai = stepsGrid.querySelectorAll(".step-card").length === 2;
+
+  if (isDubaiStatus && !currentlyShowingDubai) {
+    if (cityIdInput && cityIdInput.value !== "15") cityIdInput.value = "15";
+    enableDubaiView();
+  } else if (!isDubaiStatus && currentlyShowingDubai && !appState.isRunning && cityIdInput && cityIdInput.value !== "15") {
+    disableDubaiView();
+  }
+
   // Update progress percentage
   const pct = Math.min(100, Math.max(0, status.progress || 0));
   progressBar.style.width = `${pct}%`;
@@ -1156,82 +1339,90 @@ function applyStatusUpdate(status) {
     stepsStatusSummary.textContent = `${completedCount} / ${status.steps.length} Completed`;
   }
 
-  // Handle Step 7 Pause State (or active Mode 2 when idle)
-  if (status.state === "awaiting_manual_file") {
-    const isFirstTimePaused = pauseCard.classList.contains("hidden");
-    pauseCard.classList.remove("hidden");
-    if (status.v1_file) {
-      pauseV1Path.textContent = status.v1_file;
-      if (!resumeFilePath.value) {
-        resumeFilePath.value = status.v1_file;
-      }
-    }
-    const pauseSaveTime = document.getElementById("pause-save-time");
-    if (pauseSaveTime) {
-      pauseSaveTime.textContent = status.v1_saved_at || "Just now";
-    }
-    const pSaveStatus = document.getElementById("pause-save-status");
-    if (pSaveStatus) pSaveStatus.style.display = "inline-flex";
-    const pBadge = document.getElementById("pause-card-badge");
-    if (pBadge) pBadge.textContent = "⏸️ Step 6 Complete — Paused at Step 7";
-    const pTitle = document.getElementById("pause-card-title");
-    if (pTitle) pTitle.textContent = "Manual Verification Required";
+  // Handle Step 7 and Step 18 Pause States (strictly hide for Dubai)
+  const isDubaiActive = (cityIdInput && cityIdInput.value === "15") || isDubaiStatus || appState.mode === "dubai";
 
-    if (status.location_name) {
-      appState.selectedLocation = status.location_name;
-    }
-    const pauseDriveLink = document.getElementById("pause-drive-link") || document.querySelector(".pause-desc .drive-external-link");
-    if (pauseDriveLink && (status.manual_drive_url || (status.location_name && status.location_name.toLowerCase() === "bandra"))) {
-      const bandraUrl = "https://drive.google.com/drive/folders/1wsvFldaqifK_yoyifZqqFpL8MsZKJZUq?usp=drive_link";
-      const targetUrl = (status.location_name && status.location_name.toLowerCase() === "bandra") ? bandraUrl : status.manual_drive_url;
-      pauseDriveLink.href = targetUrl;
-      pauseDriveLink.textContent = `🌐 Open ${status.location_name || "Drive"} Folder ↗`;
-    }
-    if (isFirstTimePaused) {
-      loadManualDriveLocations();
-      pauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
-      logToConsole(`\n⏸️ [Action Required] Step 6 Complete! File saved to Google Drive at ${status.v1_saved_at || "just now"}. Please review/correct project names in Google Drive or select file below.`, "warning");
-    }
-  } else if (appState.mode === "2" && !appState.isRunning) {
-    if (pauseCard) pauseCard.classList.remove("hidden");
-  } else {
+  if (isDubaiActive) {
     if (pauseCard) pauseCard.classList.add("hidden");
-  }
-
-  // Handle Step 18 Parquet Confirmation Pause State (or active Mode 3 when idle)
-  if (status.state === "awaiting_parquet_confirmation") {
-    if (parquetPauseCard) {
-      const isFirstTimePaused = parquetPauseCard.classList.contains("hidden");
-      parquetPauseCard.classList.remove("hidden");
-      if (status.output_file) {
-        if (parquetVerifyPath) parquetVerifyPath.textContent = status.output_file;
-        if (parquetConfirmFilePath && (!parquetConfirmFilePath.value || isFirstTimePaused)) {
-          parquetConfirmFilePath.value = status.output_file;
+    if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
+  } else {
+    // Handle Step 7 Pause State (or active Mode 2 when idle)
+    if (status.state === "awaiting_manual_file") {
+      const isFirstTimePaused = pauseCard.classList.contains("hidden");
+      pauseCard.classList.remove("hidden");
+      if (status.v1_file) {
+        pauseV1Path.textContent = status.v1_file;
+        if (!resumeFilePath.value) {
+          resumeFilePath.value = status.v1_file;
         }
       }
-      const pBadge = document.getElementById("parquet-card-badge");
-      if (pBadge) pBadge.textContent = "⏸️ Step 17 Complete — Parquet Conversion Review";
-      const pTitle = document.getElementById("parquet-card-title");
-      if (pTitle) pTitle.textContent = "Is the Final Processed File Correct?";
+      const pauseSaveTime = document.getElementById("pause-save-time");
+      if (pauseSaveTime) {
+        pauseSaveTime.textContent = status.v1_saved_at || "Just now";
+      }
+      const pSaveStatus = document.getElementById("pause-save-status");
+      if (pSaveStatus) pSaveStatus.style.display = "inline-flex";
+      const pBadge = document.getElementById("pause-card-badge");
+      if (pBadge) pBadge.textContent = "⏸️ Step 6 Complete — Paused at Step 7";
+      const pTitle = document.getElementById("pause-card-title");
+      if (pTitle) pTitle.textContent = "Manual Verification Required";
 
-      const verifyDriveLink = document.getElementById("parquet-verify-drive-link");
-      if (verifyDriveLink) {
-        const finalUrl = status.final_drive_url || (status.city_id == 8 ? "https://drive.google.com/drive/folders/1Fxf1yTUo4FZWRHjm_XrpA7jq93kG7diO?usp=drive_link" : (status.city_id == 9 ? "https://drive.google.com/drive/folders/1l-HFh36Yk8pSs-NmoSK60if6cP2cjztM" : null));
-        if (finalUrl) {
-          verifyDriveLink.href = finalUrl;
-          verifyDriveLink.textContent = `🌐 Open ${status.city_name || "4. Final processed file"} ↗`;
-        }
+      if (status.location_name) {
+        appState.selectedLocation = status.location_name;
+      }
+      const pauseDriveLink = document.getElementById("pause-drive-link") || document.querySelector(".pause-desc .drive-external-link");
+      if (pauseDriveLink && (status.manual_drive_url || (status.location_name && status.location_name.toLowerCase() === "bandra"))) {
+        const bandraUrl = "https://drive.google.com/drive/folders/1wsvFldaqifK_yoyifZqqFpL8MsZKJZUq?usp=drive_link";
+        const targetUrl = (status.location_name && status.location_name.toLowerCase() === "bandra") ? bandraUrl : status.manual_drive_url;
+        pauseDriveLink.href = targetUrl;
+        pauseDriveLink.textContent = `🌐 Open ${status.location_name || "Drive"} Folder ↗`;
       }
       if (isFirstTimePaused) {
-        loadFinalDriveLocations(status.city_id || (cityIdInput ? cityIdInput.value : ""));
-        parquetPauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
+        loadManualDriveLocations();
+        pauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
+        logToConsole(`\n⏸️ [Action Required] Step 6 Complete! File saved to Google Drive at ${status.v1_saved_at || "just now"}. Please review/correct project names in Google Drive or select file below.`, "warning");
       }
+    } else if (appState.mode === "2" && !appState.isRunning) {
+      if (pauseCard) pauseCard.classList.remove("hidden");
+    } else {
+      if (pauseCard) pauseCard.classList.add("hidden");
     }
-  } else if (appState.mode === "3" && !appState.isRunning) {
-    if (parquetPauseCard) parquetPauseCard.classList.remove("hidden");
-  } else {
-    if (parquetPauseCard) {
-      parquetPauseCard.classList.add("hidden");
+
+    // Handle Step 18 Parquet Confirmation Pause State (or active Mode 3 when idle)
+    if (status.state === "awaiting_parquet_confirmation") {
+      if (parquetPauseCard) {
+        const isFirstTimePaused = parquetPauseCard.classList.contains("hidden");
+        parquetPauseCard.classList.remove("hidden");
+        if (status.output_file) {
+          if (parquetVerifyPath) parquetVerifyPath.textContent = status.output_file;
+          if (parquetConfirmFilePath && (!parquetConfirmFilePath.value || isFirstTimePaused)) {
+            parquetConfirmFilePath.value = status.output_file;
+          }
+        }
+        const pBadge = document.getElementById("parquet-card-badge");
+        if (pBadge) pBadge.textContent = "⏸️ Step 17 Complete — Parquet Conversion Review";
+        const pTitle = document.getElementById("parquet-card-title");
+        if (pTitle) pTitle.textContent = "Is the Final Processed File Correct?";
+
+        const verifyDriveLink = document.getElementById("parquet-verify-drive-link");
+        if (verifyDriveLink) {
+          const finalUrl = status.final_drive_url || (status.city_id == 8 ? "https://drive.google.com/drive/folders/1Fxf1yTUo4FZWRHjm_XrpA7jq93kG7diO?usp=drive_link" : (status.city_id == 9 ? "https://drive.google.com/drive/folders/1l-HFh36Yk8pSs-NmoSK60if6cP2cjztM" : null));
+          if (finalUrl) {
+            verifyDriveLink.href = finalUrl;
+            verifyDriveLink.textContent = `🌐 Open ${status.city_name || "4. Final processed file"} ↗`;
+          }
+        }
+        if (isFirstTimePaused) {
+          loadFinalDriveLocations(status.city_id || (cityIdInput ? cityIdInput.value : ""));
+          parquetPauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }
+    } else if (appState.mode === "3" && !appState.isRunning) {
+      if (parquetPauseCard) parquetPauseCard.classList.remove("hidden");
+    } else {
+      if (parquetPauseCard) {
+        parquetPauseCard.classList.add("hidden");
+      }
     }
   }
 
@@ -1243,6 +1434,11 @@ function applyStatusUpdate(status) {
     const newLogs = status.logs.slice(appState.lastLogIndex);
     newLogs.forEach(log => {
       logToConsole(log.text, log.level);
+      if (log.text.includes("MANUAL CAPTCHA ACTION REQUIRED") || log.text.includes("solve the image puzzle")) {
+        updateStepUI(1, "running", "🧩 Action Required: Solve CAPTCHA puzzle in Chrome window!");
+      } else if (log.text.includes("CAPTCHA SOLVED") || log.text.includes("AUTO-VERIFIED")) {
+        updateStepUI(1, "running", "✔ CAPTCHA verified! Resuming automation...");
+      }
     });
     appState.lastLogIndex = status.logs.length;
   }

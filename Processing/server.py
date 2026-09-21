@@ -688,6 +688,209 @@ def update_step_status(step_id, status, detail=None, duration=None):
                 break
 
 
+def run_dubai_pipeline(params):
+    """
+    Dedicated 2-step workflow for Dubai (City ID: 15):
+    Step 1: Scraping via dubai_scraper.py
+    Step 2: Processing via dld_pipeline.py
+    Streams stdout in real-time to the web dashboard console via add_log().
+    """
+    global pipeline_state
+
+    city_cfg = get_city_config("dubai")
+    city_id = 15
+    city_name = "Dubai"
+
+    dubai_dir = os.path.join(CURR_DIR, "Dubai_processing")
+    scraper_path = os.path.join(dubai_dir, "dubai_scraper.py")
+    pipeline_path = os.path.join(dubai_dir, "dld_pipeline.py")
+
+    from_date = params.get("from_date")
+    to_date = params.get("to_date")
+    skip_scraping = params.get("skip_scraping", False)
+    skip_processing = params.get("skip_processing", False)
+
+    dubai_steps = [
+        {
+            "id": 1,
+            "name": "Dubai Portal Scraping (dubai_scraper.py)",
+            "desc": "Extracts latest real estate transactions from DLD portal and uploads raw CSV to Google Drive (1. Download Files(Row)).",
+            "status": "pending",
+            "detail": "Waiting",
+            "duration": "-"
+        },
+        {
+            "id": 2,
+            "name": "Dubai Pipeline Processing (dld_pipeline.py)",
+            "desc": "Loads raw CSV, deduplicates, assigns NR IDs, enriches coordinates via dim_location & Google Places API, and saves processed Excel to 2.Processed Files.",
+            "status": "pending",
+            "detail": "Waiting",
+            "duration": "-"
+        }
+    ]
+
+    with state_lock:
+        pipeline_state["state"] = "running"
+        pipeline_state["city_id"] = 15
+        pipeline_state["city_name"] = "Dubai"
+        pipeline_state["city_key"] = "dubai"
+        pipeline_state["steps"] = [dict(s) for s in dubai_steps]
+        pipeline_state["progress"] = 5
+        pipeline_state["current_step_id"] = 1
+        pipeline_state["current_step_name"] = "Dubai Portal Scraping (dubai_scraper.py)"
+        pipeline_state["logs"] = []
+        pipeline_state["error"] = None
+        pipeline_state["stop_requested"] = False
+
+    add_log("=" * 60, "info")
+    add_log("🏙️  STARTING DUBAI WORKFLOW (2 STEPS: SCRAPING & PROCESSING)", "info")
+    add_log("=" * 60, "info")
+
+    # -----------------------------------------------------------------
+    # STEP 1: SCRAPING (dubai_scraper.py)
+    # -----------------------------------------------------------------
+    if not skip_scraping:
+        t0 = time.time()
+        update_step_status(1, "running", "Scraping Dubai portal data...")
+        add_log("[Dubai Step 1/2] 🌐 Launching Dubai Data Scraper (dubai_scraper.py)...", "info")
+        with state_lock:
+            pipeline_state["current_step_id"] = 1
+            pipeline_state["current_step_name"] = "Dubai Portal Scraping (dubai_scraper.py)"
+            pipeline_state["progress"] = 15
+
+        scraper_cmd = [sys.executable, scraper_path, "--non-interactive"]
+        if from_date:
+            scraper_cmd.extend(["--from-date", from_date])
+        if to_date:
+            scraper_cmd.extend(["--to-date", to_date])
+
+        add_log(f"Executing: {' '.join(scraper_cmd)}", "info")
+        proc = subprocess.Popen(
+            scraper_cmd,
+            cwd=dubai_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        for line in iter(proc.stdout.readline, ""):
+            if pipeline_state.get("stop_requested"):
+                proc.kill()
+                add_log("⚠️ Dubai scraping aborted due to user stop request.", "warning")
+                update_step_status(1, "failed", "Aborted by user")
+                return
+            line_str = line.strip()
+            if line_str:
+                lvl = "success" if any(k in line_str for k in ["✔", "🎉", "Successfully"]) else ("error" if "❌" in line_str else "info")
+                add_log(line_str, lvl)
+        proc.stdout.close()
+        rc = proc.wait()
+
+        if rc != 0:
+            err_msg = f"dubai_scraper.py exited with return code {rc}"
+            update_step_status(1, "failed", err_msg)
+            add_log(f"❌ [Dubai Step 1/2] {err_msg}", "error")
+            with state_lock:
+                pipeline_state["state"] = "failed"
+                pipeline_state["error"] = err_msg
+            return
+
+        dur = f"{time.time() - t0:.1f}s"
+        update_step_status(1, "completed", "Scraping complete & file uploaded to Google Drive", dur)
+        add_log(f"✔ [Dubai Step 1/2] Scraping complete & file synced ({dur})!", "success")
+    else:
+        update_step_status(1, "skipped", "Scraping skipped by request", "-")
+        add_log("↷ [Dubai Step 1/2] Scraping step skipped by request.", "warning")
+
+    # -----------------------------------------------------------------
+    # STEP 2: PROCESSING (dld_pipeline.py)
+    # -----------------------------------------------------------------
+    if not skip_processing:
+        t0 = time.time()
+        update_step_status(2, "running", "Processing raw CSV & enriching coordinates (Google Places API)...")
+        add_log("[Dubai Step 2/2] ⚙️ Launching Dubai Processing Pipeline (dld_pipeline.py)...", "info")
+        with state_lock:
+            pipeline_state["current_step_id"] = 2
+            pipeline_state["current_step_name"] = "Dubai Pipeline Processing (dld_pipeline.py)"
+            pipeline_state["progress"] = 55
+
+        pipe_cmd = [sys.executable, pipeline_path, "--auto-confirm"]
+        custom_input = params.get("input_file")
+        if custom_input:
+            pipe_cmd.extend(["--input-file", custom_input])
+        if params.get("include_geocoding") is False:
+            pipe_cmd.append("--skip-geocoding")
+
+        add_log(f"Executing: {' '.join(pipe_cmd)}", "info")
+        proc2 = subprocess.Popen(
+            pipe_cmd,
+            cwd=dubai_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        final_saved_file = None
+        for line in iter(proc2.stdout.readline, ""):
+            if pipeline_state.get("stop_requested"):
+                proc2.kill()
+                add_log("⚠️ Dubai processing aborted due to user stop request.", "warning")
+                update_step_status(2, "failed", "Aborted by user")
+                return
+            line_str = line.strip()
+            if line_str:
+                if any(k in line_str for k in ["✔", "🎉", "Saved:", "Final Excel", "Found ("]):
+                    lvl = "success"
+                elif any(k in line_str for k in ["❌", "FAILED", "Error:"]):
+                    lvl = "error"
+                elif any(k in line_str for k in ["⚠️", "NOT_FOUND", "SKIPPED", "skipped"]):
+                    lvl = "warning"
+                else:
+                    lvl = "info"
+                add_log(line_str, lvl)
+                if "Final Excel" in line_str and ":" in line_str:
+                    final_saved_file = line_str.split(":", 1)[1].strip()
+                elif "Saved:" in line_str:
+                    final_saved_file = line_str.split("Saved:", 1)[1].strip()
+        proc2.stdout.close()
+        rc2 = proc2.wait()
+
+        if rc2 != 0:
+            err_msg = f"dld_pipeline.py exited with return code {rc2}"
+            update_step_status(2, "failed", err_msg)
+            add_log(f"❌ [Dubai Step 2/2] {err_msg}", "error")
+            with state_lock:
+                pipeline_state["state"] = "failed"
+                pipeline_state["error"] = err_msg
+            return
+
+        dur = f"{time.time() - t0:.1f}s"
+        update_step_status(2, "completed", "Processing complete & saved to 2.Processed Files", dur)
+        add_log(f"✔ [Dubai Step 2/2] Processing finished successfully ({dur})!", "success")
+
+        with state_lock:
+            if final_saved_file:
+                pipeline_state["output_file"] = final_saved_file
+    else:
+        update_step_status(2, "skipped", "Processing skipped by request", "-")
+        add_log("↷ [Dubai Step 2/2] Processing step skipped by request.", "warning")
+
+    with state_lock:
+        pipeline_state["state"] = "completed"
+        pipeline_state["progress"] = 100
+        pipeline_state["current_step_name"] = "All Dubai Steps Finished"
+
+    add_log("🎉 Dubai 2-step workflow (Scraping & Processing) completed successfully!", "success")
+
+
 def run_pipeline_worker(params):
     global pipeline_state
 
@@ -730,18 +933,16 @@ def run_pipeline_worker(params):
 
     city_id = int(city_cfg.get("city_id", 9))
     city_key = city_cfg.get("key", "pune")
+
+    # Route Dubai to dedicated 2-step pipeline
+    if city_id == 15 or city_key == "dubai":
+        run_dubai_pipeline(params)
+        return
+
     city_name = city_cfg.get("display_name", "Pune")
     active_divisor = city_cfg.get("saleable_to_carpet_divisor", 1.35)
     output_path = params.get("output_path")
     include_geocoding = params.get("include_geocoding", False)
-
-    # Initialize variables used across steps and modes to prevent UnboundLocalError
-    final_drive_url = city_cfg.get("final_drive_url")
-    drive_out = None
-    local_out = None
-    drive_saved = False
-    target_out = None
-    parquet_target = None
 
     if not location_name:
         location_name = "Bandra" if "bandra" in path_lower else ("Borivali" if "borivali" in path_lower else ("Mohmadwadi" if city_id == 9 else "General"))
@@ -1333,7 +1534,7 @@ def run_pipeline_worker(params):
         # ============================================================
         # STEP 18 VERIFICATION: PAUSE AND WAIT FOR USER CONFIRMATION
         # ============================================================
-        candidate_parquet_file = (drive_out if (drive_saved and drive_out and os.path.exists(drive_out)) else target_out)
+        candidate_parquet_file = (drive_out if (locals().get("drive_saved") and locals().get("drive_out") and os.path.exists(drive_out)) else target_out)
         resume_step18_event.clear()
         with state_lock:
             pipeline_state["state"] = "awaiting_parquet_confirmation"
@@ -1373,7 +1574,8 @@ def run_pipeline_worker(params):
 
             from parquet_conersion import convert_csv_to_parquet
 
-            # Resolve city name dynamically from city_id or dataframe, preserving existing city_name fallback
+            # Resolve city name dynamically from city_id or dataframe
+            city_name = "Pune"
             try:
                 conn = psycopg2.connect(**core.DB_PARAMS)
                 cur = conn.cursor()
@@ -1539,6 +1741,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(pipeline_state)
         elif url_path == "/api/cities":
             self.send_json(CITY_CONFIG)
+        elif url_path == "/api/dubai/config":
+            last_d = None
+            try:
+                from Dubai_processing.dubai_scraper import get_last_transaction_date_from_db
+                last_d = get_last_transaction_date_from_db("Dubai")
+            except Exception:
+                pass
+            today_d = datetime.now().strftime("%d/%m/%Y")
+            self.send_json({
+                "city_id": 15,
+                "city_name": "Dubai",
+                "city_key": "dubai",
+                "from_date": last_d or "12/08/2026",
+                "to_date": today_d,
+                "parent_drive_url": "https://drive.google.com/drive/folders/1q-rgFMUS5gyZq9ngoIozgzDwb-cSguim?usp=drive_link",
+                "input_folder_name": "1. Download Files(Row)",
+                "output_folder_name": "2.Processed Files"
+            })
         elif url_path == "/api/drive/input-locations":
             city_param = self.get_query_param("city") or self.get_query_param("city_id")
             cfg = get_city_config(city_param) if city_param else {}

@@ -27,7 +27,8 @@
         </div>
         <div>
           <h1 class="brand-title">Data Processing Pipeline</h1>
-          <p class="brand-subtitle">20-Step Automated Ingestion, Standardization, RERA Matching, Parquet, Database Upload & Outlier Detection</p>
+          <p class="brand-subtitle">20-Step Automated Ingestion, Standardization, RERA Matching, Parquet, Database
+            Upload & Outlier Detection</p>
         </div>
       </div>
       <div class="header-status">
@@ -99,7 +100,8 @@
                 </optgroup>
               </select>
             </div>
-            <small class="form-hint">Fetched from public.dim_city. Configures NR sequences & location coordinates.</small>
+            <small class="form-hint">Fetched from public.dim_city. Configures NR sequences & location
+              coordinates.</small>
           </div>
 
           <!-- Mode 1 Input -->
@@ -130,14 +132,106 @@
               <input type="text" id="input-file-path"
                 placeholder="Select a location above or enter Drive/local file path" required autocomplete="off">
             </div>
-            <small class="form-hint">Fetched directly from Google Drive <code>2. LLM Processed Data</code>. You can switch location using the dropdown above.</small>
+            <small class="form-hint">Fetched directly from Google Drive <code>2. LLM Processed Data</code>. You can
+              switch location using the dropdown above.</small>
+          </div>
+
+          <!-- DUBAI WORKFLOW CARD (Visible when Dubai [ID: 15] is selected) -->
+          <div class="form-group full-width hidden" id="dubai-workflow-card"
+            style="background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(14, 165, 233, 0.3); border-radius: var(--radius-md); padding: 18px 20px;">
+            <div
+              style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px; margin-bottom: 14px;">
+              <div>
+                <h3
+                  style="font-size: 1.05rem; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                  <span>🏙️</span> Dubai Land Department (DLD) 2-Step Workflow
+                </h3>
+                <p style="font-size: 0.84rem; color: #94a3b8; line-height: 1.45;">
+                  Automates transaction scraping from the Dubai Land Department open portal followed by end-to-end
+                  processing & coordinate enrichment.
+                </p>
+              </div>
+              <a href="https://drive.google.com/drive/folders/1q-rgFMUS5gyZq9ngoIozgzDwb-cSguim?usp=drive_link"
+                target="_blank" class="drive-external-link"
+                style="font-size: 0.8rem; padding: 6px 12px; background: rgba(14, 165, 233, 0.18);"
+                title="Open Dubai Google Drive">
+                🌐 Open Dubai Drive Folder ↗
+              </a>
+            </div>
+
+            <!-- Dubai 2-Step Execution Options -->
+            <div
+              style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-bottom: 10px;">
+              <!-- Step 1 Config Box -->
+              <div
+                style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: var(--radius-sm); padding: 14px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                  <span style="font-weight: 600; color: #e0f2fe; font-size: 0.9rem;">📥 Step 1: Scraping
+                    (dubai_scraper.py)</span>
+                  <label class="checkbox-pill" style="padding: 2px 8px; font-size: 0.75rem;">
+                    <input type="checkbox" id="dubai-run-scraping" checked>
+                    <span>Enable</span>
+                  </label>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                  <div>
+                    <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">From
+                      Date:</label>
+                    <input type="text" id="dubai-from-date" placeholder="DD/MM/YYYY"
+                      style="padding: 8px 10px; font-size: 0.84rem; background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 4px; color: #fff; width: 100%;">
+                    <small style="font-size: 0.7rem; color: #38bdf8;">Auto-detected from DB</small>
+                  </div>
+                  <div>
+                    <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">To
+                      Date:</label>
+                    <input type="text" id="dubai-to-date" placeholder="DD/MM/YYYY"
+                      style="padding: 8px 10px; font-size: 0.84rem; background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 4px; color: #fff; width: 100%;">
+                    <small style="font-size: 0.7rem; color: #94a3b8;">Defaults to Today</small>
+                  </div>
+                </div>
+                <small style="display: block; margin-top: 8px; font-size: 0.75rem; color: #64748b;">
+                  Uploads raw CSV directly to <code>1. Download Files(Row)</code>
+                </small>
+              </div>
+
+              <!-- Step 2 Config Box -->
+              <div
+                style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: var(--radius-sm); padding: 14px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                  <span style="font-weight: 600; color: #e0f2fe; font-size: 0.9rem;">⚙️ Step 2: Processing
+                    (dld_pipeline.py)</span>
+                  <label class="checkbox-pill" style="padding: 2px 8px; font-size: 0.75rem;">
+                    <input type="checkbox" id="dubai-run-processing" checked>
+                    <span>Enable</span>
+                  </label>
+                </div>
+                <div>
+                  <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">Raw CSV Input
+                    File:</label>
+                  <input type="text" id="dubai-custom-csv" placeholder="[Auto: latest file in 1. Download Files(Row)]"
+                    style="padding: 8px 10px; font-size: 0.84rem; background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 4px; color: #fff; width: 100%;">
+                </div>
+                <div
+                  style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; flex-wrap: wrap; gap: 6px;">
+                  <small style="font-size: 0.75rem; color: #64748b;">
+                    Saves processed Excel to <code>2.Processed Files</code>
+                  </small>
+                  <label class="checkbox-pill" style="padding: 2px 8px; font-size: 0.72rem;"
+                    title="Query Google Places API for missing project coordinates">
+                    <input type="checkbox" id="dubai-include-geocoding" checked>
+                    <span>📍 Google Places Coordinates</span>
+                  </label>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- Mode 2 Input (Hidden initially) -->
           <div class="form-group hidden" id="manual-file-group">
             <div class="label-with-badge">
               <label for="manual-file-path">Manual Corrected Excel File (.xlsx) <span class="req">*</span></label>
-              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (3. Manually Corrected)</span>
+              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (3. Manually
+                Corrected)</span>
             </div>
 
             <!-- Quick pick location from Drive for Mode 2 -->
@@ -167,7 +261,8 @@
           <div class="form-group hidden" id="final-file-group">
             <div class="label-with-badge">
               <label for="final-file-path">Final Processed Excel File (.xlsx) <span class="req">*</span></label>
-              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (4. Final processed file)</span>
+              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (4. Final
+                processed file)</span>
             </div>
 
             <!-- Quick pick location from Drive for Mode 3 -->
@@ -194,24 +289,30 @@
           </div>
 
           <!-- MODE 4 OUTLIER-ONLY DEDICATED SECTION (Visible in Mode 4) -->
-          <div class="form-group full-width hidden" id="mode4-location-container" style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: var(--radius-md); padding: 16px 18px;">
-            <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px;">
+          <div class="form-group full-width hidden" id="mode4-location-container"
+            style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: var(--radius-md); padding: 16px 18px;">
+            <div
+              style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px;">
               <div>
                 <h3 style="font-size: 0.96rem; font-weight: 600; color: #a5b4fc; margin-bottom: 4px;">
                   📊 Outlier Detection & Database Update (Step 20)
                 </h3>
                 <p style="font-size: 0.8rem; color: #94a3b8; line-height: 1.4;">
-                  Calculates price percentiles and updates <code>rate</code>, <code>is_outlier</code>, and <code>outlier_type</code> in PostgreSQL.
+                  Calculates price percentiles and updates <code>rate</code>, <code>is_outlier</code>, and
+                  <code>outlier_type</code> in PostgreSQL.
                 </p>
               </div>
-              <div id="outlier-city-badge" class="badge-drive" style="font-size: 0.78rem; padding: 4px 12px; background: rgba(99, 102, 241, 0.18);">
+              <div id="outlier-city-badge" class="badge-drive"
+                style="font-size: 0.78rem; padding: 4px 12px; background: rgba(99, 102, 241, 0.18);">
                 🏙️ <span id="outlier-city-badge-text">City: Mumbai</span>
               </div>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 10px;">
-              <div class="label-with-badge" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                <label style="color: #e2e8f0; font-weight: 600; font-size: 0.92rem; margin: 0;">📍 Select Location to Process:</label>
+              <div class="label-with-badge"
+                style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <label style="color: #e2e8f0; font-weight: 600; font-size: 0.92rem; margin: 0;">📍 Select Location to
+                  Process:</label>
                 <label class="checkbox-pill">
                   <input type="checkbox" id="mode4-all-locations" checked>
                   <span>Run for ALL locations in city (Recommended)</span>
@@ -229,8 +330,11 @@
               <!-- Quick Clickable Location Chips -->
               <div id="outlier-chips-wrapper" style="margin-top: 2px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                  <span style="font-size: 0.76rem; color: #94a3b8; font-weight: 500;">⚡ Quick-Select Updated Location:</span>
-                  <button type="button" class="picker-refresh-btn" id="btn-refresh-outlier-locs" title="Refresh locations from Google Drive folders" style="font-size: 0.72rem; padding: 2px 8px;">🔄 Refresh Locations</button>
+                  <span style="font-size: 0.76rem; color: #94a3b8; font-weight: 500;">⚡ Quick-Select Updated
+                    Location:</span>
+                  <button type="button" class="picker-refresh-btn" id="btn-refresh-outlier-locs"
+                    title="Refresh locations from Google Drive folders" style="font-size: 0.72rem; padding: 2px 8px;">🔄
+                    Refresh Locations</button>
                 </div>
                 <div class="outlier-chips-row" id="outlier-chips-row">
                   <!-- Dynamically populated chips -->
@@ -239,22 +343,27 @@
 
               <!-- Specific Location Text Input -->
               <div style="margin-top: 4px;">
-                <input type="text" id="mode4-location-input" placeholder="e.g. Andheri, Baner, Wakad (click a chip above or type custom location)" disabled style="padding: 9px 14px;">
+                <input type="text" id="mode4-location-input"
+                  placeholder="e.g. Andheri, Baner, Wakad (click a chip above or type custom location)" disabled
+                  style="padding: 9px 14px;">
               </div>
-              <small class="form-hint" style="color: #94a3b8;">Choose a location from the dropdown/chips above or leave 'ALL' checked for the entire city.</small>
+              <small class="form-hint" style="color: #94a3b8;">Choose a location from the dropdown/chips above or leave
+                'ALL' checked for the entire city.</small>
             </div>
           </div>
 
           <!-- Output Path (Optional) -->
           <div class="form-group full-width" id="output-path-group">
             <label for="output-path">Final Output Save Path (.xlsx) <span class="badge-optional"
-                style="color: #60a5fa; font-weight: 500; font-size: 0.85em;">[Optional — Defaults to Google Drive]</span></label>
+                style="color: #60a5fa; font-weight: 500; font-size: 0.85em;">[Optional — Defaults to Google
+                Drive]</span></label>
             <div class="input-with-icon">
               <span class="input-icon">☁️</span>
               <input type="text" id="output-path"
                 placeholder="Leave blank to save to Google Drive (4. Final processed file), or enter custom filename">
             </div>
-            <small class="form-hint" id="drive-target-hint">☁️ Google Drive Target: Automatically saved to the selected city's <code>4. Final processed file\&lt;location_name&gt;</code> folder.</small>
+            <small class="form-hint" id="drive-target-hint">☁️ Google Drive Target: Automatically saved to the selected
+              city's <code>4. Final processed file\&lt;location_name&gt;</code> folder.</small>
           </div>
 
           <!-- ADVANCED PIPELINE OPTIONS (COLLAPSIBLE ACCORDION FOR CLEAN UI) -->
@@ -276,7 +385,8 @@
                     <input type="checkbox" id="auto-upload" checked>
                     <span class="adv-card-title">🚀 Auto Database Upload (Step 19)</span>
                   </div>
-                  <span class="adv-card-desc">Automatically launches upload window when files are ready for PostgreSQL.</span>
+                  <span class="adv-card-desc">Automatically launches upload window when files are ready for
+                    PostgreSQL.</span>
                 </label>
 
                 <!-- Option 2: Step 20 Auto Outlier Detection -->
@@ -285,7 +395,8 @@
                     <input type="checkbox" id="auto-outlier" checked>
                     <span class="adv-card-title">📊 Auto Outlier Detection (Step 20)</span>
                   </div>
-                  <span class="adv-card-desc">Automatically calculates price metrics and flags outliers in the database.</span>
+                  <span class="adv-card-desc">Automatically calculates price metrics and flags outliers in the
+                    database.</span>
                 </label>
 
                 <!-- Option 3: Export Outlier Excel Report -->
@@ -294,7 +405,8 @@
                     <input type="checkbox" id="save-outlier-report">
                     <span class="adv-card-title">📄 Save Outlier Excel Report</span>
                   </div>
-                  <span class="adv-card-desc">Exports a spreadsheet (.xlsx) of all records with detected outlier tags.</span>
+                  <span class="adv-card-desc">Exports a spreadsheet (.xlsx) of all records with detected outlier
+                    tags.</span>
                 </label>
 
                 <!-- Option 4: Step 14 Geocoding -->
@@ -303,7 +415,8 @@
                     <input type="checkbox" id="include-geocoding">
                     <span class="adv-card-title">🌐 Google Places Geocoding (Step 14)</span>
                   </div>
-                  <span class="adv-card-desc">Optional: Enriches latitude/longitude using Google Places API (disabled by default).</span>
+                  <span class="adv-card-desc">Optional: Enriches latitude/longitude using Google Places API (disabled by
+                    default).</span>
                 </label>
               </div>
             </div>
@@ -325,10 +438,12 @@
           <div class="quick-tools-strip full-width">
             <span class="quick-tools-label">🛠️ Standalone Tools (Run individual tools directly):</span>
             <div class="quick-tools-btns">
-              <button type="button" id="btn-launch-upload-manual" class="btn-tool-pill" title="Launch database uploader interactive console directly">
+              <button type="button" id="btn-launch-upload-manual" class="btn-tool-pill"
+                title="Launch database uploader interactive console directly">
                 ⚡ Database Uploader (final_code.py)
               </button>
-              <button type="button" id="btn-run-outlier-manual" class="btn-tool-pill" title="Run outlier detection on database directly">
+              <button type="button" id="btn-run-outlier-manual" class="btn-tool-pill"
+                title="Run outlier detection on database directly">
                 📊 Outlier Detector (Step 20)
               </button>
             </div>
@@ -476,7 +591,8 @@
             style="background: rgba(16, 185, 129, 0.2); color: #34d399; border-color: rgba(16, 185, 129, 0.45);">
             ⏸️ Step 17 Complete — Parquet Conversion Review
           </div>
-          <h3 class="pause-title" id="parquet-card-title" style="color: #ecfdf5;">Is the Final Processed File Correct?</h3>
+          <h3 class="pause-title" id="parquet-card-title" style="color: #ecfdf5;">Is the Final Processed File Correct?
+          </h3>
           <p class="pause-desc" id="parquet-card-desc">
             Final processed dataset saved to Google Drive:
             <code id="parquet-verify-path">..._final_processed.xlsx</code>
@@ -559,7 +675,7 @@
       <!-- 20-STEP PIPELINE VISUALIZATION GRID -->
       <section class="steps-section">
         <div class="section-title-bar">
-          <h2 class="section-title">Pipeline Execution Steps (1 to 20)</h2>
+          <h2 class="section-title" id="steps-section-title">Pipeline Execution Steps (1 to 20)</h2>
           <span class="steps-count-badge" id="steps-status-summary">0 / 20 Completed</span>
         </div>
 

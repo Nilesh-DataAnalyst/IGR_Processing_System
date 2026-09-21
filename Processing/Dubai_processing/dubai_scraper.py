@@ -81,6 +81,78 @@ if PROCESSING_DIR not in sys.path:
 
 from city_config import CITY_CONFIG, get_city_config, resolve_drive_directory, extract_folder_id
 
+# Database Configuration & Runtime Query Engine
+try:
+    from pipeline_core import DB_PARAMS
+except Exception:
+    DB_PARAMS = {
+        "host": "localhost",
+        "port": "5432",
+        "database": "nilesh",
+        "user": "postgres",
+        "password": "nilesh",
+    }
+
+
+def get_runtime_city_id(city_name: str = "Dubai", db_params: dict = None) -> int | None:
+    """
+    Fetches the runtime city_id dynamically from public.dim_city for the given city name.
+    Falls back to DUBAI_CITY_CONFIG or 15 if database query is unsuccessful.
+    """
+    params = dict(db_params or DB_PARAMS)
+    params.setdefault("connect_timeout", 3)
+    try:
+        import psycopg2
+        with psycopg2.connect(**params) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT city_id FROM public.dim_city WHERE lower(city_name) = lower(%s) LIMIT 1;",
+                    (city_name,)
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    return int(row[0])
+    except Exception:
+        pass
+    return DUBAI_CITY_CONFIG.get("city_id", 15) if "DUBAI_CITY_CONFIG" in globals() else 15
+
+
+def get_last_transaction_date_from_db(city_name: str = "Dubai", db_params: dict = None) -> str | None:
+    """
+    Dynamically queries public.dim_city to obtain the runtime city_id, then retrieves
+    the latest transaction_date from public.transactions for that city.
+    Returns the date formatted as 'DD/MM/YYYY' (e.g. '12/08/2026') or None on failure.
+    """
+    params = dict(db_params or DB_PARAMS)
+    params.setdefault("connect_timeout", 3)
+    try:
+        import psycopg2
+        with psycopg2.connect(**params) as conn:
+            with conn.cursor() as cur:
+                # 1. Fetch runtime city_id from dim_city
+                cur.execute(
+                    "SELECT city_id FROM public.dim_city WHERE lower(city_name) = lower(%s) LIMIT 1;",
+                    (city_name,)
+                )
+                city_row = cur.fetchone()
+                fallback_cid = DUBAI_CITY_CONFIG.get("city_id", 15) if "DUBAI_CITY_CONFIG" in globals() else 15
+                city_id = city_row[0] if (city_row and city_row[0] is not None) else fallback_cid
+
+                # 2. Fetch max transaction_date using index
+                cur.execute(
+                    "SELECT MAX(transaction_date) FROM public.transactions WHERE city_id = %s;",
+                    (city_id,)
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    last_date = row[0]
+                    if hasattr(last_date, "strftime"):
+                        return last_date.strftime("%d/%m/%Y")
+                    return datetime.strptime(str(last_date), "%Y-%m-%d").strftime("%d/%m/%Y")
+    except Exception:
+        pass
+    return None
+
 
 # ==============================================================================
 # [SECTION 2] - USER CONFIGURATION & SETTINGS
@@ -88,8 +160,10 @@ from city_config import CITY_CONFIG, get_city_config, resolve_drive_directory, e
 # ------------------------------------------------------------------------------
 # 2.1 Date Range Settings (Format: DD/MM/YYYY)
 # ------------------------------------------------------------------------------
-FROM_DATE = "01/01/2025"
-TO_DATE = "15/09/2026"
+# Start date is automatically resolved from the latest transaction in the database
+_db_last_date = get_last_transaction_date_from_db("Dubai")
+FROM_DATE = _db_last_date or "01/01/2025"
+TO_DATE = datetime.now().strftime("%d/%m/%Y")
 
 # ------------------------------------------------------------------------------
 # 2.2 Portal & Web Settings
@@ -396,48 +470,72 @@ def click_visible(driver, element, name="Button", highlight_color="#28a745", dur
     unhighlight(driver, element)
 
 
+def bring_chrome_to_front(driver):
+    """
+    Brings the Chrome automation browser window to the foreground on Windows
+    so the user can immediately see and interact with the CAPTCHA or page.
+    """
+    try:
+        driver.maximize_window()
+        driver.switch_to.window(driver.current_window_handle)
+        driver.execute_script("window.focus();")
+    except Exception:
+        pass
+
+    if sys.platform.startswith('win'):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            # Find Chrome top-level window
+            hwnd = user32.FindWindowW("Chrome_WidgetWin_1", None)
+            if hwnd:
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)  # HWND_TOPMOST
+                user32.SetForegroundWindow(hwnd)
+                user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0001 | 0x0002)  # HWND_NOTOPMOST
+        except Exception:
+            pass
+
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            pass
+
+
 def is_recaptcha_solved(driver) -> bool:
     """
     Checks if Google reCAPTCHA has been successfully solved:
-    1. Evaluates grecaptcha.getResponse() and g-recaptcha-response textarea tokens in DOM.
-    2. Checks aria-checked attribute on the reCAPTCHA checkbox inside iframe.
+    1. Evaluates grecaptcha.getResponse() across all potential widget IDs (0..9).
+    2. Checks g-recaptcha-response textarea tokens in DOM.
+    NOTE: Runs purely via non-intrusive JavaScript so it does NOT switch frames or
+    interfere with user mouse clicks while the challenge popup is open!
     """
     try:
-        token = driver.execute_script("""
+        solved = driver.execute_script("""
             try {
                 if (typeof grecaptcha !== 'undefined' && typeof grecaptcha.getResponse === 'function') {
+                    for (var i = 0; i < 10; i++) {
+                        try {
+                            var resp = grecaptcha.getResponse(i);
+                            if (resp && resp.length > 0) return true;
+                        } catch(e) {}
+                    }
                     var resp = grecaptcha.getResponse();
-                    if (resp && resp.length > 0) return resp;
+                    if (resp && resp.length > 0) return true;
                 }
                 var textareas = document.querySelectorAll('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
                 for (var i = 0; i < textareas.length; i++) {
                     if (textareas[i].value && textareas[i].value.trim().length > 0) {
-                        return textareas[i].value.trim();
+                        return true;
                     }
                 }
             } catch(e) {}
-            return '';
+            return false;
         """)
-        if token and len(token) > 0:
+        if solved:
             return True
-    except Exception:
-        pass
-
-    try:
-        iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[title='reCAPTCHA'], iframe[src*='recaptcha/api2/anchor']")
-        for frame in iframes:
-            try:
-                driver.switch_to.frame(frame)
-                checkbox = driver.find_elements(By.CSS_SELECTOR, "#recaptcha-anchor, .recaptcha-checkbox")
-                if checkbox:
-                    aria_checked = checkbox[0].get_attribute("aria-checked")
-                    if aria_checked == "true":
-                        driver.switch_to.default_content()
-                        return True
-            except Exception:
-                pass
-            finally:
-                driver.switch_to.default_content()
     except Exception:
         pass
 
@@ -447,16 +545,33 @@ def is_recaptcha_solved(driver) -> bool:
 def handle_recaptcha(driver, wait, timeout=120):
     """
     Locates and clicks the reCAPTCHA checkbox, then checks if it auto-resolves or requires
-    manual image challenge resolution. If an Image Challenge appears, actively monitors and
-    gives the user sufficient time to solve it in the browser window before proceeding.
+    manual image challenge resolution. If an Image Challenge appears, brings Chrome to the foreground,
+    alerts the user, and non-intrusively monitors for resolution so the puzzle popup remains fully clickable.
     """
     print("\n[Step 4/6] 🤖 Locating and verifying reCAPTCHA...")
-    iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[title='reCAPTCHA'], iframe[src*='recaptcha']")
+    iframes = driver.find_elements(
+        By.CSS_SELECTOR, 
+        ".tab-pane.active iframe[src*='recaptcha/api2/anchor'], .tab-pane.show iframe[src*='recaptcha/api2/anchor'], iframe[title='reCAPTCHA'], iframe[src*='recaptcha/api2/anchor']"
+    )
     recaptcha_frame = None
     for frame in iframes:
-        if frame.is_displayed():
-            recaptcha_frame = frame
-            break
+        try:
+            if frame.is_displayed():
+                recaptcha_frame = frame
+                break
+        except Exception:
+            pass
+
+    if not recaptcha_frame:
+        # Fallback to any visible recaptcha iframe
+        all_frames = driver.find_elements(By.CSS_SELECTOR, "iframe[title='reCAPTCHA'], iframe[src*='recaptcha']")
+        for frame in all_frames:
+            try:
+                if frame.is_displayed():
+                    recaptcha_frame = frame
+                    break
+            except Exception:
+                pass
 
     if not recaptcha_frame:
         print("   ℹ️ No visible reCAPTCHA iframe detected, continuing...")
@@ -495,10 +610,13 @@ def handle_recaptcha(driver, wait, timeout=120):
         print("   ✔ [AUTO-VERIFIED] CAPTCHA passed automatically (Green checkmark)!")
         return True
 
+    # Bring Chrome window to front so the user immediately sees the challenge puzzle
+    bring_chrome_to_front(driver)
+
     # Image puzzle challenge detected -> Prompt user and poll dynamically
     print("\n" + "=" * 75)
-    print(" 🧩 [MANUAL CAPTCHA ACTION REQUIRED]")
-    print(" 👉 An Image Selection CAPTCHA challenge appeared in the Chrome browser!")
+    print(" 🔔 [MANUAL CAPTCHA ACTION REQUIRED]")
+    print(" 🧩 An Image Selection CAPTCHA challenge appeared in the Chrome browser!")
     print(" 👉 Please solve the image puzzle directly in your open Chrome window.")
     print(f" ⏳ Script is actively waiting for resolution (Timeout: {timeout}s)...")
     print("=" * 75)
@@ -515,10 +633,10 @@ def handle_recaptcha(driver, wait, timeout=120):
         current_time = time.time()
         if current_time - last_print_time >= 2:
             time_left = int(timeout - (current_time - start_wait))
-            print(f"\r   ⏳ Waiting for user to solve CAPTCHA puzzle... ({time_left}s remaining)", end="", flush=True)
+            print(f"\r   ⏳ Waiting for user to solve CAPTCHA puzzle in Chrome... ({time_left}s remaining)", end="", flush=True)
             last_print_time = current_time
 
-        time.sleep(0.8)
+        time.sleep(1.0)
 
     print(f"\n   ⚠️ CAPTCHA wait timeout ({timeout}s) reached. Continuing with search...")
     return False
@@ -530,7 +648,7 @@ def handle_recaptcha(driver, wait, timeout=120):
 def get_driver(download_dir: str, headless: bool = False):
     """
     Configures and initializes Chrome WebDriver with custom download settings,
-    anti-detection parameters, and automatic download triggers.
+    anti-detection parameters, popup-blocking disabled, and automatic download triggers.
     """
     os.makedirs(download_dir, exist_ok=True)
 
@@ -540,6 +658,12 @@ def get_driver(download_dir: str, headless: bool = False):
     chrome_options.add_argument("--start-maximized")
     chrome_options.add_argument("--window-size=1440,900")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("--disable-popup-blocking")
+    chrome_options.add_argument("--disable-notifications")
+    chrome_options.add_argument("--disable-session-crashed-bubble")
+    chrome_options.add_argument("--noerrdialogs")
+    chrome_options.add_argument("--no-first-run")
+    chrome_options.add_argument("--no-default-browser-check")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--log-level=3")
@@ -550,7 +674,10 @@ def get_driver(download_dir: str, headless: bool = False):
         "download.default_directory": os.path.abspath(download_dir),
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
-        "safebrowsing.enabled": True
+        "safebrowsing.enabled": True,
+        "profile.default_content_setting_values.notifications": 2,
+        "profile.default_content_setting_values.popups": 1,
+        "profile.default_content_settings.popups": 0
     }
     chrome_options.add_experimental_option("prefs", prefs)
 
@@ -615,8 +742,14 @@ def get_terminal_inputs():
     print("\n📋 [Terminal Interactive Setup]")
     print("-" * 75)
     
-    # 1. From Date
-    default_from = FROM_DATE or "01/01/2025"
+    # 1. From Date (Auto-detected from Dubai transactions database)
+    db_last_date = get_last_transaction_date_from_db("Dubai")
+    default_from = db_last_date or FROM_DATE or "01/01/2025"
+    if db_last_date:
+        print(f"   ℹ️  Auto-detected last Dubai transaction date in DB: {db_last_date}")
+    else:
+        print(f"   ℹ️  Using default start date: {default_from} (DB date unavailable)")
+
     while True:
         user_from = input(f"👉 Enter FROM Date (DD/MM/YYYY) [Default: {default_from}]: ").strip()
         if not user_from:
@@ -628,7 +761,7 @@ def get_terminal_inputs():
         else:
             print("   ❌ Invalid date format! Please enter in DD/MM/YYYY format (e.g. 01/01/2025).")
 
-    # 2. To Date
+    # 2. To Date (Defaults dynamically to today's date)
     default_to = TO_DATE or datetime.now().strftime("%d/%m/%Y")
     while True:
         user_to = input(f"👉 Enter TO Date   (DD/MM/YYYY) [Default: {default_to}]: ").strip()
@@ -644,29 +777,24 @@ def get_terminal_inputs():
     # Selected Tab
     selected_tab = TARGET_TAB or "Transactions"
 
-    # 3. Headless mode
-    headless_choice = input(f"👉 Run browser in Background / Headless mode? (y/N) [Default: N]: ").strip().lower()
-    is_headless = headless_choice in ['y', 'yes', 'true']
-
     print("-" * 75)
     print(f"🎯 Selected Configuration:")
     print(f"   • Module     : Real Estate {selected_tab}")
     print(f"   • From Date  : {from_date}")
     print(f"   • To Date    : {to_date}")
-    print(f"   • Headless   : {is_headless}")
     print(f"   • GDrive URL : {GOOGLE_DRIVE_FOLDER_ID or 'Not configured'}")
     if LOCAL_GDRIVE_PATH and os.path.exists(LOCAL_GDRIVE_PATH):
         print(f"   • Desktop G: : {LOCAL_GDRIVE_PATH}")
     print("-" * 75)
     input("⚡ Press [ENTER] to start scraping...")
-    return from_date, to_date, selected_tab, is_headless
+    return from_date, to_date, selected_tab
 
 
 # ==============================================================================
 # [SECTION 7] - CORE SCRAPER AUTOMATION WORKFLOW
 # ==============================================================================
-def run_scraper(from_date: str = FROM_DATE,
-                to_date: str = TO_DATE,
+def run_scraper(from_date: str = None,
+                to_date: str = None,
                 tab_name: str = TARGET_TAB,
                 headless: bool = HEADLESS,
                 captcha_timeout: int = CAPTCHA_TIMEOUT,
@@ -680,6 +808,10 @@ def run_scraper(from_date: str = FROM_DATE,
     5. Submits search query and dynamically waits for data table rendering
     6. Downloads exported CSV file with visual highlight and uploads directly to Google Drive
     """
+    if not from_date:
+        from_date = get_last_transaction_date_from_db("Dubai") or FROM_DATE or "01/01/2025"
+    if not to_date:
+        to_date = TO_DATE or datetime.now().strftime("%d/%m/%Y")
     start_time = time.time()
     download_dir = os.path.abspath(DOWNLOAD_DIR_NAME)
     existing_files = set(os.listdir(download_dir)) if os.path.exists(download_dir) else set()
@@ -892,7 +1024,6 @@ if __name__ == "__main__":
     parser.add_argument("--from-date", type=str, help="Start Date (DD/MM/YYYY)")
     parser.add_argument("--to-date", type=str, help="End Date (DD/MM/YYYY)")
     parser.add_argument("--tab", type=str, help="Data Tab (Transactions, Rents, Project, Valuations, Building, Developer)")
-    parser.add_argument("--headless", action="store_true", help="Run Chrome in background headless mode")
     parser.add_argument("--non-interactive", action="store_true", help="Skip interactive terminal prompts and use config defaults")
     parser.add_argument("--captcha-timeout", type=int, default=CAPTCHA_TIMEOUT, help="Maximum seconds to wait for manual CAPTCHA solving")
     parser.add_argument("--drive-folder-id", type=str, default=None, help="Google Drive folder ID or URL (defaults to Dubai input folder from CITY_CONFIG)")
@@ -902,18 +1033,17 @@ if __name__ == "__main__":
     # Determine execution mode:
     # If user provided CLI flags or --non-interactive, run directly; otherwise prompt in interactive terminal
     if args.from_date or args.to_date or args.non_interactive:
-        f_date = args.from_date or FROM_DATE
-        t_date = args.to_date or TO_DATE
+        f_date = args.from_date or get_last_transaction_date_from_db("Dubai") or FROM_DATE
+        t_date = args.to_date or TO_DATE or datetime.now().strftime("%d/%m/%Y")
         tab = args.tab or TARGET_TAB
-        head = args.headless if args.headless else HEADLESS
     else:
-        f_date, t_date, tab, head = get_terminal_inputs()
+        f_date, t_date, tab = get_terminal_inputs()
 
     run_scraper(
         from_date=f_date,
         to_date=t_date,
         tab_name=tab,
-        headless=head,
+        headless=False,
         captcha_timeout=args.captcha_timeout,
         drive_folder_id=args.drive_folder_id or GOOGLE_DRIVE_FOLDER_ID
     )
