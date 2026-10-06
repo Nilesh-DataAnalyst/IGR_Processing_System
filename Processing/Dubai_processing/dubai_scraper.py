@@ -49,7 +49,7 @@ import shutil
 import mimetypes
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Selenium Web Automation Modules
 from selenium import webdriver
@@ -121,7 +121,7 @@ def get_last_transaction_date_from_db(city_name: str = "Dubai", db_params: dict 
     """
     Dynamically queries public.dim_city to obtain the runtime city_id, then retrieves
     the latest transaction_date from public.transactions for that city.
-    Returns the date formatted as 'DD/MM/YYYY' (e.g. '12/08/2026') or None on failure.
+    Returns the start date (latest transaction date + 1 day) formatted as 'DD/MM/YYYY' or None on failure.
     """
     params = dict(db_params or DB_PARAMS)
     params.setdefault("connect_timeout", 3)
@@ -146,9 +146,18 @@ def get_last_transaction_date_from_db(city_name: str = "Dubai", db_params: dict 
                 row = cur.fetchone()
                 if row and row[0]:
                     last_date = row[0]
-                    if hasattr(last_date, "strftime"):
-                        return last_date.strftime("%d/%m/%Y")
-                    return datetime.strptime(str(last_date), "%Y-%m-%d").strftime("%d/%m/%Y")
+                    if isinstance(last_date, str):
+                        try:
+                            dt = datetime.strptime(last_date[:10], "%Y-%m-%d")
+                        except ValueError:
+                            dt = datetime.strptime(last_date[:10], "%d/%m/%Y")
+                    elif hasattr(last_date, "year"):
+                        dt = datetime(last_date.year, last_date.month, last_date.day)
+                    else:
+                        dt = datetime.strptime(str(last_date)[:10], "%Y-%m-%d")
+
+                    next_date = dt + timedelta(days=1)
+                    return next_date.strftime("%d/%m/%Y")
     except Exception:
         pass
     return None
@@ -163,7 +172,7 @@ def get_last_transaction_date_from_db(city_name: str = "Dubai", db_params: dict 
 # Start date is automatically resolved from the latest transaction in the database
 _db_last_date = get_last_transaction_date_from_db("Dubai")
 FROM_DATE = _db_last_date or "01/01/2025"
-TO_DATE = datetime.now().strftime("%d/%m/%Y")
+TO_DATE = (datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y")
 
 # ------------------------------------------------------------------------------
 # 2.2 Portal & Web Settings
@@ -473,7 +482,7 @@ def click_visible(driver, element, name="Button", highlight_color="#28a745", dur
 def bring_chrome_to_front(driver):
     """
     Brings the Chrome automation browser window to the foreground on Windows
-    so the user can immediately see and interact with the CAPTCHA or page.
+    so the user can immediately see and interact with the page, captcha, or automation.
     """
     try:
         driver.maximize_window()
@@ -487,19 +496,60 @@ def bring_chrome_to_front(driver):
             import ctypes
             from ctypes import wintypes
             user32 = ctypes.windll.user32
-            # Find Chrome top-level window
-            hwnd = user32.FindWindowW("Chrome_WidgetWin_1", None)
+            kernel32 = ctypes.windll.kernel32
+
+            # Temporarily tag document title to pinpoint this EXACT automation window
+            # even if the user already has personal Chrome windows open
+            unique_marker = f"__DUBAI_SCRAPER_WINDOW_{os.getpid()}__"
+            orig_title = ""
+            try:
+                orig_title = driver.title
+                driver.execute_script(f"document.title = '{unique_marker}';")
+                time.sleep(0.08)
+            except Exception:
+                pass
+
+            # Search by unique title first, then fallback to Chrome window class
+            hwnd = user32.FindWindowW(None, unique_marker)
+            if not hwnd:
+                hwnd = user32.FindWindowW("Chrome_WidgetWin_1", None)
+
             if hwnd:
-                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)  # HWND_TOPMOST
+                SW_RESTORE = 9
+                HWND_TOPMOST = -1
+                HWND_NOTOPMOST = -2
+                SWP_NOMOVE = 0x0002
+                SWP_NOSIZE = 0x0001
+                SWP_SHOWWINDOW = 0x0040
+
+                # Attach thread input to bypass Windows foreground lockout
+                fg_hwnd = user32.GetForegroundWindow()
+                fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+                cur_thread = kernel32.GetCurrentThreadId()
+
+                if fg_thread and fg_thread != cur_thread:
+                    user32.AttachThreadInput(cur_thread, fg_thread, True)
+
+                user32.ShowWindow(hwnd, SW_RESTORE)
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
                 user32.SetForegroundWindow(hwnd)
-                user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0001 | 0x0002)  # HWND_NOTOPMOST
+                user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+
+                if fg_thread and fg_thread != cur_thread:
+                    user32.AttachThreadInput(cur_thread, fg_thread, False)
+
+            # Restore original document title
+            if orig_title:
+                try:
+                    driver.execute_script(f"document.title = {json.dumps(orig_title)};")
+                except Exception:
+                    pass
         except Exception:
             pass
 
         try:
             import winsound
-            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
         except Exception:
             pass
 
@@ -761,8 +811,8 @@ def get_terminal_inputs():
         else:
             print("   ❌ Invalid date format! Please enter in DD/MM/YYYY format (e.g. 01/01/2025).")
 
-    # 2. To Date (Defaults dynamically to today's date)
-    default_to = TO_DATE or datetime.now().strftime("%d/%m/%Y")
+    # 2. To Date (Defaults dynamically to yesterday's date)
+    default_to = TO_DATE or (datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y")
     while True:
         user_to = input(f"👉 Enter TO Date   (DD/MM/YYYY) [Default: {default_to}]: ").strip()
         if not user_to:
@@ -829,11 +879,13 @@ def run_scraper(from_date: str = None,
 
     try:
         driver.get(WEBSITE_URL)
+        bring_chrome_to_front(driver)
         
         # Dynamic explicit wait for initial page elements to load
         wait.until(EC.presence_of_element_located((
             By.CSS_SELECTOR, "input[placeholder*='Date'], input[id*='pFromDate'], .nav-tabs, form"
         )))
+        bring_chrome_to_front(driver)
         print("   ✔ Webpage loaded and form controls ready.")
 
         # Step 2: Tab Switching
@@ -1027,14 +1079,18 @@ if __name__ == "__main__":
     parser.add_argument("--non-interactive", action="store_true", help="Skip interactive terminal prompts and use config defaults")
     parser.add_argument("--captcha-timeout", type=int, default=CAPTCHA_TIMEOUT, help="Maximum seconds to wait for manual CAPTCHA solving")
     parser.add_argument("--drive-folder-id", type=str, default=None, help="Google Drive folder ID or URL (defaults to Dubai input folder from CITY_CONFIG)")
+    parser.add_argument("--db", type=str, default="nilesh", help="PostgreSQL target database (default: nilesh)")
 
     args = parser.parse_args()
+
+    active_db = args.db or "nilesh"
+    active_db_params = {"host": "localhost", "port": 5432, "database": active_db, "user": "postgres", "password": "nilesh"}
 
     # Determine execution mode:
     # If user provided CLI flags or --non-interactive, run directly; otherwise prompt in interactive terminal
     if args.from_date or args.to_date or args.non_interactive:
-        f_date = args.from_date or get_last_transaction_date_from_db("Dubai") or FROM_DATE
-        t_date = args.to_date or TO_DATE or datetime.now().strftime("%d/%m/%Y")
+        f_date = args.from_date or get_last_transaction_date_from_db("Dubai", db_params=active_db_params) or FROM_DATE
+        t_date = args.to_date or TO_DATE or (datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y")
         tab = args.tab or TARGET_TAB
     else:
         f_date, t_date, tab = get_terminal_inputs()

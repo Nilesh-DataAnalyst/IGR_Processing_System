@@ -7,7 +7,7 @@ import threading
 import traceback
 from pathlib import Path
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 try:
     from http.server import ThreadingHTTPServer as HTTPServerClass
 except ImportError:
@@ -24,7 +24,7 @@ os.chdir(CURR_DIR)
 sys.path.insert(0, CURR_DIR)
 
 import pipeline_core as core
-from city_config import CITY_CONFIG, get_city_config, extract_folder_id, get_manual_correction_drive_url, LOCATION_DRIVE_CONFIG, render_correction_email_html
+from city_config import CITY_CONFIG, get_city_config, extract_folder_id, get_manual_correction_drive_url, LOCATION_DRIVE_CONFIG, render_correction_email_html, get_google_drive_file_url, get_clean_drive_path, send_final_checker_email
 from DictToColumn import process_dict_to_column
 from static import result_dict
 from transaction_categorizer import categorise
@@ -372,7 +372,9 @@ def build_correction_email_content(
     file_path: str,
     deadline_body: str = "",
     formatted_dl: str = None,
-    is_attachment: bool = True,
+    is_attachment: bool = False,
+    file_url: str = None,
+    drive_path: str = None,
 ) -> tuple:
     """Builds both plain-text and HTML versions of the manual correction email with bold formatting."""
     delivery_note_plain = "Please find the file attached with this email." if is_attachment else "Please access the file directly from Google Drive using the link above."
@@ -386,12 +388,17 @@ def build_correction_email_content(
         </div>
         """
 
+    if not file_url:
+        file_url = get_google_drive_file_url(file_path) or drive_url
+    if not drive_path:
+        drive_path = get_clean_drive_path(file_path)
+
     plain_text = f"""Hello,
 
 {loc_intro} is ready for review.{deadline_body}
 📄 File: {file_name}
-🌐 Google Drive Folder: {drive_url}
-📂 Local / Drive Path: {file_path}
+🔗 Direct File Link: {file_url}
+📁 Drive Location: {drive_path}
 
 {delivery_note_plain}
 
@@ -439,6 +446,8 @@ Nilesh K.
         file_path=file_path,
         delivery_note_html=delivery_note_html,
         deadline_banner_html=deadline_banner_html,
+        file_url=file_url,
+        drive_path=drive_path,
     )
 
     return plain_text, html_text
@@ -514,6 +523,9 @@ def send_correction_email(
             msg["Cc"] = ", ".join(clean_cc)
         msg["Subject"] = f"[Manual Correction Required]{deadline_subj} {loc_str.strip()} - {file_name}"
 
+        file_url = get_google_drive_file_url(file_path) or drive_url
+        drive_path = get_clean_drive_path(file_path)
+
         plain_body, html_body = build_correction_email_content(
             loc_intro=loc_intro,
             file_name=file_name,
@@ -521,7 +533,9 @@ def send_correction_email(
             file_path=file_path,
             deadline_body=deadline_body,
             formatted_dl=formatted_dl,
-            is_attachment=True,
+            is_attachment=False,
+            file_url=file_url,
+            drive_path=drive_path,
         )
 
         # Alternative container for plain text and HTML (with bold headers)
@@ -530,14 +544,7 @@ def send_correction_email(
         body_part.attach(MIMEText(html_body, "html", "utf-8"))
         msg.attach(body_part)
 
-        with open(file_path, "rb") as attachment:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(attachment.read())
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename= {file_name}")
-        msg.attach(part)
-
-        server = smtplib.SMTP(smtp_server, smtp_port, timeout=300)
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=60)
         server.ehlo()
         server.starttls()
         server.ehlo()
@@ -546,10 +553,11 @@ def send_correction_email(
         server.quit()
         return {
             "status": "sent",
-            "mode": "attachment",
+            "mode": "link",
             "recipients": clean_recipients,
             "cc": clean_cc,
             "deadline_formatted": formatted_dl,
+            "file_url": file_url,
         }
     except Exception as err:
         # Fallback to link-only multipart/alternative email
@@ -560,6 +568,8 @@ def send_correction_email(
             fallback_msg["Cc"] = ", ".join(clean_cc)
         fallback_msg["Subject"] = f"[Manual Correction Required]{deadline_subj} {loc_str.strip()} - {file_name}"
 
+        file_url = get_google_drive_file_url(file_path) or drive_url
+        drive_path = get_clean_drive_path(file_path)
         fallback_plain, fallback_html = build_correction_email_content(
             loc_intro=loc_intro,
             file_name=file_name,
@@ -568,6 +578,8 @@ def send_correction_email(
             deadline_body=deadline_body,
             formatted_dl=formatted_dl,
             is_attachment=False,
+            file_url=file_url,
+            drive_path=drive_path,
         )
         fallback_msg.attach(MIMEText(fallback_plain, "plain", "utf-8"))
         fallback_msg.attach(MIMEText(fallback_html, "html", "utf-8"))
@@ -585,7 +597,8 @@ def send_correction_email(
             "recipients": clean_recipients,
             "cc": clean_cc,
             "deadline_formatted": formatted_dl,
-            "note": f"Sent link notification (attachment failed: {err})",
+            "note": f"Sent link notification (fallback: {err})",
+            "file_url": file_url,
         }
 
 
@@ -625,6 +638,7 @@ pipeline_state = {
     "city_id": None,
     "city_name": None,
     "city_key": None,
+    "selected_db": "nilesh",
     "divisor": None,
     "error": None,
     "output_file": None,
@@ -729,11 +743,15 @@ def run_dubai_pipeline(params):
         }
     ]
 
+    selected_db = params.get("database") or pipeline_state.get("selected_db") or "nilesh"
+    core.set_active_db(selected_db)
+
     with state_lock:
         pipeline_state["state"] = "running"
         pipeline_state["city_id"] = 15
         pipeline_state["city_name"] = "Dubai"
         pipeline_state["city_key"] = "dubai"
+        pipeline_state["selected_db"] = selected_db
         pipeline_state["steps"] = [dict(s) for s in dubai_steps]
         pipeline_state["progress"] = 5
         pipeline_state["current_step_id"] = 1
@@ -758,7 +776,7 @@ def run_dubai_pipeline(params):
             pipeline_state["current_step_name"] = "Dubai Portal Scraping (dubai_scraper.py)"
             pipeline_state["progress"] = 15
 
-        scraper_cmd = [sys.executable, scraper_path, "--non-interactive"]
+        scraper_cmd = [sys.executable, scraper_path, "--non-interactive", "--db", selected_db]
         if from_date:
             scraper_cmd.extend(["--from-date", from_date])
         if to_date:
@@ -818,7 +836,7 @@ def run_dubai_pipeline(params):
             pipeline_state["current_step_name"] = "Dubai Pipeline Processing (dld_pipeline.py)"
             pipeline_state["progress"] = 55
 
-        pipe_cmd = [sys.executable, pipeline_path, "--auto-confirm"]
+        pipe_cmd = [sys.executable, pipeline_path, "--auto-confirm", "--db", selected_db]
         custom_input = params.get("input_file")
         if custom_input:
             pipe_cmd.extend(["--input-file", custom_input])
@@ -934,15 +952,17 @@ def run_pipeline_worker(params):
     city_id = int(city_cfg.get("city_id", 9))
     city_key = city_cfg.get("key", "pune")
 
-    # Route Dubai to dedicated 2-step pipeline
-    if city_id == 15 or city_key == "dubai":
+    mode_str = str(mode).strip()
+
+    # Route Dubai to dedicated 2-step pipeline (unless Mode 3 Parquet or Mode 4 Outlier)
+    if (city_id == 15 or city_key == "dubai") and mode_str not in ["3", "4"]:
         run_dubai_pipeline(params)
         return
 
     city_name = city_cfg.get("display_name", "Pune")
     active_divisor = city_cfg.get("saleable_to_carpet_divisor", 1.35)
     output_path = params.get("output_path")
-    include_geocoding = params.get("include_geocoding", False)
+    include_geocoding = params.get("include_geocoding", True)
 
     if not location_name:
         location_name = "Bandra" if "bandra" in path_lower else ("Borivali" if "borivali" in path_lower else ("Mohmadwadi" if city_id == 9 else "General"))
@@ -950,12 +970,16 @@ def run_pipeline_worker(params):
     resume_step7_event.clear()
     resume_step18_event.clear()
 
+    selected_db = params.get("database") or pipeline_state.get("selected_db") or "nilesh"
+    core.set_active_db(selected_db)
+
     with state_lock:
         pipeline_state["state"] = "running"
         pipeline_state["mode"] = mode
         pipeline_state["city_id"] = city_id
         pipeline_state["city_name"] = city_name
         pipeline_state["city_key"] = city_key
+        pipeline_state["selected_db"] = selected_db
         pipeline_state["divisor"] = active_divisor
         pipeline_state["final_drive_url"] = city_cfg.get("final_drive_url")
         pipeline_state["stop_requested"] = False
@@ -967,13 +991,13 @@ def run_pipeline_worker(params):
         pipeline_state["progress"] = 0
         pipeline_state["logs"] = []
         for s in pipeline_state["steps"]:
-            if mode == "4" and s["id"] < 20:
+            if mode_str == "4" and s["id"] < 20:
                 s["status"] = "skipped"
                 s["detail"] = "Skipped in Mode 4"
-            elif mode == "3" and s["id"] < 18:
+            elif mode_str == "3" and s["id"] < 18:
                 s["status"] = "skipped"
                 s["detail"] = "Skipped in Mode 3"
-            elif mode == "2" and s["id"] < 7:
+            elif mode_str == "2" and s["id"] < 7:
                 s["status"] = "skipped"
                 s["detail"] = "Skipped in Mode 2"
             else:
@@ -981,7 +1005,7 @@ def run_pipeline_worker(params):
                 s["detail"] = "Waiting"
                 s["duration"] = "-"
 
-    add_log(f"Starting pipeline in Mode {mode} for {city_name} (City ID: {city_id}, Divisor: {active_divisor}) - Location: '{location_name}'...", "info")
+    add_log(f"Starting pipeline in Mode {mode_str} for {city_name} (City ID: {city_id}, Divisor: {active_divisor}) - Location: '{location_name}'...", "info")
     df = None
 
     try:
@@ -1011,8 +1035,10 @@ def run_pipeline_worker(params):
             run_outlier_main(
                 city_id=city_id,
                 location_name=outlier_loc,
-                db_params=core.DB_PARAMS,
+                db_params=core.get_db_params(selected_db),
                 save_merged_path=save_path,
+                log_fn=add_log,
+                is_stopped_fn=lambda: pipeline_state.get("stop_requested", False),
             )
 
             dur = f"{time.time() - t0:.2f}s"
@@ -1027,9 +1053,9 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_name"] = "Outlier Detection Completed!"
             return
 
-        if mode == "3":
+        if mode_str == "3":
             # RESUME DIRECTLY FROM STEP 18 (PARQUET CONVERSION)
-            final_file = output_path or manual_file or input_file
+            final_file = output_path or manual_file or input_file or params.get("final_file")
             if not final_file or not os.path.exists(final_file):
                 raise FileNotFoundError(f"Final processed file does not exist: {final_file}")
             add_log(f"Step 17: Loading final processed file for Parquet conversion: {final_file}", "info")
@@ -1037,7 +1063,7 @@ def run_pipeline_worker(params):
             with state_lock:
                 pipeline_state["output_file"] = target_out
                 pipeline_state["progress"] = 95
-        elif mode == "2":
+        elif mode_str == "2":
             # RESUME DIRECTLY FROM STEP 7
             if not manual_file or not os.path.exists(manual_file):
                 raise FileNotFoundError(f"Manual corrected file does not exist: {manual_file}")
@@ -1121,9 +1147,17 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_name"] = "Static Transaction Mapping"
                 pipeline_state["progress"] = 25
             df["transaction_type"] = df["docname"].map(result_dict.get)
+            if df["transaction_type"].isna().any() and df["docname"].notna().any():
+                fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
+                df["transaction_type"] = df["transaction_type"].fillna(fallback_map)
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(4, "completed", "Types mapped", dur)
-            add_log("Step 4: Static dictionary mapping completed.", "success")
+            mapped_count = int(df["transaction_type"].notna().sum())
+            total_docnames = int(df["docname"].notna().sum()) if "docname" in df.columns else 0
+            update_step_status(4, "completed", f"{mapped_count:,}/{total_docnames:,} mapped", dur)
+            if mapped_count < total_docnames:
+                add_log(f"Step 4: Mapped {mapped_count:,}/{total_docnames:,} docnames ({total_docnames - mapped_count:,} unmapped).", "warning")
+            else:
+                add_log(f"Step 4: Mapped all {mapped_count:,}/{total_docnames:,} docnames to transaction_type.", "success")
 
             # STEP 5 - Transaction Categorisation
             t0 = time.time()
@@ -1398,7 +1432,7 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_id"] = 12
                 pipeline_state["current_step_name"] = "PostgreSQL NR Index Assignment"
                 pipeline_state["progress"] = 75
-            df, nr_stats = core.assign_nr_indexes(df, target_city_id=city_id, db_params=core.DB_PARAMS)
+            df, nr_stats = core.assign_nr_indexes(df, target_city_id=city_id, db_params=core.get_db_params(selected_db))
             dur = f"{time.time() - t0:.2f}s"
             update_step_status(12, "completed", f"{nr_stats['assigned_count']} new NRs", dur)
             add_log(f"Step 12: Assigned {nr_stats['assigned_count']} new NRs. Highest NR: {nr_stats['highest_new_nr']}.", "success")
@@ -1412,7 +1446,7 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_id"] = 13
                 pipeline_state["current_step_name"] = "Location Coordinates Lookup"
                 pipeline_state["progress"] = 80
-            df = core.populate_location_coords(df, city_id, core.DB_PARAMS)
+            df = core.populate_location_coords(df, city_id, core.get_db_params(selected_db))
             dur = f"{time.time() - t0:.2f}s"
             loc_coords_found = int(df["location_latitude"].notna().sum()) if "location_latitude" in df.columns else 0
             update_step_status(13, "completed", f"{loc_coords_found} populated", dur)
@@ -1479,7 +1513,7 @@ def run_pipeline_worker(params):
             base_name = "output"
             if src:
                 base_name = os.path.splitext(os.path.basename(src))[0]
-                for suffix in ["_for_manual", "_processed_v1", "_processed", "_llm_output", "_Merged_File", "_merged_file", "_merged"]:
+                for suffix in ["_final_processed", "_for_manual", "_processed_v1", "_processed", "_llm_output", "_Merged_File", "_merged_file", "_merged"]:
                     base_name = base_name.replace(suffix, "")
             default_filename = f"{base_name}_final_processed.xlsx"
 
@@ -1489,16 +1523,18 @@ def run_pipeline_worker(params):
 
             raw_out = (output_path or "").strip()
             if raw_out.lower().startswith("g:\\"):
-                drive_out = raw_out
-                local_out = os.path.join(CURR_DIR, os.path.basename(raw_out))
+                drive_out = raw_out if raw_out.lower().endswith((".xlsx", ".xls")) else f"{raw_out}.xlsx"
+                local_out = os.path.join(CURR_DIR, os.path.basename(drive_out))
             elif raw_out and os.path.dirname(raw_out):
                 # User provided a local path like D:\Nilesh\...\file.xlsx
                 filename = os.path.basename(raw_out)
+                if not filename.lower().endswith((".xlsx", ".xls")):
+                    filename = f"{filename}.xlsx"
                 drive_out = os.path.join(location_drive_path, filename) if location_drive_path else None
-                local_out = raw_out
+                local_out = raw_out if raw_out.lower().endswith((".xlsx", ".xls")) else f"{raw_out}.xlsx"
             else:
                 filename = raw_out if raw_out else default_filename
-                if not filename.lower().endswith(".xlsx"):
+                if not filename.lower().endswith((".xlsx", ".xls")):
                     filename = f"{filename}.xlsx"
                 drive_out = os.path.join(location_drive_path, filename) if location_drive_path else None
                 local_out = os.path.join(CURR_DIR, filename)
@@ -1531,37 +1567,63 @@ def run_pipeline_worker(params):
             with state_lock:
                 pipeline_state["output_file"] = target_out
 
+            # Automatically share final processed file with checker (Deeksha) in background
+            def _send_checker_bg(fpath, cname, lname, rcount, durl):
+                try:
+                    res = send_final_checker_email(
+                        file_path=fpath,
+                        city_name=cname,
+                        location_name=lname,
+                        row_count=rcount,
+                        drive_url=durl,
+                        checker_email="deeksha@sigmavalue.co.in",
+                    )
+                    att_note = " (with Excel attached)" if res.get("attached") else " (with Google Drive link)"
+                    add_log(f"Step 17: 📧 [Auto-Share] Email successfully sent to checker deeksha@sigmavalue.co.in{att_note}!", "success")
+                except Exception as mail_err:
+                    add_log(f"Step 17: ⚠️ [Auto-Share] Note: Unable to email checker ({mail_err})", "warning")
+
+            drive_share_url = final_drive_url or city_cfg.get("final_drive_url") or core.DEFAULT_DRIVE_FOLDER_URL
+            threading.Thread(
+                target=_send_checker_bg,
+                args=(target_out, city_name, location_name, len(df), drive_share_url),
+                daemon=False,
+            ).start()
+
         # ============================================================
         # STEP 18 VERIFICATION: PAUSE AND WAIT FOR USER CONFIRMATION
         # ============================================================
-        candidate_parquet_file = (drive_out if (locals().get("drive_saved") and locals().get("drive_out") and os.path.exists(drive_out)) else target_out)
-        resume_step18_event.clear()
-        with state_lock:
-            pipeline_state["state"] = "awaiting_parquet_confirmation"
-            pipeline_state["current_step_id"] = 18
-            pipeline_state["current_step_name"] = "Waiting for Parquet Confirmation"
-            pipeline_state["output_file"] = candidate_parquet_file
-            pipeline_state["final_drive_url"] = final_drive_url or city_cfg.get("final_drive_url")
-            pipeline_state["proceed_parquet"] = True
+        if mode_str != "3":
+            candidate_parquet_file = (drive_out if (locals().get("drive_saved") and locals().get("drive_out") and os.path.exists(drive_out)) else target_out)
+            resume_step18_event.clear()
+            with state_lock:
+                pipeline_state["state"] = "awaiting_parquet_confirmation"
+                pipeline_state["current_step_id"] = 18
+                pipeline_state["current_step_name"] = "Waiting for Parquet Confirmation"
+                pipeline_state["output_file"] = candidate_parquet_file
+                pipeline_state["final_drive_url"] = final_drive_url or city_cfg.get("final_drive_url")
+                pipeline_state["proceed_parquet"] = True
 
-        update_step_status(18, "running", "Waiting for user confirmation...")
-        add_log("=" * 60, "warning")
-        add_log(f"⏸️ Step 17 finished! Final dataset: {candidate_parquet_file}", "warning")
-        add_log("⏸️ Pipeline PAUSED: Please verify if final processed file is correct before Parquet conversion.", "warning")
-        add_log("=" * 60, "warning")
+            update_step_status(18, "running", "Waiting for user confirmation...")
+            add_log("=" * 60, "warning")
+            add_log(f"⏸️ Step 17 finished! Final dataset: {candidate_parquet_file}", "warning")
+            add_log("⏸️ Pipeline PAUSED: Please verify if final processed file is correct before Parquet conversion.", "warning")
+            add_log("=" * 60, "warning")
 
-        while not resume_step18_event.is_set():
-            if pipeline_state.get("stop_requested"):
-                add_log("Pipeline cancelled while waiting for Parquet confirmation.", "error")
-                with state_lock:
-                    pipeline_state["state"] = "stopped"
-                return
-            time.sleep(0.5)
+            while not resume_step18_event.is_set():
+                if pipeline_state.get("stop_requested"):
+                    add_log("Pipeline cancelled while waiting for Parquet confirmation.", "error")
+                    with state_lock:
+                        pipeline_state["state"] = "stopped"
+                    return
+                time.sleep(0.5)
 
-        with state_lock:
-            pipeline_state["state"] = "running"
-            proceed_parquet = pipeline_state.get("proceed_parquet", True)
-            target_out = pipeline_state.get("output_file") or candidate_parquet_file
+            with state_lock:
+                pipeline_state["state"] = "running"
+                proceed_parquet = pipeline_state.get("proceed_parquet", True)
+                target_out = pipeline_state.get("output_file") or candidate_parquet_file
+        else:
+            proceed_parquet = True
 
         if proceed_parquet:
             # STEP 18 - Parquet Conversion
@@ -1574,24 +1636,27 @@ def run_pipeline_worker(params):
 
             from parquet_conersion import convert_csv_to_parquet
 
-            # Resolve city name dynamically from city_id or dataframe
-            city_name = "Pune"
-            try:
-                conn = psycopg2.connect(**core.DB_PARAMS)
-                cur = conn.cursor()
-                cur.execute("SELECT city_name FROM public.dim_city WHERE city_id = %s;", (city_id,))
-                row = cur.fetchone()
-                if row and row[0]:
-                    city_name = str(row[0]).strip().title()
-                cur.close()
-                conn.close()
-            except Exception:
-                pass
+            # Resolve city name dynamically from city_id, city_key, or dataframe
+            if city_id == 15 or city_key == "dubai":
+                city_name = "Dubai"
+            else:
+                city_name = "Pune"
+                try:
+                    conn = psycopg2.connect(**core.DB_PARAMS)
+                    cur = conn.cursor()
+                    cur.execute("SELECT city_name FROM public.dim_city WHERE city_id = %s;", (city_id,))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        city_name = str(row[0]).strip().title()
+                    cur.close()
+                    conn.close()
+                except Exception:
+                    pass
 
-            if df is not None and "city_name" in df.columns:
-                first_val = df["city_name"].dropna().iloc[0] if len(df["city_name"].dropna()) > 0 else ""
-                if first_val:
-                    city_name = str(first_val).strip().title()
+                if df is not None and "city_name" in df.columns:
+                    first_val = df["city_name"].dropna().iloc[0] if len(df["city_name"].dropna()) > 0 else ""
+                    if first_val:
+                        city_name = str(first_val).strip().title()
 
             parquet_base_dir = r"G:\.shortcut-targets-by-id\1oGd6xPdp686p0qW-tzZyy5quOpi82hLA\DB1+DB2\converted_feather_parquet"
             if not os.path.exists(parquet_base_dir):
@@ -1615,6 +1680,14 @@ def run_pipeline_worker(params):
             add_log(f"Step 18: Parquet conversion completed successfully -> {parquet_target}", "success")
             with state_lock:
                 pipeline_state["parquet_file"] = parquet_target
+
+            if mode_str == "3":
+                with state_lock:
+                    pipeline_state["state"] = "completed"
+                    pipeline_state["progress"] = 100
+                    pipeline_state["current_step_name"] = "Parquet Conversion Finished"
+                add_log(f"🎉 Direct Parquet conversion complete for {city_name}! Saved to: {parquet_target}", "success")
+                return
         else:
             update_step_status(18, "skipped", "Skipped by user", "-")
             add_log("Step 18: Parquet conversion skipped by user.", "warning")
@@ -1680,8 +1753,10 @@ def run_pipeline_worker(params):
                 run_outlier_main(
                     city_id=city_id,
                     location_name=outlier_loc,
-                    db_params=core.DB_PARAMS,
-                    save_merged_path=save_path
+                    db_params=core.get_db_params(selected_db),
+                    save_merged_path=save_path,
+                    log_fn=add_log,
+                    is_stopped_fn=lambda: pipeline_state.get("stop_requested", False),
                 )
                 dur = f"{time.time() - t0:.2f}s"
                 update_step_status(20, "completed", f"Updated {scope_desc}", dur)
@@ -1743,18 +1818,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(CITY_CONFIG)
         elif url_path == "/api/dubai/config":
             last_d = None
+            yesterday_d = (datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y")
+            target_db = self.get_query_param("db") or pipeline_state.get("selected_db") or "nilesh"
             try:
-                from Dubai_processing.dubai_scraper import get_last_transaction_date_from_db
-                last_d = get_last_transaction_date_from_db("Dubai")
+                import importlib
+                import Dubai_processing.dubai_scraper as dubai_scraper
+                importlib.reload(dubai_scraper)
+                last_d = dubai_scraper.get_last_transaction_date_from_db("Dubai", db_params=core.get_db_params(target_db))
+                yesterday_d = dubai_scraper.TO_DATE or yesterday_d
             except Exception:
                 pass
-            today_d = datetime.now().strftime("%d/%m/%Y")
             self.send_json({
                 "city_id": 15,
                 "city_name": "Dubai",
                 "city_key": "dubai",
+                "selected_db": target_db,
                 "from_date": last_d or "12/08/2026",
-                "to_date": today_d,
+                "to_date": yesterday_d,
                 "parent_drive_url": "https://drive.google.com/drive/folders/1q-rgFMUS5gyZq9ngoIozgzDwb-cSguim?usp=drive_link",
                 "input_folder_name": "1. Download Files(Row)",
                 "output_folder_name": "2.Processed Files"
@@ -1862,14 +1942,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 manual_file = data.get("manual_file")
                 output_path = data.get("output_path")
                 city_id = data.get("city_id") or pipeline_state.get("city_id", 9)
-                include_geocoding = data.get("include_geocoding", False)
+                include_geocoding = data.get("include_geocoding", True)
                 auto_upload = data.get("auto_upload", True)
             except Exception:
                 data = {}
                 manual_file = None
                 output_path = None
                 city_id = pipeline_state.get("city_id", 9)
-                include_geocoding = False
+                include_geocoding = True
                 auto_upload = True
 
             with state_lock:
@@ -1999,7 +2079,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 resume_step18_event.set()
                 self.send_json({"status": "resumed", "state": "running"})
             else:
-                self.send_json({"error": "Pipeline is not currently awaiting Parquet confirmation."}, status=400)
+                chosen = (file_path or pipeline_state.get("output_file") or "").strip()
+                if chosen and os.path.exists(chosen) and action != "skip":
+                    city_id = data.get("city_id")
+                    path_lower = chosen.lower()
+                    if "dubai" in path_lower or "1tvdeggw5dahnxro4jfxj8tuink3dkxo8" in path_lower:
+                        city_id = 15
+
+                    add_log(f"Launching direct Parquet conversion (Step 18) for: {chosen}", "info")
+                    params = {
+                        "mode": "3",
+                        "input_file": chosen,
+                        "output_path": chosen,
+                        "city_id": city_id or 15,
+                    }
+                    thread = threading.Thread(target=run_pipeline_worker, args=(params,), daemon=True)
+                    thread.start()
+                    self.send_json({"status": "started", "state": "running"})
+                else:
+                    self.send_json({"error": "Pipeline is not currently awaiting Parquet confirmation, and no valid final processed file was found to convert."}, status=400)
 
         elif self.path == "/api/run-outlier":
             length = int(self.headers.get("content-length", 0))
@@ -2022,10 +2120,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "city_id": city_id,
                 "outlier_location": location_name,
                 "save_outlier_report": save_report,
+                "database": data.get("database") or pipeline_state.get("selected_db") or "nilesh",
             }
             thread = threading.Thread(target=run_pipeline_worker, args=(params,), daemon=True)
             thread.start()
             self.send_json({"status": "started", "state": "running"})
+
+        elif self.path == "/api/set-db":
+            length = int(self.headers.get("content-length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            try:
+                data = json.loads(body) if body else {}
+                new_db = str(data.get("database", "")).strip() or "nilesh"
+            except Exception:
+                new_db = "nilesh"
+            with state_lock:
+                pipeline_state["selected_db"] = new_db
+            core.set_active_db(new_db)
+            add_log(f"🗄️ Active database switched to: '{new_db}'", "info")
+            self.send_json({"status": "updated", "selected_db": new_db})
 
         elif self.path == "/api/stop":
             with state_lock:

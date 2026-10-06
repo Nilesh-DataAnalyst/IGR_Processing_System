@@ -302,6 +302,89 @@ const stepsSectionTitle = document.getElementById("steps-section-title");
 const modeSwitchGroup = document.querySelector(".mode-switch-group");
 const outputPathGroup = document.getElementById("output-path-group");
 const advancedSettingsWrapper = document.getElementById("advanced-settings-wrapper");
+const dbSelect = document.getElementById("db-select");
+const dbDot = document.getElementById("db-dot");
+
+// =========================================================
+// DATABASE SELECTION & MANAGEMENT
+// =========================================================
+function getSelectedDb() {
+  return localStorage.getItem("igr_selected_db") || "nilesh";
+}
+
+function updateDbBadge(dbName) {
+  if (!dbDot) return;
+  dbDot.className = "db-status-dot";
+  if (dbName === "nilesh") {
+    dbDot.classList.add("prod");
+  } else if (dbName === "test") {
+    dbDot.classList.add("staging");
+  } else {
+    dbDot.classList.add("custom");
+  }
+}
+
+async function handleDatabaseChange(newDb, isInitial = false) {
+  if (newDb === "__custom__") {
+    const customDb = prompt("Enter PostgreSQL database name:", "nilesh");
+    if (!customDb || !customDb.trim()) {
+      if (dbSelect) dbSelect.value = getSelectedDb();
+      return;
+    }
+    newDb = customDb.trim();
+    if (dbSelect) {
+      let opt = Array.from(dbSelect.options).find(o => o.value === newDb);
+      if (!opt) {
+        opt = document.createElement("option");
+        opt.value = newDb;
+        opt.textContent = `${newDb} (Custom)`;
+        dbSelect.insertBefore(opt, dbSelect.querySelector("option[value='__custom__']"));
+      }
+      dbSelect.value = newDb;
+    }
+  }
+
+  localStorage.setItem("igr_selected_db", newDb);
+  updateDbBadge(newDb);
+
+  try {
+    const res = await fetch("/api/set-db", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ database: newDb })
+    });
+    if (res.ok && !isInitial) {
+      logToConsole(`[Database] Active database switched to: ${newDb}`);
+    }
+  } catch (err) {
+    console.error("Failed to notify server of DB change:", err);
+  }
+
+  // If Dubai is active, re-query latest date from the newly selected DB
+  if (cityIdInput && cityIdInput.value === "15") {
+    fetchDubaiConfig(true);
+  }
+}
+
+function initDatabaseSelector() {
+  if (!dbSelect) return;
+  const savedDb = getSelectedDb();
+  let opt = Array.from(dbSelect.options).find(o => o.value === savedDb);
+  if (!opt && savedDb) {
+    opt = document.createElement("option");
+    opt.value = savedDb;
+    opt.textContent = `${savedDb} (Custom)`;
+    dbSelect.insertBefore(opt, dbSelect.querySelector("option[value='__custom__']"));
+  }
+  dbSelect.value = savedDb;
+  updateDbBadge(savedDb);
+
+  dbSelect.addEventListener("change", (e) => {
+    handleDatabaseChange(e.target.value);
+  });
+
+  handleDatabaseChange(savedDb, true);
+}
 
 // Auto-detect city from input path or filename
 function detectCityFromPath(filepath) {
@@ -345,6 +428,7 @@ function detectCityFromPath(filepath) {
 // INITIALIZATION
 // =========================================================
 document.addEventListener("DOMContentLoaded", () => {
+  initDatabaseSelector();
   renderStepCards();
   initDefaultPaths();
   attachEventListeners();
@@ -406,35 +490,42 @@ function renderStepCards(isDubai = false) {
 }
 
 // Dubai 2-Step Workflow Controller Functions
-async function fetchDubaiConfig() {
+async function fetchDubaiConfig(forceRefresh = false) {
   try {
-    const res = await fetch("/api/dubai/config");
+    const activeDb = getSelectedDb();
+    const res = await fetch(`/api/dubai/config?db=${encodeURIComponent(activeDb)}`);
     if (!res.ok) return;
     const data = await res.json();
-    if (dubaiFromDate && data.from_date && !dubaiFromDate.value) {
-      dubaiFromDate.value = data.from_date;
+    if (dubaiFromDate && (forceRefresh || !dubaiFromDate.value)) {
+      dubaiFromDate.value = data.from_date || "12/08/2026";
     }
-    if (dubaiToDate && data.to_date && !dubaiToDate.value) {
+    if (dubaiToDate && (forceRefresh || !dubaiToDate.value)) {
       dubaiToDate.value = data.to_date;
     }
-    logToConsole(`[Dubai DB] Auto-detected start date from transactions DB: ${data.from_date || "N/A"}`);
+    logToConsole(`[Dubai DB (${activeDb})] Auto-detected start date: ${data.from_date || "N/A"}`);
   } catch (err) {
     console.error("Failed to fetch Dubai config:", err);
   }
 }
 
 function enableDubaiView() {
-  appState.mode = "dubai";
-  if (dubaiWorkflowCard) dubaiWorkflowCard.classList.remove("hidden");
-  if (inputFileGroup) inputFileGroup.classList.add("hidden");
-  if (manualFileGroup) manualFileGroup.classList.add("hidden");
-  if (finalFileGroup) finalFileGroup.classList.add("hidden");
-  if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
-  if (modeSwitchGroup) modeSwitchGroup.classList.add("hidden");
+  if (modeSwitchGroup) modeSwitchGroup.classList.remove("hidden");
+  if (mode1Label) {
+    const s = mode1Label.querySelector("span");
+    if (s) s.textContent = "Mode 1: Start (Dubai 2-Step)";
+  }
+  if (mode2Label) mode2Label.classList.add("hidden");
+  if (mode3Label) {
+    const s = mode3Label.querySelector("span");
+    if (s) s.textContent = "Mode 3: Parquet (2.Processed Files)";
+  }
+  if (mode4Label) {
+    const s = mode4Label.querySelector("span");
+    if (s) s.textContent = "Mode 4: Outlier (Step 20 Only)";
+  }
+
   if (outputPathGroup) outputPathGroup.classList.add("hidden");
   if (advancedSettingsWrapper) advancedSettingsWrapper.classList.add("hidden");
-  if (pauseCard) pauseCard.classList.add("hidden");
-  if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
   const quickToolsStrip = document.querySelector(".quick-tools-strip");
   if (quickToolsStrip) quickToolsStrip.classList.add("hidden");
 
@@ -442,16 +533,41 @@ function enableDubaiView() {
   if (manualFilePath) manualFilePath.required = false;
   if (finalFilePath) finalFilePath.required = false;
 
-  btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Dubai 2-Step Execution</span>';
-  if (stepsSectionTitle) stepsSectionTitle.textContent = "🏙️ Dubai Land Department Pipeline Steps (1 to 2)";
-
-  renderStepCards(true);
   fetchDubaiConfig();
-  logToConsole("[Dubai] Switched to Dubai Land Department (DLD) 2-Step Pipeline: 1. Scraping -> 2. Processing");
+
+  // If user is already in Mode 3 or Mode 4, preserve that mode!
+  if (appState.mode === "3") {
+    setMode("3");
+    return;
+  }
+  if (appState.mode === "4") {
+    setMode("4");
+    return;
+  }
+
+  // Otherwise, default to Mode 1 (Dubai 2-Step)
+  setMode("1");
 }
 
 function disableDubaiView() {
-  if (appState.mode === "dubai") appState.mode = "1";
+  if (mode1Label) {
+    const s = mode1Label.querySelector("span");
+    if (s) s.textContent = "Mode 1: Start (Steps 1 → 20)";
+  }
+  if (mode2Label) {
+    mode2Label.classList.remove("hidden");
+    const s = mode2Label.querySelector("span");
+    if (s) s.textContent = "Mode 2: Resume (Step 7 → 20)";
+  }
+  if (mode3Label) {
+    const s = mode3Label.querySelector("span");
+    if (s) s.textContent = "Mode 3: Parquet (Step 18 → 20)";
+  }
+  if (mode4Label) {
+    const s = mode4Label.querySelector("span");
+    if (s) s.textContent = "Mode 4: Outlier (Step 20 Only)";
+  }
+
   if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
   if (modeSwitchGroup) modeSwitchGroup.classList.remove("hidden");
   if (outputPathGroup) outputPathGroup.classList.remove("hidden");
@@ -461,6 +577,7 @@ function disableDubaiView() {
   if (stepsSectionTitle) stepsSectionTitle.textContent = "Pipeline Execution Steps (1 to 20)";
 
   renderStepCards(false);
+  if (appState.mode === "dubai") appState.mode = "1";
   setMode(appState.mode);
 }
 
@@ -503,6 +620,13 @@ function attachEventListeners() {
   mode2Radio.addEventListener("change", () => setMode("2"));
   if (mode3Radio) mode3Radio.addEventListener("change", () => setMode("3"));
   if (mode4Radio) mode4Radio.addEventListener("change", () => setMode("4"));
+
+  const btnDubaiQuickParquet = document.getElementById("btn-dubai-quick-parquet");
+  if (btnDubaiQuickParquet) {
+    btnDubaiQuickParquet.addEventListener("click", () => {
+      setMode("3");
+    });
+  }
 
   // Auto-detect city from path input
   inputFilePath.addEventListener("input", () => detectCityFromPath(inputFilePath.value));
@@ -758,13 +882,15 @@ function attachEventListeners() {
     btnConfirmParquet.addEventListener("click", async () => {
       const confirmedPath = (parquetConfirmFilePath ? parquetConfirmFilePath.value.trim() : "") || (finalFilePath ? finalFilePath.value.trim() : "");
 
-      // If user selected Mode 3 directly and pipeline is not currently running, launch Mode 3 via startPipeline
-      if (appState.mode === "3" && !appState.isRunning) {
+      // If user selected Mode 3 directly or pipeline is not currently running, launch Mode 3 via startPipeline
+      if (appState.mode === "3" || !appState.isRunning) {
         if (!confirmedPath) {
           alert("Please select or enter the final processed file (.xlsx) for Parquet conversion.");
           return;
         }
         if (finalFilePath) finalFilePath.value = confirmedPath;
+        if (parquetConfirmFilePath) parquetConfirmFilePath.value = confirmedPath;
+        appState.mode = "3";
         startPipeline();
         return;
       }
@@ -772,14 +898,19 @@ function attachEventListeners() {
       btnConfirmParquet.disabled = true;
       btnConfirmParquet.innerHTML = '<span class="btn-icon">⏳</span> Converting...';
       try {
+        const curCityId = parseInt(cityIdInput ? cityIdInput.value : "9", 10) || appState.cityId || 9;
         const res = await fetch("/api/confirm-parquet", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "proceed", file_path: confirmedPath })
+          body: JSON.stringify({ action: "proceed", file_path: confirmedPath, city_id: curCityId })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to confirm Parquet conversion.");
         if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
+        if (data.status === "started") {
+          appState.isRunning = true;
+          startPolling();
+        }
         logToConsole(`[Parquet Confirmed] Proceeding with file: ${confirmedPath || "(Drive default)"}`, "success");
       } catch (err) {
         alert(`Error: ${err.message}`);
@@ -953,6 +1084,7 @@ function attachEventListeners() {
 function setMode(mode) {
   appState.mode = mode;
   const currentCityId = cityIdInput ? cityIdInput.value : "9";
+  const isDubai = (currentCityId === "15");
 
   if (mode === "1") {
     mode1Label.classList.add("active");
@@ -960,6 +1092,29 @@ function setMode(mode) {
     if (mode3Label) mode3Label.classList.remove("active");
     if (mode4Label) mode4Label.classList.remove("active");
 
+    if (isDubai) {
+      if (dubaiWorkflowCard) dubaiWorkflowCard.classList.remove("hidden");
+      inputFileGroup.classList.add("hidden");
+      manualFileGroup.classList.add("hidden");
+      if (finalFileGroup) finalFileGroup.classList.add("hidden");
+      if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
+
+      if (!appState.isRunning) {
+        if (pauseCard) pauseCard.classList.add("hidden");
+        if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
+      }
+
+      inputFilePath.required = false;
+      manualFilePath.required = false;
+      if (finalFilePath) finalFilePath.required = false;
+      btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Dubai 2-Step Execution</span>';
+      if (stepsSectionTitle) stepsSectionTitle.textContent = "🏙️ Dubai Land Department Pipeline Steps (1 to 2)";
+      renderStepCards(true);
+      logToConsole("[Mode] Selected Mode 1: Dubai 2-Step Workflow (Scraping -> Processing)");
+      return;
+    }
+
+    if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
     inputFileGroup.classList.remove("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
@@ -974,6 +1129,8 @@ function setMode(mode) {
     manualFilePath.required = false;
     if (finalFilePath) finalFilePath.required = false;
     btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Pipeline Execution</span>';
+    if (stepsSectionTitle) stepsSectionTitle.textContent = "Pipeline Execution Steps (1 to 20)";
+    renderStepCards(false);
 
     // Reset marks on steps 1 to 20
     for (let i = 1; i <= 20; i++) {
@@ -988,6 +1145,7 @@ function setMode(mode) {
     }, 120);
 
   } else if (mode === "2") {
+    if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
     mode2Label.classList.add("active");
     mode1Label.classList.remove("active");
     if (mode3Label) mode3Label.classList.remove("active");
@@ -1021,6 +1179,8 @@ function setMode(mode) {
     manualFilePath.required = true;
     if (finalFilePath) finalFilePath.required = false;
     btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Pipeline Execution</span>';
+    if (stepsSectionTitle) stepsSectionTitle.textContent = "Pipeline Execution Steps (1 to 20)";
+    renderStepCards(false);
 
     // Visually mark steps 1-6 as skipped
     for (let i = 1; i <= 6; i++) {
@@ -1049,6 +1209,7 @@ function setMode(mode) {
     mode2Label.classList.remove("active");
     if (mode4Label) mode4Label.classList.remove("active");
 
+    if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
     inputFileGroup.classList.add("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.remove("hidden");
@@ -1062,19 +1223,26 @@ function setMode(mode) {
     if (parquetPauseCard) {
       parquetPauseCard.classList.remove("hidden");
       const pqBadge = document.getElementById("parquet-card-badge");
-      if (pqBadge) pqBadge.textContent = "⚡ Mode 3: Direct Parquet Conversion (Step 18 → 20)";
+      if (pqBadge) pqBadge.textContent = isDubai ? "⚡ Mode 3: Direct Dubai Parquet Conversion" : "⚡ Mode 3: Direct Parquet Conversion (Step 18 → 20)";
       const pqTitle = document.getElementById("parquet-card-title");
-      if (pqTitle) pqTitle.textContent = "Select Final Processed File for Parquet Conversion";
+      if (pqTitle) pqTitle.textContent = isDubai ? "Select Dubai Processed File for Parquet Conversion" : "Select Final Processed File for Parquet Conversion";
       const pqInstructions = document.getElementById("parquet-card-instructions");
       if (pqInstructions) {
-        pqInstructions.textContent = "Pick or enter a final processed file from Google Drive (4. Final processed file) below, then click 'Yes, Convert to Parquet' to proceed directly to Step 18.";
+        pqInstructions.textContent = isDubai
+          ? "Pick or enter a Dubai processed file from Google Drive (2.Processed Files) below, then click 'Yes, Convert to Parquet' or Start Pipeline."
+          : "Pick or enter a final processed file from Google Drive (4. Final processed file) below, then click 'Yes, Convert to Parquet' to proceed directly to Step 18.";
       }
     }
 
     inputFilePath.required = false;
     manualFilePath.required = false;
     if (finalFilePath) finalFilePath.required = true;
-    btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Pipeline Execution</span>';
+    btnRun.innerHTML = isDubai
+      ? '<span class="btn-icon">🚀</span> <span class="btn-text">Convert Dubai File to Parquet</span>'
+      : '<span class="btn-icon">🚀</span> <span class="btn-text">Start Pipeline Execution</span>';
+
+    if (stepsSectionTitle) stepsSectionTitle.textContent = isDubai ? "🏙️ Dubai Pipeline Steps (Parquet Conversion)" : "Pipeline Execution Steps (1 to 20)";
+    renderStepCards(false);
 
     // Visually mark steps 1-17 as skipped
     for (let i = 1; i <= 17; i++) {
@@ -1083,7 +1251,7 @@ function setMode(mode) {
     updateStepUI(18, "pending", "Waiting for Parquet conversion...", "-");
     updateStepUI(19, "pending", "Waiting...", "-");
     updateStepUI(20, "pending", "Waiting...", "-");
-    logToConsole("[Mode] Selected Mode 3: Parquet Conversion Directly (Step 18 → 20)");
+    logToConsole(`[Mode] Selected Mode 3: Parquet Conversion Directly (${isDubai ? "Dubai" : "City ID " + currentCityId})`);
 
     loadFinalDriveLocations(currentCityId);
 
@@ -1098,6 +1266,7 @@ function setMode(mode) {
     }, 120);
 
   } else if (mode === "4") {
+    if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
     if (mode4Label) mode4Label.classList.add("active");
     mode1Label.classList.remove("active");
     mode2Label.classList.remove("active");
@@ -1141,7 +1310,9 @@ function setMode(mode) {
 async function startPipeline() {
   const isDubai = cityIdInput && cityIdInput.value === "15";
 
-  if (isDubai) {
+  // Dubai scraping & processing is ONLY run for Mode 1 (or default Dubai mode).
+  // If Mode 3 (Parquet conversion) or Mode 4 (Outlier) is selected, DO NOT run scraping!
+  if (isDubai && appState.mode !== "3" && appState.mode !== "4") {
     const runScraping = dubaiRunScraping ? dubaiRunScraping.checked : true;
     const runProcessing = dubaiRunProcessing ? dubaiRunProcessing.checked : true;
 
@@ -1160,10 +1331,11 @@ async function startPipeline() {
       city_id: 15,
       city_name: "Dubai",
       city_key: "dubai",
-      mode: "dubai",
+      mode: "1",
       from_date: fromDate,
       to_date: toDate,
       input_file: customCsv,
+      database: getSelectedDb(),
       skip_scraping: !runScraping,
       skip_processing: !runProcessing,
       include_geocoding: includeGeocoding
@@ -1178,7 +1350,7 @@ async function startPipeline() {
     startTimer();
 
     logToConsole(`\n[Execution] Triggering Dubai Land Department (DLD) 2-Step Pipeline...`);
-    if (runScraping) logToConsole(`  - Step 1 (Scraping): Date range ${fromDate || "Auto DB"} to ${toDate || "Today"}`);
+    if (runScraping) logToConsole(`  - Step 1 (Scraping): Date range ${fromDate || "Auto DB"} to ${toDate || "Yesterday"}`);
     if (runProcessing) logToConsole(`  - Step 2 (Processing): Input ${customCsv ? customCsv : "Latest from 1. Download Files(Row)"}`);
 
     try {
@@ -1203,8 +1375,20 @@ async function startPipeline() {
     return;
   }
 
-  const targetOutput = outputPath.value.trim();
-  if (targetOutput && !targetOutput.toLowerCase().endsWith(".xlsx")) {
+  const isMode4 = appState.mode === "4";
+  const isMode3 = appState.mode === "3";
+
+  let chosenFinalFile = "";
+  if (isMode3) {
+    chosenFinalFile = (finalFilePath ? finalFilePath.value.trim() : "") || (parquetConfirmFilePath ? parquetConfirmFilePath.value.trim() : "");
+    if (!chosenFinalFile) {
+      alert("Please select or enter the final processed file (.xlsx) for Parquet conversion.");
+      return;
+    }
+  }
+
+  const targetOutput = isMode3 ? chosenFinalFile : outputPath.value.trim();
+  if (!isMode3 && !isMode4 && targetOutput && !targetOutput.toLowerCase().endsWith(".xlsx")) {
     alert("Output file path must end with '.xlsx'. Please correct it.");
     return;
   }
@@ -1220,15 +1404,16 @@ async function startPipeline() {
     effectiveOutlierLoc = isAll ? null : ((mode4LocationInput ? mode4LocationInput.value.trim() : "") || (outlierLocationSelect ? outlierLocationSelect.value.trim() : ""));
   }
 
-  const isMode4 = appState.mode === "4";
   const payload = {
     mode: appState.mode,
-    input_file: isMode4 ? "" : inputFilePath.value.trim(),
+    input_file: isMode4 ? "" : (isMode3 ? chosenFinalFile : inputFilePath.value.trim()),
     manual_file: isMode4 ? "" : manualFilePath.value.trim(),
+    final_file: isMode3 ? chosenFinalFile : "",
     location_name: isMode4 ? effectiveOutlierLoc : (appState.selectedLocation || (driveInputLocationSelect?.selectedOptions[0]?.dataset.location) || null),
     outlier_location: effectiveOutlierLoc,
-    city_id: parseInt(cityIdInput.value, 10) || 9,
-    output_path: appState.mode === "3" ? ((finalFilePath ? finalFilePath.value.trim() : "") || targetOutput) : targetOutput,
+    city_id: parseInt(cityIdInput.value, 10) || (isDubai ? 15 : 9),
+    output_path: isMode3 ? chosenFinalFile : targetOutput,
+    database: getSelectedDb(),
     include_geocoding: geocodingCb ? geocodingCb.checked : false,
     auto_upload: autoUploadCb ? autoUploadCb.checked : true,
     auto_outlier: autoOutlierCb ? autoOutlierCb.checked : true,
@@ -1305,14 +1490,14 @@ function startPolling() {
 }
 
 function applyStatusUpdate(status) {
-  // Check if status is for Dubai
-  const isDubaiStatus = status.city_id === 15 || status.city_key === "dubai" || (status.steps && status.steps.length === 2);
-  const currentlyShowingDubai = stepsGrid.querySelectorAll(".step-card").length === 2;
+  // Only auto-switch to Dubai 2-Step view if the active mode is Dubai 2-step (Mode 1 / "dubai")
+  const isDubai2Step = (status.city_id === 15 || status.city_key === "dubai") && (status.mode === "dubai" || (status.steps && status.steps.length === 2));
+  const currentlyShowingDubai2Step = stepsGrid.querySelectorAll(".step-card").length === 2;
 
-  if (isDubaiStatus && !currentlyShowingDubai) {
+  if (isDubai2Step && !currentlyShowingDubai2Step && appState.mode !== "3" && appState.mode !== "4") {
     if (cityIdInput && cityIdInput.value !== "15") cityIdInput.value = "15";
     enableDubaiView();
-  } else if (!isDubaiStatus && currentlyShowingDubai && !appState.isRunning && cityIdInput && cityIdInput.value !== "15") {
+  } else if (!isDubai2Step && currentlyShowingDubai2Step && !appState.isRunning && cityIdInput && cityIdInput.value !== "15") {
     disableDubaiView();
   }
 
@@ -1340,7 +1525,7 @@ function applyStatusUpdate(status) {
   }
 
   // Handle Step 7 and Step 18 Pause States (strictly hide for Dubai)
-  const isDubaiActive = (cityIdInput && cityIdInput.value === "15") || isDubaiStatus || appState.mode === "dubai";
+  const isDubaiActive = (cityIdInput && cityIdInput.value === "15") || isDubai2Step || (status.city_id === 15) || (status.city_key === "dubai") || appState.mode === "dubai";
 
   if (isDubaiActive) {
     if (pauseCard) pauseCard.classList.add("hidden");
@@ -2027,7 +2212,8 @@ async function runOutlierDetection() {
       body: JSON.stringify({
         city_id: currentCityId,
         location_name: chosenLoc,
-        save_outlier_report: saveReport
+        save_outlier_report: saveReport,
+        database: getSelectedDb()
       })
     });
     const data = await res.json();

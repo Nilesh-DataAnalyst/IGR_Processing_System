@@ -32,6 +32,18 @@
         </div>
       </div>
       <div class="header-status">
+        <div class="db-selector-card" id="db-selector-wrapper">
+          <span class="db-icon">🗄️</span>
+          <label for="db-select" class="db-label">Database:</label>
+          <div class="db-select-pill">
+            <span class="db-status-dot prod" id="db-dot"></span>
+            <select id="db-select" class="db-dropdown" title="Select PostgreSQL Target Database">
+              <option value="nilesh" selected>nilesh (Production)</option>
+              <option value="test">test (Staging)</option>
+              <option value="__custom__">+ Custom Database...</option>
+            </select>
+          </div>
+        </div>
         <div class="status-indicator online" id="server-status">
           <span class="status-dot"></span>
           <span class="status-text">Server Ready</span>
@@ -87,6 +99,7 @@
                   <option value="12">Thane (ID: 12) — Divisor: 1.40</option>
                 </optgroup>
                 <optgroup label="Other Database Cities (dim_city)">
+                  <option value="15">Dubai (ID: 15)</option>
                   <option value="2">Ahmedabad (ID: 2)</option>
                   <option value="3">Banglore (ID: 3)</option>
                   <option value="6">Hyderabad (ID: 6)</option>
@@ -96,7 +109,6 @@
                   <option value="11">Sangareddy (ID: 11)</option>
                   <option value="13">Yadadri_Bhuvanagiri (ID: 13)</option>
                   <option value="1">Abu_Dhabi (ID: 1)</option>
-                  <option value="15">Dubai (ID: 15)</option>
                 </optgroup>
               </select>
             </div>
@@ -186,7 +198,7 @@
                       Date:</label>
                     <input type="text" id="dubai-to-date" placeholder="DD/MM/YYYY"
                       style="padding: 8px 10px; font-size: 0.84rem; background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 4px; color: #fff; width: 100%;">
-                    <small style="font-size: 0.7rem; color: #94a3b8;">Defaults to Today</small>
+                    <small style="font-size: 0.7rem; color: #94a3b8;">Defaults to Yesterday</small>
                   </div>
                 </div>
                 <small style="display: block; margin-top: 8px; font-size: 0.75rem; color: #64748b;">
@@ -223,6 +235,16 @@
                   </label>
                 </div>
               </div>
+            </div>
+
+            <!-- Dubai Quick Parquet Mode Switch Banner -->
+            <div style="background: rgba(56, 189, 248, 0.1); border: 1px dashed rgba(56, 189, 248, 0.4); border-radius: var(--radius-sm); padding: 10px 14px; margin-top: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+              <span style="font-size: 0.8rem; color: #bae6fd;">
+                ⚡ Already have a processed Excel file in <code>2.Processed Files</code>? Convert directly to Parquet:
+              </span>
+              <button type="button" id="btn-dubai-quick-parquet" style="background: linear-gradient(135deg, #0284c7, #0369a1); border: none; color: #fff; font-size: 0.78rem; font-weight: 600; padding: 5px 12px; border-radius: 4px; cursor: pointer;">
+                ⚡ Switch to Mode 3: Parquet Conversion
+              </button>
             </div>
           </div>
 

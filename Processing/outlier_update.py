@@ -54,7 +54,17 @@ def get_city_name(conn, city_id: int) -> str | None:
         return row[0] if row else None
 
 
-def fetch_data(conn, city_id: int, location_name: str | None = None) -> pd.DataFrame:
+def fetch_data(conn, city_id: int, location_name: str | None = None, log_fn=None) -> pd.DataFrame:
+    city_name = get_city_name(conn, city_id)
+    city_clean = (city_name or "").strip().lower()
+
+    if location_name and city_clean in ALL_LOCATIONS_CITIES:
+        msg = f"City ID {city_id} ({city_name}) groups all locations together; pulling entire city dataset."
+        print(f"Note: {msg}")
+        if log_fn:
+            log_fn(f"Step 20: ℹ️ {msg}", "info")
+        location_name = None
+
     query = """
         SELECT
             t.transaction_id,
@@ -70,31 +80,29 @@ def fetch_data(conn, city_id: int, location_name: str | None = None) -> pd.DataF
     """
     params = [city_id]
 
-    # For Dubai / Abu Dhabi the grouping logic always combines every location
-    # into '__ALL_LOCATIONS__'. Applying a location filter there would only
-    # pull a subset of rows and compute percentiles/median on that subset
-    # instead of the whole city, so we ignore it and pull the whole city.
-    city_name = get_city_name(conn, city_id)
-    city_clean = (city_name or "").strip().lower()
-    if location_name and city_clean in ALL_LOCATIONS_CITIES:
-        print(
-            f"Note: city_id={city_id} ({city_name}) groups all locations together; "
-            f"ignoring location_name='{location_name}' and pulling the whole city."
-        )
-        location_name = None
-
     if location_name:
         query += " AND lower(trim(t.location_name)) = lower(trim(%s))"
         params.append(location_name)
 
-    return pd.read_sql(query, conn, params=tuple(params))
+    target_desc = f"location='{location_name}'" if location_name else f"all locations in {city_name or 'City ' + str(city_id)}"
+    if log_fn:
+        log_fn(f"Step 20: 🔍 Fetching transactions from public.transactions for {target_desc}...", "info")
+
+    df = pd.read_sql(query, conn, params=tuple(params))
+    if log_fn:
+        log_fn(f"Step 20: 📥 Fetched {len(df):,} transactions from public.transactions.", "info")
+
+    return df
 
 
 # --------------------------------------------------------------------------- #
 # Compute
 # --------------------------------------------------------------------------- #
-def compute_outliers(df: pd.DataFrame, save_merged_path: str | None = None) -> pd.DataFrame:
+def compute_outliers(df: pd.DataFrame, save_merged_path: str | None = None, log_fn=None) -> pd.DataFrame:
     df = df.copy()
+
+    if log_fn:
+        log_fn(f"Step 20: ⚙️ Calculating rate percentiles (p1/p99) and median boundaries...", "info")
 
     # --- normalized helper columns -----------------------------------------
     df["city_name_clean"] = df["city_name"].astype(str).str.strip().str.lower()
@@ -194,24 +202,42 @@ def compute_outliers(df: pd.DataFrame, save_merged_path: str | None = None) -> p
             df.to_csv(save_merged_path, index=False)
         else:
             df.to_excel(save_merged_path, index=False)
-        print(f"Saved merged outlier analysis to: {save_merged_path}")
+        msg = f"Saved merged outlier analysis to: {save_merged_path}"
+        print(msg)
+        if log_fn:
+            log_fn(f"Step 20: 📄 {msg}", "success")
 
     result = df[["transaction_id", "calc_rate", "is_outlier", "outlier_type"]].rename(
         columns={"calc_rate": "rate"}
     )
-    # replace NaN rate with None so it lands as SQL NULL
     result["rate"] = result["rate"].where(result["rate"].notna(), None)
+
+    n_outliers = int(result["is_outlier"].sum())
+    lower_cnt = int((result["outlier_type"] == "Lower Outlier").sum())
+    upper_cnt = int((result["outlier_type"] == "Upper Outlier").sum())
+    normal_cnt = int((result["outlier_type"] == "Normal").sum())
+    invalid_cnt = int((result["outlier_type"] == "Invalid/Excluded").sum())
+    if log_fn:
+        pct = (n_outliers / max(1, len(result))) * 100
+        log_fn(f"Step 20: 📊 Outliers breakdown: {n_outliers:,} flagged ({pct:.1f}%) | Normal: {normal_cnt:,} | Lower: {lower_cnt:,} | Upper: {upper_cnt:,} | Invalid/Excluded: {invalid_cnt:,}", "info")
+
     return result
 
 
 # --------------------------------------------------------------------------- #
 # Update
 # --------------------------------------------------------------------------- #
-def update_db(conn, result_df: pd.DataFrame, batch_size: int = 5000) -> None:
+def update_db(conn, result_df: pd.DataFrame, batch_size: int = 5000, log_fn=None, is_stopped_fn=None) -> None:
     records = [
         (int(row.transaction_id), row.rate, bool(row.is_outlier), row.outlier_type)
         for row in result_df.itertuples(index=False)
     ]
+    total_records = len(records)
+    if total_records == 0:
+        return
+
+    if log_fn:
+        log_fn(f"Step 20: 💾 Updating {total_records:,} rows in public.transactions (batch size: {batch_size:,})...", "info")
 
     sql = """
         UPDATE public.transactions AS t
@@ -223,8 +249,22 @@ def update_db(conn, result_df: pd.DataFrame, batch_size: int = 5000) -> None:
     """
 
     with conn.cursor() as cur:
-        execute_values(cur, sql, records, template="(%s, %s, %s, %s)", page_size=batch_size)
-    conn.commit()
+        for i in range(0, total_records, batch_size):
+            if is_stopped_fn and is_stopped_fn():
+                if log_fn:
+                    log_fn("Step 20: ⏹️ Outlier update cancelled by user.", "warning")
+                conn.rollback()
+                return
+            chunk = records[i : i + batch_size]
+            execute_values(cur, sql, chunk, template="(%s, %s, %s, %s)", page_size=batch_size)
+            conn.commit()
+            processed = min(i + batch_size, total_records)
+            pct = int((processed / total_records) * 100)
+            if log_fn and (processed == total_records or i % (batch_size * 2) == 0):
+                log_fn(f"Step 20: 💾 Updated {processed:,} / {total_records:,} rows ({pct}%)...", "info")
+
+    if log_fn:
+        log_fn(f"Step 20: ✓ Database update committed: {total_records:,} rows updated.", "success")
 
 
 # --------------------------------------------------------------------------- #
@@ -235,21 +275,42 @@ def main(
     location_name: str | None = None,
     db_params: dict | None = None,
     save_merged_path: str | None = None,
+    log_fn=None,
+    is_stopped_fn=None,
 ) -> None:
     if city_id is None:
-        raise ValueError("city_id must be provided (e.g. Pune=9, Mumbai=8, Thane=12).")
+        raise ValueError("city_id must be provided (e.g. Pune=9, Mumbai=8, Thane=12, Dubai=15).")
 
     conn_params = db_params or DB_PARAMS
+    db_name = conn_params.get("database", "nilesh")
+
+    if log_fn:
+        log_fn(f"Step 20: 🔌 Connecting to PostgreSQL database '{db_name}' (host={conn_params.get('host', 'localhost')}:{conn_params.get('port', 5432)})...", "info")
+
     conn = psycopg2.connect(**conn_params)
     try:
-        df = fetch_data(conn, city_id, location_name)
+        df = fetch_data(conn, city_id, location_name, log_fn=log_fn)
         if df.empty:
             where = f", location_name='{location_name}'" if location_name else ""
-            print(f"No transactions found for city_id={city_id}{where}")
+            msg = f"No transactions found for city_id={city_id}{where} in database '{db_name}'."
+            print(msg)
+            if log_fn:
+                log_fn(f"Step 20: ⚠️ {msg}", "warning")
             return
 
-        result_df = compute_outliers(df, save_merged_path=save_merged_path)
-        update_db(conn, result_df)
+        if is_stopped_fn and is_stopped_fn():
+            if log_fn:
+                log_fn("Step 20: ⏹️ Outlier detection stopped by user.", "warning")
+            return
+
+        result_df = compute_outliers(df, save_merged_path=save_merged_path, log_fn=log_fn)
+
+        if is_stopped_fn and is_stopped_fn():
+            if log_fn:
+                log_fn("Step 20: ⏹️ Outlier detection stopped by user.", "warning")
+            return
+
+        update_db(conn, result_df, log_fn=log_fn, is_stopped_fn=is_stopped_fn)
 
         n_outliers = int(result_df["is_outlier"].sum())
         scope = f"city_id={city_id}" + (f", location='{location_name}'" if location_name else " (all locations)")

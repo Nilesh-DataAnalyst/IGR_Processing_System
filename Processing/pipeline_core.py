@@ -17,13 +17,31 @@ warnings.filterwarnings("ignore")
 from divisor import SALEABLE_TO_CARPET_DIVISOR_BY_CITY
 BUILDUP_TO_CARPET_DIVISOR = 1.2
 
+DEFAULT_DATABASE = "nilesh"
+
 DB_PARAMS = {
     "host": "localhost",
     "port": "5432",
-    "database": "nilesh",
+    "database": DEFAULT_DATABASE,
     "user": "postgres",
     "password": "nilesh",
 }
+
+
+def get_db_params(override_db: str = None) -> dict:
+    """Returns a copy of DB_PARAMS with an optional database override."""
+    params = DB_PARAMS.copy()
+    if override_db and str(override_db).strip():
+        params["database"] = str(override_db).strip()
+    return params
+
+
+def set_active_db(db_name: str) -> dict:
+    """Sets the active database globally in DB_PARAMS."""
+    global DB_PARAMS
+    if db_name and str(db_name).strip():
+        DB_PARAMS["database"] = str(db_name).strip()
+    return DB_PARAMS
 
 DEFAULT_DRIVE_FOLDER_URL = (
     "https://drive.google.com/drive/folders/1l-HFh36Yk8pSs-NmoSK60if6cP2cjztM"
@@ -278,40 +296,23 @@ def keep_db_columns(df: pd.DataFrame, db_sequence: list) -> pd.DataFrame:
 
 
 def populate_village_mapping(df: pd.DataFrame, city_id: int, db_params: dict) -> pd.DataFrame:
-    """Match areaname / village_name_marathi against transactions table and fill location_name & registered_document_village_name."""
-    col = (
-        "village_name_marathi"
-        if "village_name_marathi" in df.columns
-        else ("areaname" if "areaname" in df.columns else None)
-    )
+    col = next((c for c in ["village_name_marathi", "areaname"] if c in df.columns), None)
     if not col:
+        if "registered_document_village_name" in df.columns:
+            df["location_name"] = df["registered_document_village_name"]
         return df
 
-    for c in ["location_name", "registered_document_village_name"]:
-        if c not in df.columns:
-            df[c] = pd.NA
-
+    keys = (df[col].iloc[:, 0] if isinstance(df[col], pd.DataFrame) else df[col]).astype(str).str.strip()
+    
     conn = psycopg2.connect(**db_params)
     try:
-        lookup = pd.read_sql_query(
-            """
-            SELECT DISTINCT TRIM(village_name_marathi) AS village_name_marathi,
-                   location_name,
-                   registered_document_village_name
-            FROM public.transactions
-            WHERE city_id = %s AND village_name_marathi IS NOT NULL
-            """,
-            conn,
-            params=(city_id,),
-        )
+        q = "SELECT DISTINCT TRIM(village_name_marathi) AS v, registered_document_village_name AS r FROM public.transactions WHERE city_id = %s AND village_name_marathi = ANY(%s)"
+        lookup = pd.read_sql_query(q, conn, params=(city_id, list(keys.unique()))).drop_duplicates("v").set_index("v")["r"]
     finally:
         conn.close()
 
-    lookup = lookup.drop_duplicates(subset=["village_name_marathi"], keep="first")
-    lookup = lookup.set_index("village_name_marathi")
-
-    col_series = df[col].iloc[:, 0] if isinstance(df[col], pd.DataFrame) else df[col]
-    keys = col_series.astype(str).str.strip()
-    df["location_name"] = keys.map(lookup["location_name"])
-    df["registered_document_village_name"] = keys.map(lookup["registered_document_village_name"])
+    # Assigns both columns simultaneously from the lookup
     return df
+
+
+

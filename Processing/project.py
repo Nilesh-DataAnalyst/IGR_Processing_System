@@ -36,14 +36,21 @@ from city_config import (
     get_manual_correction_drive_url,
     render_correction_email_html,
     send_final_checker_email,
+    get_google_drive_file_url,
+    get_clean_drive_path,
 )
 
 BUILDUP_TO_CARPET_DIVISOR = 1.2
 
+CLI_DB = None
+for _i, _arg in enumerate(sys.argv):
+    if _arg in ["--db", "-d"] and _i + 1 < len(sys.argv):
+        CLI_DB = sys.argv[_i + 1].strip()
+
 DB_PARAMS = {
     "host": "localhost",
     "port": "5432",
-    "database": "nilesh",
+    "database": CLI_DB or "nilesh",
     "user": "postgres",
     "password": "nilesh",
 }
@@ -493,7 +500,9 @@ def build_correction_email_content(
     file_path: str,
     deadline_body: str = "",
     formatted_dl: str = None,
-    is_attachment: bool = True,
+    is_attachment: bool = False,
+    file_url: str = None,
+    drive_path: str = None,
 ) -> tuple:
     """Builds both plain-text and HTML versions of the manual correction email with bold formatting."""
     delivery_note_plain = "Please find the file attached with this email." if is_attachment else "Please access the file directly from Google Drive using the link above."
@@ -507,12 +516,17 @@ def build_correction_email_content(
         </div>
         """
 
+    if not file_url:
+        file_url = get_google_drive_file_url(file_path) or drive_url
+    if not drive_path:
+        drive_path = get_clean_drive_path(file_path)
+
     plain_text = f"""Hello,
 
 {loc_intro} is ready for review.{deadline_body}
 📄 File: {file_name}
-🌐 Google Drive Folder: {drive_url}
-📂 Local / Drive Path: {file_path}
+🔗 Direct File Link: {file_url}
+📁 Drive Location: {drive_path}
 
 {delivery_note_plain}
 
@@ -560,6 +574,8 @@ Nilesh K.
         file_path=file_path,
         delivery_note_html=delivery_note_html,
         deadline_banner_html=deadline_banner_html,
+        file_url=file_url,
+        drive_path=drive_path,
     )
 
     return plain_text, html_text
@@ -651,8 +667,12 @@ def prompt_share_correction_file(
         print(f"  {CYAN}📋 CC      :{RESET} {', '.join(clean_cc)}")
     if deadline_input:
         print(f"  {CYAN}⏰ Deadline:{RESET} {deadline_input}")
-    print(f"  {CYAN}📎 Attachment size:{RESET} {file_size_mb:.2f} MB")
-    print(f"  {YELLOW}⏳ Uploading file over SMTP (may take 1-2 minutes for large files)...{RESET}")
+
+    file_url = get_google_drive_file_url(file_path) or drive_url
+    drive_path = get_clean_drive_path(file_path)
+    print(f"  {CYAN}🔗 Direct Link:{RESET} {file_url}")
+    print(f"  {CYAN}📁 Drive Path :{RESET} {drive_path}")
+    print(f"  {YELLOW}⏳ Sending Google Drive link notification (no heavy attachment)...{RESET}")
 
     deadline_str = f"\n⏰ Expected Deadline: {deadline_input}\n" if deadline_input else ""
     deadline_subj = f" [Deadline: {deadline_input}]" if deadline_input else ""
@@ -661,15 +681,13 @@ def prompt_share_correction_file(
         import smtplib
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
-        from email.mime.base import MIMEBase
-        from email import encoders
 
         sender_email = "nilesh@sigmavalue.co.in"
         sender_password = "nvlf igcl tyxm nnwo"
         smtp_server = "smtp.gmail.com"
         smtp_port = 587
 
-        msg = MIMEMultipart("mixed")
+        msg = MIMEMultipart("alternative")
         msg["From"] = f"Nilesh <{sender_email}>"
         msg["To"] = ", ".join(clean_recipients)
         if clean_cc:
@@ -685,27 +703,15 @@ def prompt_share_correction_file(
             file_path=file_path,
             deadline_body=deadline_str,
             formatted_dl=deadline_input,
-            is_attachment=True,
+            is_attachment=False,
+            file_url=file_url,
+            drive_path=drive_path,
         )
 
-        body_alt = MIMEMultipart("alternative")
-        body_alt.attach(MIMEText(plain_body, "plain", "utf-8"))
-        body_alt.attach(MIMEText(html_body, "html", "utf-8"))
-        msg.attach(body_alt)
+        msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-        if os.path.exists(file_path):
-            with open(file_path, "rb") as attachment:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(attachment.read())
-            encoders.encode_base64(part)
-            part.add_header(
-                "Content-Disposition",
-                f"attachment; filename= {file_name}",
-            )
-            msg.attach(part)
-
-        # Timeout increased to 300s (5 minutes) for large attachments
-        server = smtplib.SMTP(smtp_server, smtp_port, timeout=300)
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=60)
         server.ehlo()
         server.starttls()
         server.ehlo()
@@ -713,41 +719,10 @@ def prompt_share_correction_file(
         server.sendmail(sender_email, all_recipients, msg.as_string())
         server.quit()
 
-        print(f"\n{GREEN}✓ Email sent successfully with attachment to {', '.join(clean_recipients)} (CC: {', '.join(clean_cc)})!{RESET}")
+        print(f"\n{GREEN}✓ Direct link notification sent successfully to {', '.join(clean_recipients)} (CC: {', '.join(clean_cc)})!{RESET}")
     except Exception as err:
-        print(f"\n{RED}❌ Failed to send attachment ({err}). Sending Drive link notification instead...{RESET}")
-        try:
-            # Fallback: Send email with Drive link without the large attachment
-            fallback_msg = MIMEMultipart("alternative")
-            fallback_msg["From"] = f"Nilesh <{sender_email}>"
-            fallback_msg["To"] = ", ".join(clean_recipients)
-            if clean_cc:
-                fallback_msg["Cc"] = ", ".join(clean_cc)
-            fallback_msg["Subject"] = f"[Manual Correction Required]{deadline_subj} {loc_str.strip()} - {file_name}"
-
-            fallback_plain, fallback_html = build_correction_email_content(
-                loc_intro=loc_intro,
-                file_name=file_name,
-                drive_url=drive_url,
-                file_path=file_path,
-                deadline_body=deadline_str,
-                formatted_dl=deadline_input,
-                is_attachment=False,
-            )
-            fallback_msg.attach(MIMEText(fallback_plain, "plain", "utf-8"))
-            fallback_msg.attach(MIMEText(fallback_html, "html", "utf-8"))
-
-            server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, all_recipients, fallback_msg.as_string())
-            server.quit()
-            print(f"{GREEN}✓ Drive link notification sent successfully to {', '.join(clean_recipients)} (CC: {', '.join(clean_cc)})!{RESET}")
-        except Exception as fb_err:
-            print(f"{RED}❌ Fallback email also failed: {fb_err}{RESET}")
-        print(f"  {CYAN}🌐 You can also share the link directly:{RESET} {drive_url}")
+        print(f"\n{RED}❌ Failed to send email ({err}).{RESET}")
+        print(f"  {CYAN}🌐 You can share the link directly:{RESET} {file_url or drive_url}")
 
 def rename_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.rename(
@@ -932,44 +907,23 @@ def resolve_city(df: pd.DataFrame = None, source_file: str = None, db_params: di
         return 9, "Pune"
 
 def populate_village_mapping(df: pd.DataFrame, city_id: int, db_params: dict) -> pd.DataFrame:
-    """Match areaname / village_name_marathi against transactions table and fill location_name & registered_document_village_name."""
-    col = (
-        "village_name_marathi"
-        if "village_name_marathi" in df.columns
-        else ("areaname" if "areaname" in df.columns else None)
-    )
+    col = next((c for c in ["village_name_marathi", "areaname"] if c in df.columns), None)
     if not col:
+        if "registered_document_village_name" in df.columns:
+            df["location_name"] = df["registered_document_village_name"]
         return df
 
-    for c in ["location_name", "registered_document_village_name"]:
-        if c not in df.columns:
-            df[c] = pd.NA
-
+    keys = (df[col].iloc[:, 0] if isinstance(df[col], pd.DataFrame) else df[col]).astype(str).str.strip()
+    
     conn = psycopg2.connect(**db_params)
-    lookup = pd.read_sql_query(
-        """
-        SELECT DISTINCT TRIM(village_name_marathi) AS village_name_marathi,
-               location_name,
-               registered_document_village_name
-        FROM public.transactions
-        WHERE city_id = %s AND village_name_marathi IS NOT NULL
-        """,
-        conn,
-        params=(city_id,),
-    )
+    q = "SELECT DISTINCT TRIM(village_name_marathi) AS v, registered_document_village_name AS r FROM public.transactions WHERE city_id = %s AND village_name_marathi = ANY(%s)"
+    lookup = pd.read_sql_query(q, conn, params=(city_id, list(keys.unique()))).drop_duplicates("v").set_index("v")["r"]
     conn.close()
 
-    lookup = lookup.drop_duplicates(subset=["village_name_marathi"], keep="first")
-    lookup = lookup.set_index("village_name_marathi")
-
-    col_series = df[col].iloc[:, 0] if isinstance(df[col], pd.DataFrame) else df[col]
-    keys = col_series.astype(str).str.strip()
-    df["location_name"] = keys.map(lookup["location_name"])
-    df["registered_document_village_name"] = keys.map(lookup["registered_document_village_name"])
-
-    matched_count = df["registered_document_village_name"].notna().sum()
-    print(f"  {CYAN}Village mapping matched:{RESET} {matched_count} / {len(df)} rows")
+    # Assigns both columns simultaneously from the lookup
+    df["location_name"] = df["registered_document_village_name"] = keys.map(lookup)
     return df
+
 
 def keep_db_columns(df, db_sequence):
     existing_cols = [col for col in db_sequence if col in df.columns]
@@ -1064,6 +1018,38 @@ def add_buyer_location(df: pd.DataFrame, postal_csv_path: str | Path = None) -> 
         return df
 
 # ============================================================
+# TARGET DATABASE SELECTION
+# ============================================================
+if CLI_DB:
+    selected_db = CLI_DB
+else:
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   🗄️  SELECT TARGET DATABASE{RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"  {CYAN}[1]{RESET} nilesh (Production / Default)")
+    print(f"  {CYAN}[2]{RESET} test   (Staging / Testing)")
+    print(f"  {CYAN}[3]{RESET} Custom Database Name")
+    print(f"{HEADER}{'-' * 60}{RESET}")
+    db_choice = input(f"{YELLOW}Select database [1-3 or enter name, default: 1 (nilesh)]: {RESET}").strip()
+    if db_choice in ["", "1", "nilesh"]:
+        selected_db = "nilesh"
+    elif db_choice in ["2", "test"]:
+        selected_db = "test"
+    elif db_choice == "3":
+        custom_db = input(f"{YELLOW}Enter custom database name: {RESET}").strip()
+        selected_db = custom_db if custom_db else "nilesh"
+    else:
+        selected_db = db_choice
+
+DB_PARAMS["database"] = selected_db
+try:
+    from pipeline_core import set_active_db
+    set_active_db(selected_db)
+except Exception:
+    pass
+print(f"{GREEN}✓ Target Database set to: {BOLD}{selected_db}{RESET}")
+
+# ============================================================
 # TARGET CITY SELECTION & PIPELINE MODE
 # ============================================================
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
@@ -1120,13 +1106,13 @@ if active_city_key == "dubai" or target_city_id == 15:
         print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
         print(f"{HEADER}{BOLD}   📥 [STEP 1/2] Launching Dubai Data Scraper...{RESET}")
         print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-        subprocess.run([sys.executable, scraper_script], cwd=dubai_dir, check=True)
+        subprocess.run([sys.executable, scraper_script, "--db", selected_db], cwd=dubai_dir, check=True)
 
         # Step 2: Processing
         print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
         print(f"{HEADER}{BOLD}   ⚙️  [STEP 2/2] Launching Dubai Data Processing Pipeline...{RESET}")
         print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-        subprocess.run([sys.executable, pipeline_script], cwd=dubai_dir, check=True)
+        subprocess.run([sys.executable, pipeline_script, "--db", selected_db], cwd=dubai_dir, check=True)
 
         print(f"\n{GREEN}{BOLD}🎉 Dubai 2-step workflow completed successfully!{RESET}\n")
         sys.exit(0)
@@ -1136,7 +1122,7 @@ if active_city_key == "dubai" or target_city_id == 15:
         print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
         print(f"{HEADER}{BOLD}   📥 [STEP 1/2] Launching Dubai Data Scraper...{RESET}")
         print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-        subprocess.run([sys.executable, scraper_script], cwd=dubai_dir, check=True)
+        subprocess.run([sys.executable, scraper_script, "--db", selected_db], cwd=dubai_dir, check=True)
         print(f"\n{GREEN}{BOLD}🎉 Dubai Scraping finished!{RESET}\n")
         sys.exit(0)
 
@@ -1145,7 +1131,7 @@ if active_city_key == "dubai" or target_city_id == 15:
         print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
         print(f"{HEADER}{BOLD}   ⚙️  [STEP 2/2] Launching Dubai Data Processing Pipeline...{RESET}")
         print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-        subprocess.run([sys.executable, pipeline_script], cwd=dubai_dir, check=True)
+        subprocess.run([sys.executable, pipeline_script, "--db", selected_db], cwd=dubai_dir, check=True)
         print(f"\n{GREEN}{BOLD}🎉 Dubai Processing finished!{RESET}\n")
         sys.exit(0)
 
@@ -1360,7 +1346,22 @@ else:
     from static import result_dict, word_number_dict
 
     df["transaction_type"] = df["docname"].map(result_dict.get)
-    print(f"{GREEN}✓ [STEP 4/19] Transaction types mapped.{RESET}")
+    if df["transaction_type"].isna().any() and df["docname"].notna().any():
+        fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
+        df["transaction_type"] = df["transaction_type"].fillna(fallback_map)
+
+    mapped_count = int(df["transaction_type"].notna().sum())
+    total_docnames = int(df["docname"].notna().sum()) if "docname" in df.columns else 0
+    unmapped_count = total_docnames - mapped_count
+    pct = (mapped_count / total_docnames * 100) if total_docnames > 0 else 0.0
+
+    print(f"{GREEN}✓ [STEP 4/19] Transaction types mapped: {mapped_count:,}/{total_docnames:,} ({pct:.1f}%){RESET}")
+    if unmapped_count > 0:
+        print(f"{YELLOW}  ⚠ Unmapped docnames: {unmapped_count:,}{RESET}")
+    print(f"{BOLD}Transaction Type Value Counts:{RESET}")
+    for tx, cnt in df["transaction_type"].value_counts(dropna=False).head(15).items():
+        tx_label = "<Missing / None>" if pd.isna(tx) else str(tx)
+        print(f"  • {tx_label:<35}: {cnt:>6,}")
 
     # STEP 5 - Transaction Categorisation
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
@@ -1530,7 +1531,6 @@ if pipeline_mode in ["1", "2"]:
         "project_lat": "project_latitude",
         "project_lng": "project_longitude",
         "BHK": "unit_configuration",
-        "manual_processed": "is_manual_processed",
         "locality_en": "sub_locality",
         "wing_no": "tower_name",
         "rate_in_sqft": "rate"  # Standardize 'rate_in_sqft' to DB schema column 'rate'
@@ -1562,7 +1562,6 @@ if pipeline_mode in ["1", "2"]:
         "city_name": target_city_name.title(),
         "project_stage": pd.NA,
         "is_llm_processed": "Yes",
-        "is_manual_processed": "No",
     }
 
     for col, value in defaults.items():
@@ -1591,15 +1590,15 @@ if pipeline_mode in ["1", "2"]:
     df = populate_location_coords(df, target_city_id, DB_PARAMS)
     print(f"{GREEN}✓ [STEP 13/19] Location LatLong populated.{RESET}")
 
-    # # ============================================================
-    # # STEP 14 - Fill remaining project coordinates using Google Places API
-    # # ============================================================
-    # print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    # print(f"{HEADER}{BOLD}   ⏳ [STEP 14/19] Populating Project Coordinates (Google Places API)...{RESET}")
-    # print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-    # from project_coordinates import populate_project_coordinates
-    # df = populate_project_coordinates(df)
-    # print(f"{GREEN}✓ [STEP 14/19] Project Coordinates completed.{RESET}")
+    # ============================================================
+    # STEP 14 - Fill remaining project coordinates using Google Places API
+    # ============================================================
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 14/19] Populating Project Coordinates (Google Places API)...{RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+    from project_coordinates import populate_project_coordinates
+    df = populate_project_coordinates(df)
+    print(f"{GREEN}✓ [STEP 14/19] Project Coordinates completed.{RESET}")
 
     # ============================================================
     # STEP 15 - Filter & Order Selective DB Columns
@@ -1635,7 +1634,7 @@ if pipeline_mode in ["1", "2"]:
         else (input_file if ("input_file" in locals() and input_file) else "output.xlsx")
     )
     base_name = os.path.splitext(os.path.basename(source_file))[0]
-    for suffix in ["_for_manual", "_processed_v1", "_processed", "_llm_output", "_Merged_File", "_merged_file", "_merged"]:
+    for suffix in ["_final_processed", "_for_manual", "_processed_v1", "_processed", "_llm_output", "_Merged_File", "_merged_file", "_merged"]:
         base_name = base_name.replace(suffix, "")
     default_filename = f"{base_name}_final_processed.xlsx"
 

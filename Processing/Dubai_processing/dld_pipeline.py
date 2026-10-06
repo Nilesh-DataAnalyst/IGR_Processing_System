@@ -261,8 +261,13 @@ TEST_MERGE_PATH = os.path.join(OUTPUT_DIR, f"{_raw_stem}_test_merge.xlsx")
 # Database Configuration & Runtime City ID
 CITY_NAME = "Dubai"
 
+cli_db = "nilesh"
+for i, arg in enumerate(sys.argv):
+    if arg in ["--db", "-d"] and i + 1 < len(sys.argv):
+        cli_db = sys.argv[i + 1].strip()
+
 db_params = {
-    "host": "localhost", "port": "5432", "database": "nilesh",
+    "host": "localhost", "port": "5432", "database": cli_db,
     "user": "postgres", "password": "nilesh"
 }
 
@@ -426,6 +431,8 @@ def strip_nr_suffix(x):
 def clean_index(x):
     if pd.isna(x): return None
     x = str(x).strip()
+    x = re.sub(r"__.*$", "", x)
+    x = re.sub(r"_dubai$", "", x, flags=re.IGNORECASE)
     try:
         n = float(x); return int(n) if n.is_integer() else x
     except ValueError:
@@ -526,7 +533,7 @@ def get_db_mapping(params, city_id):
             rows = cur.fetchall()
     out = {}
     for location, project, city, idx in rows:
-        out.setdefault((location, project, city), strip_nr_suffix(idx))
+        out.setdefault((location, project, city), clean_index(idx))
     return out
 
 db_mapping = get_db_mapping(db_params, CITY_ID)
@@ -620,10 +627,10 @@ print("[stepC] remaining blank location_longitude:", df["location_longitude"].is
 # FINAL COLUMN ORDER + TITLE CASE + SAVE
 # =========================================================
 column_order = [
-    "project_id","index","project_name",
+    "index","project_name",
     "village_name_marathi","location_id","location_name",
     "registered_document_village_name","year","quarter","city_id","city_name",
-    "transaction_category_id","sub_registrar_office_code",
+    "sub_registrar_office_code",
     "sub_registrar_office_name","document_number","transaction_type",
     "agreement_price","guideline_value","property_description","transaction_date",
     "floor_number","unit_number","property_type_raw","net_carpet_area_sq_m",
@@ -808,13 +815,33 @@ else:
     print(f"[stepD] Remaining blank project_longitude: {df['project_longitude'].isna().sum()}")
 
 # ============================== FINAL SCHEMA REORDER & SAVE ==============================
-# Ensure all column_order columns are present
-for col in column_order:
+# 1. Clean 'index' column to remove '__Dubai' or '__.*' suffix
+if "index" in df.columns:
+    df["index"] = df["index"].map(clean_index)
+
+# 2. Exclude unwanted columns explicitly requested to be removed
+exclude_columns = [
+    "project_id",
+    "transaction_category_id",
+    "google_project_name",
+    "google_address",
+    "google_place_id",
+    "searched_query",
+    "coordinate_status",
+    "coordinate_error",
+]
+df.drop(columns=[c for c in exclude_columns if c in df.columns], errors="ignore", inplace=True)
+
+# 3. Filter column_order to exclude removed columns
+final_column_order = [c for c in column_order if c not in exclude_columns]
+
+# Ensure all final_column_order columns are present
+for col in final_column_order:
     if col not in df.columns:
         df[col] = None
 
-# column_order first, rest of columns kept at the last
-final_columns = column_order + [c for c in df.columns if c not in column_order]
+# final_column_order first, rest of columns kept at the end
+final_columns = final_column_order + [c for c in df.columns if c not in final_column_order and c not in exclude_columns]
 df = df[final_columns]
 
 # ============================== SAVE FINAL ==============================

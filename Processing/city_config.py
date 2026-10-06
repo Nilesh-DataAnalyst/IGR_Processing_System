@@ -296,6 +296,52 @@ def resolve_rera_grand_path(city_identifier: str | int = None) -> str | None:
     return None
 
 
+def get_google_drive_file_url(file_path: str) -> str | None:
+    """
+    Attempts to retrieve the direct Google Drive web view URL for a local file synced via Google Drive Desktop.
+    Queries DriveFS local metadata SQLite database.
+    """
+    if not file_path:
+        return None
+    import sqlite3
+    file_name = os.path.basename(file_path)
+    drivefs_base = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "DriveFS")
+    if not os.path.isdir(drivefs_base):
+        return None
+
+    for entry in os.listdir(drivefs_base):
+        db_path = os.path.join(drivefs_base, entry, "mirror_metadata_sqlite.db")
+        if os.path.isfile(db_path):
+            try:
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT id FROM items WHERE local_title = ? AND is_folder = 0 ORDER BY modified_date DESC LIMIT 1;",
+                    (file_name,),
+                )
+                row = cur.fetchone()
+                conn.close()
+                if row and row[0]:
+                    return f"https://drive.google.com/file/d/{row[0]}/view"
+            except Exception:
+                pass
+    return None
+
+
+def get_clean_drive_path(file_path: str) -> str:
+    """Extracts a clean, human-readable Google Drive breadcrumb path instead of raw local disk paths."""
+    if not file_path:
+        return ""
+    norm = os.path.normpath(str(file_path))
+    parts = norm.split(os.sep)
+    for idx, p in enumerate(parts):
+        if any(marker in p.lower() for marker in ["3. manually corrected", "manually corrected", "4. final", "final processed", "2. llm processed", "download"]):
+            return "Google Drive > " + " > ".join(parts[idx:])
+    if len(parts) >= 2:
+        return f"Google Drive > {parts[-2]} > {parts[-1]}"
+    return os.path.basename(file_path)
+
+
 def render_correction_email_html(
     loc_intro: str,
     file_name: str,
@@ -303,6 +349,8 @@ def render_correction_email_html(
     file_path: str,
     delivery_note_html: str,
     deadline_banner_html: str = "",
+    file_url: str = None,
+    drive_path: str = None,
 ) -> str:
     """
     Renders the HTML email template by reading email_template.html (located in web/ or Processing root)
@@ -323,13 +371,18 @@ def render_correction_email_html(
             except Exception:
                 pass
 
+    if not file_url:
+        file_url = get_google_drive_file_url(file_path) or drive_url
+    if not drive_path:
+        drive_path = get_clean_drive_path(file_path)
+
     if not template_html:
         template_html = """<!DOCTYPE html><html><body style="font-family:sans-serif;padding:16px;">
         <p>Hello,</p><p><strong>{{loc_intro}}</strong> is ready for review.</p>
         {{deadline_banner_html}}
         <p><strong>📄 File:</strong> {{file_name}}</p>
-        <p><strong>🌐 Google Drive Folder:</strong> <a href="{{drive_url}}">{{drive_url}}</a></p>
-        <p><strong>📂 Local / Drive Path:</strong> <code>{{file_path}}</code></p>
+        <p><strong>🔗 Direct File Link:</strong> <a href="{{file_url}}">{{file_url}}</a></p>
+        <p><strong>📁 Drive Location:</strong> <code>{{drive_path}}</code></p>
         <p>{{delivery_note_html}}</p>
         <p>Best regards,<br><strong>Nilesh K.</strong></p>
         </body></html>"""
@@ -338,7 +391,9 @@ def render_correction_email_html(
         "{{loc_intro}}": loc_intro or "",
         "{{file_name}}": file_name or "",
         "{{drive_url}}": drive_url or "",
-        "{{file_path}}": file_path or "",
+        "{{file_url}}": file_url or drive_url or "",
+        "{{drive_path}}": drive_path or "",
+        "{{file_path}}": "",
         "{{delivery_note_html}}": delivery_note_html or "",
         "{{deadline_banner_html}}": deadline_banner_html or "",
     }

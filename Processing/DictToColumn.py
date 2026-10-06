@@ -13,7 +13,7 @@ standard_columns = [
     "building_name_en", "building_name_original",
     "property_type", "transaction_type",
 
-    "flat_no", "floor_no", "wing_no", "plot_no",
+    "flat_no_raw", "floor_no_raw", "wing_no", "plot_no",
     "survey_no", "CTS_no", "block_no",
     "society_name", "society_name_en", "society_name_original",
 
@@ -65,10 +65,29 @@ columns_to_remove = [
     "remarks",
     "remarks_original",
     "request_number",
+    "full_address_en",
+    "full_address_original",
+    "road_name_en",
+    "road_name_original",
+    "city_en",
+    "city_original",
+    "taluka_en",
+    "taluka_original",
+    "district_en",
+    "district_original",
+    "state_en",
+    "state_original",
+     "society_name", 
+     "society_name_en", 
+     "society_name_original",
 ]
 
 
 aliases = {
+    "flat_no": "flat_no_raw",
+    "floor_no": "floor_no_raw",
+    "flat_number": "flat_no_raw",
+    "floor_number": "floor_no_raw",
     "cts_no": "CTS_no",
     "cts number": "CTS_no",
     "built_up_area": "builtup_area",
