@@ -595,13 +595,65 @@
             </div>
           </div>
 
+          <!-- Multi-File Selection List Container -->
+          <div id="step7-selected-files-container" class="selected-files-box" style="margin-top: 14px; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: var(--radius-sm); padding: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 0.84rem; font-weight: 600; color: #fbbf24; display: flex; align-items: center; gap: 6px;">
+                📚 Selected Files for Step 7 Merge & Processing:
+                <span id="step7-files-count-badge" class="badge-count" style="background: rgba(251, 191, 36, 0.2); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4); padding: 2px 8px; border-radius: 12px; font-size: 0.75rem;">0 Files</span>
+              </span>
+              <div style="display: flex; gap: 8px;">
+                <button type="button" id="btn-step7-select-all" class="btn-xs" style="background: rgba(99, 102, 241, 0.2); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.4); font-size: 0.72rem; padding: 3px 8px; border-radius: 4px; cursor: pointer;" title="Select files from all scanned location folders">
+                  + Select All Folders
+                </button>
+                <button type="button" id="btn-step7-clear-all" class="btn-xs" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); font-size: 0.72rem; padding: 3px 8px; border-radius: 4px; cursor: pointer;">
+                  ✕ Clear All
+                </button>
+              </div>
+            </div>
+            <div id="step7-selected-files-list" style="display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow-y: auto; padding: 4px 0;">
+              <!-- Dynamic File Tags -->
+            </div>
+          </div>
+
           <!-- File path input & Resume button -->
-          <div class="pause-input-row" style="margin-top: 14px;">
-            <input type="text" id="resume-file-path" placeholder="Path to manual corrected file (.xlsx)">
+          <div class="pause-input-row" style="margin-top: 12px;">
+            <input type="text" id="resume-file-path" placeholder="Path(s) to manual corrected file(s) - comma separated if multiple">
             <button type="button" id="btn-resume" class="btn btn-primary">
               <span class="btn-icon">▶</span>
               <span class="btn-text">Resume (Steps 7 → 20)</span>
             </button>
+          </div>
+
+          <!-- Step 7 Multi-File Merge Status & Report Panel -->
+          <div id="step7-merge-report-card" class="merge-report-card hidden" style="margin-top: 14px; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: var(--radius-sm); padding: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 8px;">
+              <span style="font-weight: 600; font-size: 0.9rem; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
+                📊 Step 7 Merge Report & Column Verification
+              </span>
+              <span id="step7-merge-status-badge" style="font-size: 0.78rem; font-weight: 600; padding: 4px 10px; border-radius: 9999px;">
+                <!-- Status pill -->
+              </span>
+            </div>
+            <div id="step7-merge-status-message" style="font-size: 0.82rem; color: #cbd5e1; margin-bottom: 10px; line-height: 1.4;">
+              <!-- Overall status message -->
+            </div>
+            <div style="overflow-x: auto;">
+              <table id="step7-merge-report-table" class="report-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left;">
+                <thead>
+                  <tr style="background: rgba(15, 23, 42, 0.8); color: #94a3b8; border-bottom: 1px solid #334155;">
+                    <th style="padding: 6px 8px;">#</th>
+                    <th style="padding: 6px 8px;">File Name</th>
+                    <th style="padding: 6px 8px;">Rows</th>
+                    <th style="padding: 6px 8px;">Columns</th>
+                    <th style="padding: 6px 8px;">Missing Columns vs Master Union</th>
+                  </tr>
+                </thead>
+                <tbody id="step7-merge-report-tbody">
+                  <!-- Rows injected dynamically -->
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
@@ -684,7 +736,11 @@
             <span class="metric-val" id="metric-rera">-</span>
           </div>
           <div class="metric-card">
-            <span class="metric-label">NR Assigned</span>
+            <span class="metric-label">DB Reused</span>
+            <span class="metric-val" id="metric-reused">-</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">New NR Assigned</span>
             <span class="metric-val" id="metric-nr">-</span>
           </div>
           <div class="metric-card">

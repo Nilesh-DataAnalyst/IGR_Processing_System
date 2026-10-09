@@ -168,7 +168,8 @@ def get_city_config(city_identifier: str | int = "pune") -> dict:
         parent_cfg = dict(CITY_CONFIG.get(loc_cfg.get("city_key", "mumbai"), CITY_CONFIG["mumbai"]))
         parent_cfg["manual_correction_drive_url"] = loc_cfg["manual_correction_drive_url"]
         parent_cfg["manual_correction_drive_id"] = loc_cfg.get("manual_correction_drive_id", extract_folder_id(loc_cfg["manual_correction_drive_url"]))
-        parent_cfg["display_name"] = f"{loc_cfg.get('display_name', 'Bandra')} ({parent_cfg.get('display_name', 'Mumbai')})"
+        parent_cfg["location_display_name"] = loc_cfg.get("display_name", "Bandra")
+        # Keep parent city display name (e.g. "Mumbai") so city_name in DB and files remains clean
         return parent_cfg
 
     # Match by key (e.g. "pune", "mumbai", "thane")

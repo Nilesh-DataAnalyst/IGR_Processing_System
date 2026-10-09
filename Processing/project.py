@@ -288,26 +288,45 @@ def get_manual_corrected_file(
         default_hint = f" [default: {default_candidate}]" if default_candidate else ""
 
         while True:
-            prompt_text = f"\n{YELLOW}Press Enter to use default{default_hint},\nor select location (1 to {len(locations)}) / enter path: {RESET}"
+            prompt_text = f"\n{YELLOW}Press Enter to use default{default_hint},\nor select location(s) (e.g. '1', '1,2,3', 'all') / enter path(s): {RESET}"
             user_choice = input(prompt_text).strip().strip('"')
 
             if not user_choice:
                 if default_candidate:
-                    selected_file = default_candidate
+                    selected_files = [default_candidate]
                     break
                 else:
                     print(f"{YELLOW}No default available. Please select an option.{RESET}")
                     continue
 
             if user_choice == "0":
-                manual_path = input(f"{YELLOW}Please provide Manual Corrected File path: {RESET}").strip().strip('"')
-                selected_file = manual_path
+                manual_path = input(f"{YELLOW}Please provide Manual Corrected File path(s, comma-separated if multiple): {RESET}").strip().strip('"')
+                selected_files = [p.strip() for p in manual_path.split(",") if p.strip()]
                 break
 
-            if os.path.exists(user_choice) or os.path.isabs(user_choice):
-                selected_file = user_choice
+            if user_choice.lower() == "all":
+                selected_files = []
+                for loc in locations:
+                    selected_files.extend(location_dict[loc]["files"])
                 break
 
+            # Check if multiple comma-separated indices/paths
+            tokens = [t.strip() for t in user_choice.split(",") if t.strip()]
+            all_valid_indices = all(t.isdigit() and 1 <= int(t) <= len(locations) for t in tokens)
+
+            if all_valid_indices and len(tokens) > 0:
+                selected_files = []
+                for t in tokens:
+                    chosen_loc = locations[int(t) - 1]
+                    selected_files.extend(location_dict[chosen_loc]["files"])
+                break
+
+            # If user directly passed existing file path(s)
+            if any(os.path.exists(t) or os.path.isabs(t) for t in tokens):
+                selected_files = tokens
+                break
+
+            # Single location check
             if user_choice.isdigit() and 1 <= int(user_choice) <= len(locations):
                 chosen_loc = locations[int(user_choice) - 1]
             else:
@@ -320,33 +339,34 @@ def get_manual_corrected_file(
                     key=lambda f: 0 if ("_for_manual" in f.lower() or "_corrected" in f.lower()) else 1,
                 )
                 if len(sorted_files) == 1:
-                    selected_file = sorted_files[0]
+                    selected_files = [sorted_files[0]]
                     break
                 else:
                     print(f"\n{CYAN}Files in '{chosen_loc}':{RESET}")
                     for f_idx, f_path in enumerate(sorted_files, 1):
                         print(f"  {CYAN}[{f_idx}]{RESET} {os.path.basename(f_path)}")
                     while True:
-                        f_choice = input(f"\n{YELLOW}Select file (1 to {len(sorted_files)}) [default: 1]: {RESET}").strip()
+                        f_choice = input(f"\n{YELLOW}Select file(s) (e.g. '1', '1,2') [default: 1]: {RESET}").strip()
                         if not f_choice or f_choice == "1":
-                            selected_file = sorted_files[0]
+                            selected_files = [sorted_files[0]]
                             break
-                        if f_choice.isdigit() and 1 <= int(f_choice) <= len(sorted_files):
-                            selected_file = sorted_files[int(f_choice) - 1]
+                        sub_tokens = [st.strip() for st in f_choice.split(",") if st.strip()]
+                        if all(st.isdigit() and 1 <= int(st) <= len(sorted_files) for st in sub_tokens):
+                            selected_files = [sorted_files[int(st) - 1] for st in sub_tokens]
                             break
-                        print(f"{RED}❌ Invalid selection. Please enter 1 to {len(sorted_files)}.{RESET}")
+                        print(f"{RED}❌ Invalid selection. Please enter valid index numbers.{RESET}")
                     break
 
-            print(f"{RED}❌ Invalid selection '{user_choice}'. Please enter 1 to {len(locations)}, a path, or press Enter for default.{RESET}")
+            print(f"{RED}❌ Invalid selection '{user_choice}'. Please enter 1 to {len(locations)}, '1,2', 'all', a path, or press Enter for default.{RESET}")
     else:
         default_hint = f" [default: {default_file}]" if default_file else ""
-        user_input = input(f"{YELLOW}Please provide Manual Corrected File path{default_hint}: {RESET}").strip().strip('"')
-        selected_file = user_input if user_input else (default_file if default_file else "")
+        user_input = input(f"{YELLOW}Please provide Manual Corrected File path(s){default_hint}: {RESET}").strip().strip('"')
+        selected_files = [p.strip() for p in (user_input if user_input else (default_file if default_file else "")).split(",") if p.strip()]
 
-    print(f"\n  {CYAN}📖 Loading:{RESET} {selected_file}")
-    df = pd.read_excel(selected_file, engine="openpyxl")
-    print(f"{GREEN}✓ [STEP 7/19] Loaded {len(df)} rows from manual corrected file.{RESET}")
-    return selected_file, df
+    print(f"\n  {CYAN}📖 Loading & Merging {len(selected_files)} file(s)...{RESET}")
+    df, merge_report = pipeline_core.load_and_merge_step7_files(selected_files)
+    print(f"{GREEN}✓ [STEP 7/19] {merge_report['status_message']}{RESET}")
+    return selected_files[0] if len(selected_files) == 1 else ", ".join(selected_files), df
 
 
 def get_final_processed_file(
@@ -725,7 +745,10 @@ def prompt_share_correction_file(
         print(f"  {CYAN}🌐 You can share the link directly:{RESET} {file_url or drive_url}")
 
 def rename_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df.rename(
+    df = df.copy()
+    if "property_type_raw" in df.columns and "property_type" in df.columns:
+        df = df.drop(columns=["property_type_raw"])
+    df = df.rename(
         columns={
             "internaldocumentnumber": "internal_document_number",
             "areaname": "village_name_marathi",
@@ -744,13 +767,15 @@ def rename_columns(df: pd.DataFrame) -> pd.DataFrame:
             "stampdutypaid": "stamp_duty_paid",
             "registrationfees": "registration_fee",
             "flat_number": "unit_number",
-        },
-        inplace=True,
+        }
     )
-    return df
+    return df.loc[:, ~df.columns.duplicated()].copy()
 
 
 def _map_property_type(value):
+    if isinstance(value, (pd.Series, np.ndarray, list)):
+        valid = [v for v in value if pd.notna(v) and str(v).strip() != ""]
+        value = valid[0] if valid else None
     if pd.isna(value) or str(value).strip() == "":
         return "Others"
     value = str(value).strip()
@@ -823,6 +848,51 @@ def assign_nr_indexes(
             df["project_name"].replace(r"^\s*$", np.nan, regex=True)
         )
 
+    if "project_latitude" not in df.columns:
+        df["project_latitude"] = np.nan
+    else:
+        df["project_latitude"] = pd.to_numeric(df["project_latitude"], errors="coerce")
+
+    if "project_longitude" not in df.columns:
+        df["project_longitude"] = np.nan
+    else:
+        df["project_longitude"] = pd.to_numeric(df["project_longitude"], errors="coerce")
+
+    def _to_float(v):
+        if v is None or pd.isna(v):
+            return None
+        try:
+            val = float(v)
+            return val if not np.isnan(val) else None
+        except (ValueError, TypeError):
+            return None
+
+    loc_col = next((c for c in ["location_name"] if c in df.columns), None)
+
+    # 1. Load existing DB index & coordinates mappings for (location_name, project_name)
+    db_mapping = {}
+    db_coords_mapping = {}
+    try:
+        conn = psycopg2.connect(**db_params)
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT lower(trim(location_name)), lower(trim(project_name)), internal_index_id, project_latitude, project_longitude
+                FROM public.transactions
+                WHERE city_id = %s
+                  AND project_name IS NOT NULL AND location_name IS NOT NULL;
+            """, (target_city_id,))
+            for loc, proj, idx, lat, lon in cur.fetchall():
+                if loc and proj:
+                    key = (loc, proj)
+                    if idx and str(idx).strip() and key not in db_mapping:
+                        db_mapping[key] = str(idx).strip()
+                    plat, plon = _to_float(lat), _to_float(lon)
+                    if plat is not None and plon is not None and key not in db_coords_mapping:
+                        db_coords_mapping[key] = (plat, plon)
+        conn.close()
+    except Exception as e:
+        print(f"  {YELLOW}⚠️ DB index mapping lookup note: {e}{RESET}")
+
     # Database lookup for max nr
     conn = psycopg2.connect(**db_params)
     cur = conn.cursor()
@@ -845,6 +915,22 @@ def assign_nr_indexes(
     print(f"  {CYAN}Highest NR in DB for City ID {target_city_id}:{RESET} nr{max_nr}")
     print(f"  {CYAN}New NR sequence starts from:{RESET} nr{next_num}")
 
+    # 2. Build current file mapping for (location_name, project_name) -> index & coordinates
+    file_mapping = {}
+    file_coords_mapping = {}
+    if loc_col and "project_name" in df.columns:
+        valid_rows = df.dropna(subset=[loc_col, "project_name"])
+        for _, row in valid_rows.iterrows():
+            l_key = str(row[loc_col]).strip().lower()
+            p_key = str(row["project_name"]).strip().lower()
+            if l_key and p_key:
+                k = (l_key, p_key)
+                if pd.notna(row.get("index")) and str(row["index"]).strip():
+                    file_mapping.setdefault(k, str(row["index"]).strip())
+                plat, plon = _to_float(row.get("project_latitude")), _to_float(row.get("project_longitude"))
+                if plat is not None and plon is not None:
+                    file_coords_mapping.setdefault(k, (plat, plon))
+
     existing_indexes = set(
         df["index"].dropna().astype(str).str.strip().str.lower()
     )
@@ -859,18 +945,64 @@ def assign_nr_indexes(
     else:
         rows_to_assign = df.index[df["index"].isna()]
 
-    print(f"  {CYAN}Rows eligible for new NR:{RESET} {len(rows_to_assign)}")
+    print(f"  {CYAN}Rows eligible for NR / Index assignment:{RESET} {len(rows_to_assign)}")
+
+    new_count = 0
+    reused_count = 0
 
     for i in rows_to_assign:
-        while f"nr{next_num}" in existing_indexes:
-            next_num += 1
-        new_index = f"nr{next_num}"
-        df.at[i, "index"] = new_index
-        existing_indexes.add(new_index)
-        next_num += 1
+        proj = str(df.at[i, "project_name"]).strip().lower() if "project_name" in df.columns and pd.notna(df.at[i, "project_name"]) else ""
+        loc = str(df.at[i, loc_col]).strip().lower() if loc_col and pd.notna(df.at[i, loc_col]) else ""
+        key = (loc, proj) if (loc and proj) else None
 
-    print(f"  {CYAN}New NR assigned:{RESET} {len(rows_to_assign)}")
-    if len(rows_to_assign) > 0:
+        if key and key in file_mapping:
+            df.at[i, "index"] = file_mapping[key]
+            reused_count += 1
+        elif key and key in db_mapping:
+            existing_idx = db_mapping[key]
+            df.at[i, "index"] = existing_idx
+            file_mapping[key] = existing_idx
+            existing_indexes.add(str(existing_idx).strip().lower())
+            reused_count += 1
+        else:
+            while f"nr{next_num}" in existing_indexes:
+                next_num += 1
+            new_index = f"nr{next_num}"
+            df.at[i, "index"] = new_index
+            if key:
+                file_mapping[key] = new_index
+                db_mapping[key] = new_index
+            existing_indexes.add(new_index.lower())
+            next_num += 1
+            new_count += 1
+
+    # Populate project coordinates for matching (location_name, project_name)
+    coords_reused = 0
+    if loc_col and "project_name" in df.columns:
+        for i in df.index:
+            p_val = df.at[i, "project_name"]
+            l_val = df.at[i, loc_col]
+            if pd.notna(p_val) and pd.notna(l_val):
+                p_key = str(p_val).strip().lower()
+                l_key = str(l_val).strip().lower()
+                if p_key and l_key:
+                    k = (l_key, p_key)
+                    lat_blank = pd.isna(df.at[i, "project_latitude"])
+                    lon_blank = pd.isna(df.at[i, "project_longitude"])
+                    if lat_blank or lon_blank:
+                        coords = file_coords_mapping.get(k) or db_coords_mapping.get(k)
+                        if coords:
+                            lat, lon = coords
+                            if lat_blank and lat is not None:
+                                df.at[i, "project_latitude"] = float(lat)
+                            if lon_blank and lon is not None:
+                                df.at[i, "project_longitude"] = float(lon)
+                            coords_reused += 1
+
+    print(f"  {GREEN}✓ Reused existing Index for same (project + location):{RESET} {reused_count}")
+    print(f"  {GREEN}✓ Reused project coordinates from DB/file:{RESET} {coords_reused} rows")
+    print(f"  {GREEN}✓ Brand new NR assigned:{RESET} {new_count}")
+    if new_count > 0:
         print(f"  {CYAN}Highest new NR:{RESET} nr{next_num - 1}")
     print(f"  {CYAN}Blank indexes remaining:{RESET} {df['index'].isna().sum()}")
 
@@ -908,20 +1040,23 @@ def resolve_city(df: pd.DataFrame = None, source_file: str = None, db_params: di
 
 def populate_village_mapping(df: pd.DataFrame, city_id: int, db_params: dict) -> pd.DataFrame:
     col = next((c for c in ["village_name_marathi", "areaname"] if c in df.columns), None)
-    if not col:
-        if "registered_document_village_name" in df.columns:
-            df["location_name"] = df["registered_document_village_name"]
-        return df
+    if col:
+        keys = (df[col].iloc[:, 0] if isinstance(df[col], pd.DataFrame) else df[col]).astype(str).str.strip()
+        try:
+            conn = psycopg2.connect(**db_params)
+            q = "SELECT DISTINCT TRIM(village_name_marathi) AS v, registered_document_village_name AS r FROM public.transactions WHERE city_id = %s AND village_name_marathi = ANY(%s)"
+            lookup = pd.read_sql_query(q, conn, params=(city_id, list(keys.unique()))).drop_duplicates("v").set_index("v")["r"]
+            conn.close()
+            mapped = keys.map(lookup)
+            if "registered_document_village_name" in df.columns:
+                df["registered_document_village_name"] = df["registered_document_village_name"].fillna(mapped)
+            else:
+                df["registered_document_village_name"] = mapped
+        except Exception as e:
+            print(f"  {YELLOW}⚠️ Village mapping DB lookup note: {e}{RESET}")
 
-    keys = (df[col].iloc[:, 0] if isinstance(df[col], pd.DataFrame) else df[col]).astype(str).str.strip()
-    
-    conn = psycopg2.connect(**db_params)
-    q = "SELECT DISTINCT TRIM(village_name_marathi) AS v, registered_document_village_name AS r FROM public.transactions WHERE city_id = %s AND village_name_marathi = ANY(%s)"
-    lookup = pd.read_sql_query(q, conn, params=(city_id, list(keys.unique()))).drop_duplicates("v").set_index("v")["r"]
-    conn.close()
-
-    # Assigns both columns simultaneously from the lookup
-    df["location_name"] = df["registered_document_village_name"] = keys.map(lookup)
+    if "registered_document_village_name" in df.columns:
+        df["location_name"] = df["registered_document_village_name"]
     return df
 
 
@@ -970,7 +1105,7 @@ def add_buyer_location(df: pd.DataFrame, postal_csv_path: str | Path = None) -> 
         postal_csv_path = Path(postal_csv_path)
 
     if not postal_csv_path.exists():
-        fallback_path = Path(r"D:\Database\DB1_DB2_Uploading_Pipeline\Pune_IGR_Update_Pipeline\required_files\postal_pincode.csv")
+        fallback_path = Path(r"E:\Nilesh\IGR_processing_System\Processing\postal_pincode.csv")
         if fallback_path.exists():
             postal_csv_path = fallback_path
 
@@ -1345,10 +1480,15 @@ else:
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from static import result_dict, word_number_dict
 
-    df["transaction_type"] = df["docname"].map(result_dict.get)
-    if df["transaction_type"].isna().any() and df["docname"].notna().any():
+    mapped_tx = df["docname"].map(result_dict.get) if "docname" in df.columns else pd.Series(index=df.index)
+    if "docname" in df.columns and mapped_tx.isna().any():
         fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
-        df["transaction_type"] = df["transaction_type"].fillna(fallback_map)
+        mapped_tx = mapped_tx.fillna(fallback_map)
+
+    if "transaction_type" not in df.columns:
+        df["transaction_type"] = mapped_tx
+    else:
+        df["transaction_type"] = df["transaction_type"].fillna(mapped_tx)
 
     mapped_count = int(df["transaction_type"].notna().sum())
     total_docnames = int(df["docname"].notna().sum()) if "docname" in df.columns else 0
@@ -1435,12 +1575,25 @@ else:
 
 
 if pipeline_mode in ["1", "2"]:
-    # STEP 8 - Rename columns
+    # STEP 8 - Rename columns & ensure transaction_type is mapped
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 8/19] Renaming columns to standard format...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 8/19] Renaming columns & populating transaction_type...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df = rename_columns(df)
-    print(f"{GREEN}✓ [STEP 8/19] Columns renamed successfully.{RESET}")
+
+    if "docname" in df.columns:
+        from static import result_dict
+        mapped_tx = df["docname"].map(result_dict.get)
+        fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
+        mapped_tx = mapped_tx.fillna(fallback_map)
+        if "transaction_type" in df.columns:
+            df["transaction_type"] = mapped_tx.fillna(df["transaction_type"])
+        else:
+            df["transaction_type"] = mapped_tx
+
+    from transaction_categorizer import categorise
+    df = categorise(df)
+    print(f"{GREEN}✓ [STEP 8/19] Columns renamed & transaction_type populated successfully.{RESET}")
 
     # STEP 9 - Categorise Property Type
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
@@ -1494,17 +1647,26 @@ if pipeline_mode in ["1", "2"]:
     # DB SCHEMA ALIGNMENT & DEFAULTS
     # ============================================================
     for col in ["transaction_date", "date_of_agreement_execution"]:
-        df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
 
-    df["quarter"] = (
-        "Q"
-        + df["transaction_date"].dt.quarter.astype(str)
-        + "-"
-        + df["transaction_date"].dt.year.astype(str)
-    )
+    if "transaction_date" in df.columns:
+        dt_year = df["transaction_date"].dt.year
+        if "year" not in df.columns:
+            df["year"] = dt_year
+        else:
+            df["year"] = df["year"].fillna(dt_year)
+
+        df["quarter"] = (
+            "Q"
+            + df["transaction_date"].dt.quarter.astype(str)
+            + "-"
+            + dt_year.astype(str)
+        )
 
     for col in ["transaction_date", "date_of_agreement_execution"]:
-        df[col] = df[col].dt.strftime("%d/%m/%Y")
+        if col in df.columns:
+            df[col] = df[col].dt.strftime("%d/%m/%Y")
 
     # ------------------------------------------------------------
     # Ensure Rate Column is Populated & Mapped to DB Schema ("rate")
@@ -1524,6 +1686,9 @@ if pipeline_mode in ["1", "2"]:
             area_clean = pd.to_numeric(df["net_carpet_area_sqft"], errors="coerce")
             df["rate"] = (price_clean / area_clean).round(2)
 
+    if "location_name" in df.columns and "location" in df.columns:
+        df = df.drop(columns=["location"])
+
     rename_mapping = {
         "city": "city_name",
         "balcony_area_sqmt": "balcony_sq_m",
@@ -1539,6 +1704,9 @@ if pipeline_mode in ["1", "2"]:
     df = df.rename(
         columns={k: v for k, v in rename_mapping.items() if k in df.columns}
     )
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    if "registered_document_village_name" in df.columns:
+        df["location_name"] = df["registered_document_village_name"]
 
     defaults = {
         "location_latitude": np.nan,
@@ -1561,7 +1729,7 @@ if pipeline_mode in ["1", "2"]:
         "data_type": "Registered Document",
         "city_name": target_city_name.title(),
         "project_stage": pd.NA,
-        "is_llm_processed": "Yes",
+        "is_llm_processed": "Yes"
     }
 
     for col, value in defaults.items():

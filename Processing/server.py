@@ -280,21 +280,26 @@ def scan_drive_locations(drive_target: str) -> list:
     except Exception:
         pass
 
-    if not location_dict:
+    # 3. Always register root-level files (e.g. 'final merge file.xlsx') if present in scan_root
+    try:
         root_files = [
             f for f in os.listdir(scan_root)
-            if f.lower().endswith(valid_exts) and not f.startswith("~$")
+            if os.path.isfile(os.path.join(scan_root, f))
+            and f.lower().endswith(valid_exts)
+            and not f.startswith("~$")
         ]
         if root_files:
-            loc_name = dedicated_loc_name or "General"
+            loc_name = dedicated_loc_name or "★ Final Merged File (Root)"
             location_dict[loc_name] = {
                 "location": loc_name,
                 "folder_path": scan_root,
                 "drive_url": drive_target,
                 "files": [{"name": f, "path": os.path.join(scan_root, f)} for f in sorted(root_files)],
             }
+    except Exception:
+        pass
 
-    return sorted(list(location_dict.values()), key=lambda x: x["location"])
+    return sorted(list(location_dict.values()), key=lambda x: (0 if "Merged" in x["location"] or "Root" in x["location"] else 1, x["location"]))
 
 
 def extract_pincode(text):
@@ -644,12 +649,14 @@ pipeline_state = {
     "output_file": None,
     "v1_file": None,
     "manual_file": None,
+    "step7_merge_report": None,
     "parquet_file": None,
     "final_code_path": None,
     "location_name": None,
     "metrics": {
         "total_rows": 0,
         "rera_matched": 0,
+        "reused_matched": 0,
         "nr_assigned": 0
     },
     "logs": [],
@@ -910,27 +917,33 @@ def run_dubai_pipeline(params):
 
 
 def run_pipeline_worker(params):
+    import importlib
+    importlib.reload(core)
     global pipeline_state
 
     mode = params.get("mode", "1")
     input_file = params.get("input_file")
     manual_file = params.get("manual_file")
+    is_multi_file = bool(manual_file and ("," in str(manual_file) or "final merge" in str(manual_file).lower()))
 
     # Determine or infer location name first
     location_name = params.get("location_name")
-    if not location_name and input_file:
+    if is_multi_file:
+        location_name = "FINAL MERGE"
+    elif not location_name and input_file:
         parent_dir = os.path.basename(os.path.dirname(input_file))
         if parent_dir and parent_dir.lower() not in ["2. llm processed data", "processing", "required_files", "data", "uploading_pipeline"]:
             location_name = parent_dir
         else:
             base = os.path.splitext(os.path.basename(input_file))[0]
             location_name = base.split("_")[0]
-    if not location_name and manual_file:
-        parent_dir = os.path.basename(os.path.dirname(manual_file))
-        if parent_dir and parent_dir.lower() not in ["3. manually corrected", "processing", "required_files", "data"]:
+    elif not location_name and manual_file:
+        first_file = manual_file.split(",")[0].strip()
+        parent_dir = os.path.basename(os.path.dirname(first_file))
+        if parent_dir and parent_dir.lower() not in ["3. manually corrected", "processing", "required_files", "data", "final merge"]:
             location_name = parent_dir
         else:
-            base = os.path.splitext(os.path.basename(manual_file))[0]
+            base = os.path.splitext(os.path.basename(first_file))[0]
             location_name = base.split("_")[0]
 
     # Auto-detect city from location_name or file path so Mumbai/Bandra/Thane never default to Pune
@@ -1065,30 +1078,26 @@ def run_pipeline_worker(params):
                 pipeline_state["progress"] = 95
         elif mode_str == "2":
             # RESUME DIRECTLY FROM STEP 7
-            if not manual_file or not os.path.exists(manual_file):
-                raise FileNotFoundError(f"Manual corrected file does not exist: {manual_file}")
+            if not manual_file:
+                raise FileNotFoundError("Manual corrected file path or list is required for Step 7 resume.")
 
-            add_log(f"Loading manual corrected file: {manual_file}", "info")
+            add_log("Loading and merging manual corrected file(s)...", "info")
             t0 = time.time()
-            update_step_status(7, "running", "Loading file...")
+            update_step_status(7, "running", "Merging manual file(s)...")
             with state_lock:
                 pipeline_state["current_step_id"] = 7
-                pipeline_state["current_step_name"] = "Loading Manual Corrected File"
+                pipeline_state["current_step_name"] = "Loading Manual Corrected File(s)"
                 pipeline_state["progress"] = 43
 
-            df = pd.read_excel(manual_file, engine="openpyxl")
-            if "net_carpet_area_sqmt" in df.columns and "net_carpet_area_sq_m" not in df.columns:
-                df["net_carpet_area_sq_m"] = df["net_carpet_area_sqmt"]
-            if "net_carpet_area_sq_m" in df.columns:
-                if "net_carpet_area_sqft" not in df.columns:
-                    df["net_carpet_area_sqft"] = (pd.to_numeric(df["net_carpet_area_sq_m"], errors="coerce") * 10.7639).round(2)
-                if "rate_in_sqft" not in df.columns and "consideration_amt" in df.columns:
-                    df["rate_in_sqft"] = (pd.to_numeric(df["consideration_amt"], errors="coerce") / df["net_carpet_area_sqft"]).round(2)
+            df, merge_report = core.load_and_merge_step7_files(
+                manual_file,
+                log_callback=lambda msg, lvl="info": add_log(msg, lvl)
+            )
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(7, "completed", f"{len(df)} rows loaded", dur)
-            add_log(f"Step 7: Loaded {len(df)} rows from manual file.", "success")
+            update_step_status(7, "completed", f"{len(df):,} rows loaded ({merge_report['file_count']} file(s))", dur)
             with state_lock:
                 pipeline_state["metrics"]["total_rows"] = len(df)
+                pipeline_state["step7_merge_report"] = merge_report
 
         else:
             # MODE 1: RUN STEPS 1 TO 6
@@ -1146,10 +1155,15 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_id"] = 4
                 pipeline_state["current_step_name"] = "Static Transaction Mapping"
                 pipeline_state["progress"] = 25
-            df["transaction_type"] = df["docname"].map(result_dict.get)
-            if df["transaction_type"].isna().any() and df["docname"].notna().any():
+            mapped_tx = df["docname"].map(result_dict.get) if "docname" in df.columns else pd.Series(index=df.index)
+            if "docname" in df.columns and mapped_tx.isna().any():
                 fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
-                df["transaction_type"] = df["transaction_type"].fillna(fallback_map)
+                mapped_tx = mapped_tx.fillna(fallback_map)
+
+            if "transaction_type" not in df.columns:
+                df["transaction_type"] = mapped_tx
+            else:
+                df["transaction_type"] = df["transaction_type"].fillna(mapped_tx)
             dur = f"{time.time() - t0:.2f}s"
             mapped_count = int(df["transaction_type"].notna().sum())
             total_docnames = int(df["docname"].notna().sum()) if "docname" in df.columns else 0
@@ -1246,25 +1260,19 @@ def run_pipeline_worker(params):
                     return
                 time.sleep(0.5)
 
-            # Once resumed, load the manual corrected file!
+            # Once resumed, load the manual corrected file(s)!
             resolved_manual_file = pipeline_state.get("manual_file") or v1_output_path
-            if not os.path.exists(resolved_manual_file):
-                raise FileNotFoundError(f"Manual corrected file does not exist: {resolved_manual_file}")
-            add_log(f"Step 7: Resumed! Loading manual corrected file: {resolved_manual_file}", "info")
+            add_log("Step 7: Resumed! Loading and merging manual file(s)...", "info")
             t0 = time.time()
-            df = pd.read_excel(resolved_manual_file, engine="openpyxl")
-            if "net_carpet_area_sqmt" in df.columns and "net_carpet_area_sq_m" not in df.columns:
-                df["net_carpet_area_sq_m"] = df["net_carpet_area_sqmt"]
-            if "net_carpet_area_sq_m" in df.columns:
-                if "net_carpet_area_sqft" not in df.columns:
-                    df["net_carpet_area_sqft"] = (pd.to_numeric(df["net_carpet_area_sq_m"], errors="coerce") * 10.7639).round(2)
-                if "rate_in_sqft" not in df.columns and "consideration_amt" in df.columns:
-                    df["rate_in_sqft"] = (pd.to_numeric(df["consideration_amt"], errors="coerce") / df["net_carpet_area_sqft"]).round(2)
+            df, merge_report = core.load_and_merge_step7_files(
+                resolved_manual_file,
+                log_callback=lambda msg, lvl="info": add_log(msg, lvl)
+            )
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(7, "completed", f"{len(df)} rows loaded", dur)
-            add_log(f"Step 7: Loaded {len(df)} rows from manual file.", "success")
+            update_step_status(7, "completed", f"{len(df):,} rows loaded ({merge_report['file_count']} file(s))", dur)
             with state_lock:
                 pipeline_state["metrics"]["total_rows"] = len(df)
+                pipeline_state["step7_merge_report"] = merge_report
                 pipeline_state["state"] = "running"
 
         if mode != "3":
@@ -1280,9 +1288,23 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_name"] = "Column Renaming & Standardizing"
                 pipeline_state["progress"] = 52
             df = core.rename_columns(df)
+
+            if "docname" in df.columns:
+                from static import result_dict
+                mapped_tx = df["docname"].map(result_dict.get)
+                fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
+                mapped_tx = mapped_tx.fillna(fallback_map)
+                if "transaction_type" in df.columns:
+                    df["transaction_type"] = mapped_tx.fillna(df["transaction_type"])
+                else:
+                    df["transaction_type"] = mapped_tx
+
+            from transaction_categorizer import categorise
+            df = categorise(df)
+
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(8, "completed", "Renamed", dur)
-            add_log("Step 8: Column renaming completed.", "success")
+            update_step_status(8, "completed", "Renamed & transaction_type populated", dur)
+            add_log("Step 8: Column renaming & transaction_type mapping completed.", "success")
 
             # STEP 9 - Property Type Categorization
             t0 = time.time()
@@ -1291,18 +1313,18 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_id"] = 9
                 pipeline_state["current_step_name"] = "Property Type Categorization"
                 pipeline_state["progress"] = 58
+            df = df.loc[:, ~df.columns.duplicated()].copy()
             df["property_type"] = df["property_type_raw"].apply(core._map_property_type)
             dur = f"{time.time() - t0:.2f}s"
             update_step_status(9, "completed", "Categorised", dur)
             add_log("Step 9: Property type categorization completed.", "success")
 
             # Village Mapping from Transactions DB (Step 5.5 / 10)
-            if "location_name" not in df.columns or "registered_document_village_name" not in df.columns or df["registered_document_village_name"].isna().all():
-                try:
-                    df = core.populate_village_mapping(df, city_id, core.DB_PARAMS)
-                    add_log("Step 10: Populated registered_document_village_name and location_name from DB.", "info")
-                except Exception as ve:
-                    add_log(f"Step 10: Village mapping note: {ve}", "warning")
+            try:
+                df = core.populate_village_mapping(df, city_id, core.DB_PARAMS)
+                add_log("Step 10: Populated registered_document_village_name and location_name from DB.", "info")
+            except Exception as ve:
+                add_log(f"Step 10: Village mapping note: {ve}", "warning")
 
             # STEP 10 - Adding Buyer Location and Pincode (matching main.py Step 10)
             t0 = time.time()
@@ -1348,10 +1370,26 @@ def run_pipeline_worker(params):
 
             # Alignment defaults
             for col in ["transaction_date", "date_of_agreement_execution"]:
-                df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
-            df["quarter"] = "Q" + df["transaction_date"].dt.quarter.astype(str) + "-" + df["transaction_date"].dt.year.astype(str)
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+
+            if "transaction_date" in df.columns:
+                dt_year = df["transaction_date"].dt.year
+                if "year" not in df.columns:
+                    df["year"] = dt_year
+                else:
+                    df["year"] = df["year"].fillna(dt_year)
+
+                df["quarter"] = (
+                    "Q"
+                    + df["transaction_date"].dt.quarter.astype(str)
+                    + "-"
+                    + dt_year.astype(str)
+                )
+
             for col in ["transaction_date", "date_of_agreement_execution"]:
-                df[col] = df[col].dt.strftime("%d/%m/%Y")
+                if col in df.columns:
+                    df[col] = df[col].dt.strftime("%d/%m/%Y")
 
             # ------------------------------------------------------------
             # Ensure Rate Column is Populated & Mapped to DB Schema ("rate")
@@ -1371,6 +1409,9 @@ def run_pipeline_worker(params):
                     area_clean = pd.to_numeric(df["net_carpet_area_sqft"], errors="coerce")
                     df["rate"] = (price_clean / area_clean).round(2)
 
+            if "location_name" in df.columns and "location" in df.columns:
+                df = df.drop(columns=["location"])
+
             rename_map = {
                 "location": "location_name",
                 "igr_village": "registered_document_village_name",
@@ -1380,6 +1421,9 @@ def run_pipeline_worker(params):
                 "project_lat": "project_latitude",
                 "project_lng": "project_longitude",
                 "BHK": "unit_configuration",
+                "bhk": "unit_configuration",
+                "Bhk": "unit_configuration",
+                "unit_config": "unit_configuration",
                 "manual_processed": "is_manual_processed",
                 "locality_en": "sub_locality",
                 "wing_no": "tower_name",
@@ -1388,6 +1432,17 @@ def run_pipeline_worker(params):
             if "net_carpet_area_sqmt" in df.columns and "net_carpet_area_sq_m" not in df.columns:
                 df["net_carpet_area_sq_m"] = df["net_carpet_area_sqmt"]
             df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+            df = df.loc[:, ~df.columns.duplicated()].copy()
+            if "registered_document_village_name" in df.columns:
+                df["location_name"] = df["registered_document_village_name"]
+
+            # Standardize unit_configuration and map normalized_unit_configuration
+            if "unit_configuration" not in df.columns:
+                df["unit_configuration"] = df.get("property_type", pd.NA)
+            else:
+                if "property_type" in df.columns:
+                    df["unit_configuration"] = df["unit_configuration"].fillna(df["property_type"])
+            df["normalized_unit_configuration"] = df["unit_configuration"].apply(core.map_unit)
 
             defaults = {
                 "location_latitude": np.nan,
@@ -1408,11 +1463,9 @@ def run_pipeline_worker(params):
                 "sourcing_cost": np.nan,
                 "sourcing_time": np.nan,
                 "data_type": "Registered Document",
-                "normalized_unit_configuration": df.get("unit_configuration", pd.NA),
                 "city_name": city_name.title() if isinstance(city_name, str) else city_name,
                 "project_stage": pd.NA,
-                "is_llm_processed": "Yes",
-                "is_manual_processed": "No",
+                "is_llm_processed": "Yes"
             }
             for col, val in defaults.items():
                 if col not in df.columns:
@@ -1434,10 +1487,14 @@ def run_pipeline_worker(params):
                 pipeline_state["progress"] = 75
             df, nr_stats = core.assign_nr_indexes(df, target_city_id=city_id, db_params=core.get_db_params(selected_db))
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(12, "completed", f"{nr_stats['assigned_count']} new NRs", dur)
-            add_log(f"Step 12: Assigned {nr_stats['assigned_count']} new NRs. Highest NR: {nr_stats['highest_new_nr']}.", "success")
+            new_nr = nr_stats.get("new_nr_assigned", nr_stats.get("assigned_count", 0))
+            reused_nr = nr_stats.get("reused_count", 0)
+            update_step_status(12, "completed", f"{reused_nr} reused, {new_nr} new NRs", dur)
+            coords_count = nr_stats.get("coords_reused", 0)
+            add_log(f"Step 12: Reused {reused_nr} indexes ({coords_count} project coordinates enriched). Assigned {new_nr} new NRs. Highest NR: {nr_stats['highest_new_nr']}.", "success")
             with state_lock:
-                pipeline_state["metrics"]["nr_assigned"] = nr_stats["assigned_count"]
+                pipeline_state["metrics"]["reused_matched"] = reused_nr
+                pipeline_state["metrics"]["nr_assigned"] = new_nr
 
             # STEP 13 - Populate Location Coordinates
             t0 = time.time()
@@ -1509,13 +1566,16 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_name"] = "Final Output Save (Drive & Local)"
                 pipeline_state["progress"] = 95
 
-            src = manual_file or input_file
-            base_name = "output"
-            if src:
-                base_name = os.path.splitext(os.path.basename(src))[0]
-                for suffix in ["_final_processed", "_for_manual", "_processed_v1", "_processed", "_llm_output", "_Merged_File", "_merged_file", "_merged"]:
-                    base_name = base_name.replace(suffix, "")
-            default_filename = f"{base_name}_final_processed.xlsx"
+            if is_multi_file:
+                default_filename = f"{city_name}_Final_Merged_Output_final_processed.xlsx"
+            else:
+                src = (manual_file.split(",")[0].strip() if (manual_file and "," in manual_file) else manual_file) or input_file
+                base_name = "output"
+                if src:
+                    base_name = os.path.splitext(os.path.basename(src))[0]
+                    for suffix in ["_final_processed", "_for_manual", "_processed_v1", "_processed", "_llm_output", "_Merged_File", "_merged_file", "_merged"]:
+                        base_name = base_name.replace(suffix, "")
+                default_filename = f"{base_name}_final_processed.xlsx"
 
             final_drive_url = city_cfg.get("final_drive_url")
             drive_dir = resolve_drive_directory(final_drive_url)
@@ -1939,7 +1999,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(length).decode("utf-8")
             try:
                 data = json.loads(body)
-                manual_file = data.get("manual_file")
+                manual_file = data.get("manual_files") or data.get("manual_file")
                 output_path = data.get("output_path")
                 city_id = data.get("city_id") or pipeline_state.get("city_id", 9)
                 include_geocoding = data.get("include_geocoding", True)
@@ -1958,14 +2018,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     pipeline_state["manual_file"] = manual_file
 
             if current_state == "awaiting_manual_file":
-                add_log(f"Resuming pipeline at Step 7 with: {manual_file}", "info")
+                add_log(f"Resuming pipeline at Step 7 with manual file(s): {manual_file}", "info")
                 resume_step7_event.set()
                 self.send_json({"status": "resumed", "state": "running"})
             else:
                 if not manual_file:
                     self.send_json({"error": "Manual file path is required to resume."}, status=400)
                     return
-                add_log(f"Launching pipeline in Mode 2 (Step 7 -> 20) with: {manual_file}", "info")
+                add_log(f"Launching pipeline in Mode 2 (Step 7 -> 20) with manual file(s): {manual_file}", "info")
                 params = {
                     "mode": "2",
                     "manual_file": manual_file,
@@ -2164,12 +2224,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def send_json(self, data, status=200):
-        content = json.dumps(data).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
+        try:
+            content = json.dumps(data).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass
 
 
 def find_available_port(start_port=8000, max_tries=10):

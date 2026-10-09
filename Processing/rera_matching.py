@@ -294,35 +294,38 @@ def assign_bhk_carpet_match(village_df: pd.DataFrame,
 def _build_bhk_phase_data(rera_grand: pd.DataFrame) -> pd.DataFrame:
     phase_data_list = []
     for _, row in rera_grand.iterrows():
-        data_str = row['carpet_wise_total_sold_units']
+        data_str = row.get('carpet_wise_total_sold_units')
         data_list = data_str if isinstance(data_str, dict) else {}
         if isinstance(data_str, str):
             try:
                 data_list = ast.literal_eval(data_str)
             except Exception:
                 pass
-        for phase, phase_data in data_list.items():
-            if isinstance(phase_data, list) and phase_data:
-                for item in phase_data[0]:
-                    phase_data_list.append({
-                        "modified_project_name": row["modified_project_name"],
-                        "Rera_Location": row["rera_location"],
-                        "Phase": phase, "Data": item,
-                    })
+        if isinstance(data_list, dict):
+            for phase, phase_data in data_list.items():
+                items = phase_data if isinstance(phase_data, list) else [phase_data]
+                for item in items:
+                    if isinstance(item, dict):
+                        phase_data_list.append({
+                            "modified_project_name": row.get("modified_project_name"),
+                            "Rera_Location": row.get("rera_location", row.get("Rera_Location")),
+                            "Phase": phase, "Data": item,
+                        })
     return pd.DataFrame(phase_data_list)
 
 
 def _reshape_bhk_row(row):
     new_rows = []
-    if isinstance(row["Data"], dict):
-        for bhk, data in row["Data"].items():
+    data_obj = row.get("Data")
+    if isinstance(data_obj, dict):
+        for bhk, data in data_obj.items():
             if isinstance(data, dict):
                 for carpet, values in data.items():
-                    if isinstance(values, list) and len(values) == 2:
+                    if values is not None and isinstance(values, (list, tuple, int, float, str)):
                         new_rows.append({
-                            "modified_project_name": row["modified_project_name"],
-                            "Rera_Location": row["Rera_Location"],
-                            "Phase": row["Phase"],
+                            "modified_project_name": row.get("modified_project_name"),
+                            "Rera_Location": row.get("Rera_Location", row.get("rera_location")),
+                            "Phase": row.get("Phase"),
                             "BHK": bhk, "carpet_sqmt": carpet,
                         })
     return pd.DataFrame(new_rows) if new_rows else None
@@ -384,8 +387,17 @@ def assign_bhk_range_fallback(village_df: pd.DataFrame,
             print(f"  {label}: {round(lo, 2)} -> {round(hi, 2)}")
 
         def assign_bhk_range(carpet_area):
+            if pd.isna(carpet_area):
+                return None
+            try:
+                c_val = float(carpet_area)
+                if np.isnan(c_val):
+                    return None
+            except (ValueError, TypeError):
+                return None
+
             for bhk, (low, high) in ranges.items():
-                if float(low) <= carpet_area < float(high):
+                if float(low) <= c_val < float(high):
                     return bhk
             return None
 

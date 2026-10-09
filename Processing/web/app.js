@@ -196,7 +196,9 @@ let appState = {
   timerInterval: null,
   currentStep: 0,
   lastLogIndex: 0,
-  logs: []
+  logs: [],
+  step7SelectedFiles: [],
+  scannedLocationsData: []
 };
 
 // DOM Elements
@@ -246,6 +248,7 @@ const progressPercent = document.getElementById("progress-percent");
 const currentStepText = document.getElementById("current-step-text");
 const metricRows = document.getElementById("metric-rows");
 const metricRera = document.getElementById("metric-rera");
+const metricReused = document.getElementById("metric-reused");
 const metricNr = document.getElementById("metric-nr");
 const metricTime = document.getElementById("metric-time");
 const stepsStatusSummary = document.getElementById("steps-status-summary");
@@ -261,6 +264,17 @@ const pauseCard = document.getElementById("pause-card");
 const pauseV1Path = document.getElementById("pause-v1-path");
 const resumeFilePath = document.getElementById("resume-file-path");
 const btnResume = document.getElementById("btn-resume");
+
+// Step 7 Multi-File Selection & Report elements
+const step7SelectedFilesContainer = document.getElementById("step7-selected-files-container");
+const step7SelectedFilesList = document.getElementById("step7-selected-files-list");
+const step7FilesCountBadge = document.getElementById("step7-files-count-badge");
+const btnStep7SelectAll = document.getElementById("btn-step7-select-all");
+const btnStep7ClearAll = document.getElementById("btn-step7-clear-all");
+const step7MergeReportCard = document.getElementById("step7-merge-report-card");
+const step7MergeStatusBadge = document.getElementById("step7-merge-status-badge");
+const step7MergeStatusMessage = document.getElementById("step7-merge-status-message");
+const step7MergeReportTbody = document.getElementById("step7-merge-report-tbody");
 
 // Step 19 Parquet Pause & Confirmation elements
 const parquetPauseCard = document.getElementById("parquet-pause-card");
@@ -964,23 +978,79 @@ function attachEventListeners() {
     });
   }
 
-  // Sync Mode 2 manual file inputs between top form & Step 7 card
+  // Sync Mode 2 manual file inputs & multi-file selection between top form & Step 7 card
   if (resumeFilePath && manualFilePath) {
-    resumeFilePath.addEventListener("input", () => {
-      manualFilePath.value = resumeFilePath.value;
+    resumeFilePath.addEventListener("input", (e) => {
+      manualFilePath.value = e.target.value;
+      const raw = e.target.value.trim();
+      if (raw) {
+        const paths = raw.split(",").map(p => p.trim()).filter(Boolean);
+        appState.step7SelectedFiles = paths.map(p => ({
+          path: p,
+          name: p.split(/[\\/]/).pop(),
+          location: ""
+        }));
+        renderStep7SelectedFilesList();
+      } else {
+        clearStep7Files();
+      }
     });
-    manualFilePath.addEventListener("input", () => {
-      resumeFilePath.value = manualFilePath.value;
+    manualFilePath.addEventListener("input", (e) => {
+      resumeFilePath.value = e.target.value;
+      const raw = e.target.value.trim();
+      if (raw) {
+        const paths = raw.split(",").map(p => p.trim()).filter(Boolean);
+        appState.step7SelectedFiles = paths.map(p => ({
+          path: p,
+          name: p.split(/[\\/]/).pop(),
+          location: ""
+        }));
+        renderStep7SelectedFilesList();
+      } else {
+        clearStep7Files();
+      }
     });
   }
   if (pauseLocationSelect) {
     pauseLocationSelect.addEventListener("change", (e) => {
-      if (manualFilePath) manualFilePath.value = e.target.value;
+      const val = e.target.value;
+      if (val) {
+        const opt = e.target.selectedOptions[0];
+        const loc = opt ? (opt.dataset.location || "") : "";
+        const name = opt ? (opt.dataset.name || val.split(/[\\/]/).pop()) : val.split(/[\\/]/).pop();
+        addStep7File(val, name, loc);
+      }
     });
   }
   if (driveManualLocationSelect) {
     driveManualLocationSelect.addEventListener("change", (e) => {
-      if (resumeFilePath) resumeFilePath.value = e.target.value;
+      const val = e.target.value;
+      if (val) {
+        const opt = e.target.selectedOptions[0];
+        const loc = opt ? (opt.dataset.location || "") : "";
+        const name = opt ? (opt.dataset.name || val.split(/[\\/]/).pop()) : val.split(/[\\/]/).pop();
+        addStep7File(val, name, loc);
+      }
+    });
+  }
+  if (btnStep7SelectAll) {
+    btnStep7SelectAll.addEventListener("click", () => {
+      if (Array.isArray(appState.scannedLocationsData)) {
+        appState.scannedLocationsData.forEach(loc => {
+          if (Array.isArray(loc.files)) {
+            loc.files.forEach(f => addStep7File(f.path, f.name, loc.location));
+          }
+        });
+        document.querySelectorAll(".loc-folder-chip").forEach(c => c.classList.add("active"));
+        logToConsole(`[Step 7] Selected all scanned location folders for multi-file merge.`, "info");
+      }
+    });
+  }
+  if (btnStep7ClearAll) {
+    btnStep7ClearAll.addEventListener("click", () => {
+      clearStep7Files();
+      document.querySelectorAll(".loc-folder-chip").forEach(c => c.classList.remove("active"));
+      logToConsole(`[Step 7] Cleared selected files.`, "info");
     });
   }
 
@@ -1509,9 +1579,10 @@ function applyStatusUpdate(status) {
 
   // Update metrics
   if (status.metrics) {
-    if (status.metrics.total_rows) metricRows.textContent = status.metrics.total_rows.toLocaleString();
-    if (status.metrics.rera_matched) metricRera.textContent = status.metrics.rera_matched.toLocaleString();
-    if (status.metrics.nr_assigned) metricNr.textContent = status.metrics.nr_assigned.toLocaleString();
+    if (status.metrics.total_rows !== undefined && status.metrics.total_rows !== null) metricRows.textContent = status.metrics.total_rows.toLocaleString();
+    if (status.metrics.rera_matched !== undefined && status.metrics.rera_matched !== null) metricRera.textContent = status.metrics.rera_matched.toLocaleString();
+    if (status.metrics.reused_matched !== undefined && status.metrics.reused_matched !== null && metricReused) metricReused.textContent = status.metrics.reused_matched.toLocaleString();
+    if (status.metrics.nr_assigned !== undefined && status.metrics.nr_assigned !== null) metricNr.textContent = status.metrics.nr_assigned.toLocaleString();
   }
 
   // Update step cards
@@ -1522,6 +1593,10 @@ function applyStatusUpdate(status) {
       if (s.status === "completed") completedCount++;
     });
     stepsStatusSummary.textContent = `${completedCount} / ${status.steps.length} Completed`;
+  }
+
+  if (status.step7_merge_report) {
+    renderStep7MergeReport(status.step7_merge_report);
   }
 
   // Handle Step 7 and Step 18 Pause States (strictly hide for Dubai)
@@ -1537,8 +1612,8 @@ function applyStatusUpdate(status) {
       pauseCard.classList.remove("hidden");
       if (status.v1_file) {
         pauseV1Path.textContent = status.v1_file;
-        if (!resumeFilePath.value) {
-          resumeFilePath.value = status.v1_file;
+        if ((!appState.step7SelectedFiles || appState.step7SelectedFiles.length === 0) && !resumeFilePath.value) {
+          addStep7File(status.v1_file, status.v1_file.split(/[\\/]/).pop(), "Step 6 Default");
         }
       }
       const pauseSaveTime = document.getElementById("pause-save-time");
@@ -1845,11 +1920,14 @@ async function loadManualDriveLocations(cityId) {
 
       let matchedSelection = false;
 
+      appState.scannedLocationsData = locations;
+
       locations.forEach(loc => {
         loc.files.forEach(f => {
           const opt = document.createElement("option");
           opt.value = f.path;
           opt.dataset.location = loc.location;
+          opt.dataset.name = f.name;
           if (loc.drive_url) {
             opt.dataset.driveUrl = loc.drive_url;
           } else if (loc.location && loc.location.toLowerCase() === "bandra") {
@@ -1875,18 +1953,32 @@ async function loadManualDriveLocations(cityId) {
           chip.type = "button";
           chip.className = "loc-folder-chip";
           const firstFile = loc.files[0];
-          const isSelected = currentPath && (currentPath.includes(loc.location) || (firstFile && currentPath.endsWith(firstFile.name)));
-          if (isSelected) chip.classList.add("active");
+          const allInLocSelected = loc.files.length > 0 && loc.files.every(f => 
+            appState.step7SelectedFiles.some(sf => sf.path.toLowerCase() === f.path.toLowerCase())
+          );
+          if (allInLocSelected) chip.classList.add("active");
+
           chip.innerHTML = `📂 <strong>${loc.location}</strong> <span class="chip-count">(${loc.files.length} file${loc.files.length > 1 ? 's' : ''})</span>`;
-          chip.title = `Click to choose ${loc.location} folder (${firstFile ? firstFile.name : ''})`;
+          chip.title = `Click to toggle ${loc.location} folder files for Step 7 merge`;
+
           chip.addEventListener("click", () => {
+            const currentlyAllSelected = loc.files.length > 0 && loc.files.every(f => 
+              appState.step7SelectedFiles.some(sf => sf.path.toLowerCase() === f.path.toLowerCase())
+            );
+
+            if (currentlyAllSelected) {
+              loc.files.forEach(f => removeStep7File(f.path));
+              chip.classList.remove("active");
+              logToConsole(`[Step 7] Deselected location folder '${loc.location}'`, "info");
+            } else {
+              loc.files.forEach(f => addStep7File(f.path, f.name, loc.location));
+              chip.classList.add("active");
+              logToConsole(`[Step 7] Added ${loc.files.length} file(s) from '${loc.location}' for merge`, "info");
+            }
+
             if (firstFile) {
-              resumeFilePath.value = firstFile.path;
               pauseLocationSelect.value = firstFile.path;
               appState.selectedLocation = loc.location;
-              document.querySelectorAll(".loc-folder-chip").forEach(c => c.classList.remove("active"));
-              chip.classList.add("active");
-              logToConsole(`[Step 7] Selected location folder '${loc.location}' -> ${firstFile.name}`, "info");
               const pauseDriveLink = document.getElementById("pause-drive-link") || document.querySelector(".pause-desc .drive-external-link");
               if (pauseDriveLink) {
                 const targetDriveUrl = loc.drive_url || (loc.location.toLowerCase() === "bandra" ? "https://drive.google.com/drive/folders/1wsvFldaqifK_yoyifZqqFpL8MsZKJZUq?usp=drive_link" : (data.drive_url || ""));
@@ -2229,6 +2321,120 @@ async function runOutlierDetection() {
   } catch (err) {
     logToConsole(`[Outlier Error] ${err.message}`, "error");
     alert(`Could not run outlier detection: ${err.message}`);
+  }
+}
+
+function renderStep7SelectedFilesList() {
+  if (!step7SelectedFilesList) return;
+  const files = appState.step7SelectedFiles || [];
+  const count = files.length;
+
+  if (step7FilesCountBadge) {
+    step7FilesCountBadge.textContent = `${count} File${count !== 1 ? 's' : ''}`;
+  }
+
+  if (count === 0) {
+    step7SelectedFilesList.innerHTML = `<span style="font-size: 0.78rem; color: #64748b; font-style: italic;">No files selected. Click location chips or select options above to add files for merge.</span>`;
+    if (resumeFilePath) resumeFilePath.value = "";
+    if (manualFilePath && appState.mode === "2") manualFilePath.value = "";
+    return;
+  }
+
+  step7SelectedFilesList.innerHTML = files.map(f => `
+    <span class="file-pill-tag" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(30, 41, 59, 0.9); border: 1px solid rgba(251, 191, 36, 0.4); color: #f8fafc; padding: 4px 10px; border-radius: 9999px; font-size: 0.78rem;" title="${f.path}">
+      <span>📄 <strong>${f.location ? f.location + ' / ' : ''}</strong>${f.name}</span>
+      <button type="button" class="btn-remove-file" data-path="${encodeURIComponent(f.path)}" style="background: none; border: none; color: #f87171; font-weight: bold; cursor: pointer; font-size: 0.82rem; padding: 0 2px;">✕</button>
+    </span>
+  `).join("");
+
+  step7SelectedFilesList.querySelectorAll(".btn-remove-file").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const pathToRemove = decodeURIComponent(btn.dataset.path);
+      removeStep7File(pathToRemove);
+    });
+  });
+
+  const pathsStr = files.map(f => f.path).join(", ");
+  if (resumeFilePath) resumeFilePath.value = pathsStr;
+  if (manualFilePath && appState.mode === "2") manualFilePath.value = pathsStr;
+}
+
+function addStep7File(path, name, location) {
+  if (!path) return;
+  const cleanPath = path.trim();
+  const fileName = name || cleanPath.split(/[\\/]/).pop();
+
+  if (!appState.step7SelectedFiles.some(f => f.path.toLowerCase() === cleanPath.toLowerCase())) {
+    appState.step7SelectedFiles.push({
+      path: cleanPath,
+      name: fileName,
+      location: location || ""
+    });
+    renderStep7SelectedFilesList();
+  }
+}
+
+function removeStep7File(path) {
+  appState.step7SelectedFiles = (appState.step7SelectedFiles || []).filter(f => f.path.toLowerCase() !== path.toLowerCase());
+  renderStep7SelectedFilesList();
+}
+
+function clearStep7Files() {
+  appState.step7SelectedFiles = [];
+  renderStep7SelectedFilesList();
+}
+
+function renderStep7MergeReport(report) {
+  if (!step7MergeReportCard || !report) return;
+
+  step7MergeReportCard.classList.remove("hidden");
+
+  if (step7MergeStatusBadge) {
+    if (report.status_type === "PERFECT_MATCH") {
+      step7MergeStatusBadge.style.background = "rgba(16, 185, 129, 0.2)";
+      step7MergeStatusBadge.style.color = "#34d399";
+      step7MergeStatusBadge.style.border = "1px solid rgba(16, 185, 129, 0.4)";
+      step7MergeStatusBadge.innerHTML = `✓ Column Match (${report.total_unique_columns} cols)`;
+    } else if (report.status_type === "COLUMN_MISMATCH") {
+      step7MergeStatusBadge.style.background = "rgba(245, 158, 11, 0.2)";
+      step7MergeStatusBadge.style.color = "#fbbf24";
+      step7MergeStatusBadge.style.border = "1px solid rgba(245, 158, 11, 0.4)";
+      step7MergeStatusBadge.innerHTML = `⚠️ Missing Columns Detected`;
+    } else {
+      step7MergeStatusBadge.style.background = "rgba(56, 189, 248, 0.2)";
+      step7MergeStatusBadge.style.color = "#38bdf8";
+      step7MergeStatusBadge.style.border = "1px solid rgba(56, 189, 248, 0.4)";
+      step7MergeStatusBadge.innerHTML = `✓ Single File (${report.total_unique_columns} cols)`;
+    }
+  }
+
+  if (step7MergeStatusMessage) {
+    step7MergeStatusMessage.textContent = report.status_message || "";
+  }
+
+  if (step7MergeReportTbody && Array.isArray(report.files)) {
+    step7MergeReportTbody.innerHTML = report.files.map(f => {
+      let missingHtml = "";
+      if (f.missing_count > 0 && Array.isArray(f.missing_columns)) {
+        const pills = f.missing_columns.map(col => 
+          `<span style="display: inline-block; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; font-family: var(--font-mono); margin: 2px;">${col}</span>`
+        ).join("");
+        missingHtml = `<div style="display: flex; flex-wrap: wrap; gap: 2px; align-items: center;">${pills}</div>`;
+      } else {
+        missingHtml = `<span style="color: #34d399; font-weight: 500;">✓ All columns present</span>`;
+      }
+
+      return `
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+          <td style="padding: 6px 8px; font-weight: 600; color: #94a3b8;">${f.index}</td>
+          <td style="padding: 6px 8px; font-weight: 600; color: #f8fafc;" title="${f.path}">${f.filename}</td>
+          <td style="padding: 6px 8px; color: #cbd5e1;">${(f.row_count || 0).toLocaleString()}</td>
+          <td style="padding: 6px 8px; font-weight: 600; color: #38bdf8;">${f.column_count}</td>
+          <td style="padding: 6px 8px;">${missingHtml}</td>
+        </tr>
+      `;
+    }).join("");
   }
 }
 
