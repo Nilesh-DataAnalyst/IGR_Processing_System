@@ -173,7 +173,7 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
     # Title Banner
     story.append(Paragraph("IGR & REAL ESTATE DATA PROCESSING PIPELINE", title_style))
     story.append(Paragraph("Comprehensive Technical Architecture & Step-by-Step System Documentation (project.py)", subtitle_style))
-    story.append(Paragraph("Automated Ingestion, Entity Resolution, Spatial Enrichment, 20-Step Pipeline, Web Dashboard & PostgreSQL Loading", tagline_style))
+    story.append(Paragraph("Automated Ingestion, ML Clustering, Multi-File Merging, Spatial Enrichment, 20-Step Pipeline, Web Dashboard & PostgreSQL Loading", tagline_style))
     story.append(HRFlowable(width="100%", thickness=1.5, color=primary_color, spaceBefore=0, spaceAfter=8))
 
     # 1. Executive Summary
@@ -182,9 +182,10 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
         "<b>project.py</b> serves as the master production orchestrator responsible for transforming raw, semi-structured Inspector General of "
         "Registration (IGR) filings and international real estate transaction datasets into a standardized, validated, and enriched relational format. "
         "Operating across domestic micro-markets (Mumbai, Pune, Thane) and international markets (Dubai, Abu Dhabi), the pipeline automates nested "
-        "JSON parsing, machine-learning phonetic/n-gram project clustering, Marathi land area conversion (Hectare-Are-Guntha to Sq.m), MahaRERA master reconciliation, "
-        "automated Non-RERA (NR) sequencing, buyer demographics geo-enrichment, automated quality-checker notification emails, columnar Parquet export, "
-        "PostgreSQL upload, and statistical outlier classification.",
+        "JSON parsing, machine-learning phonetic/n-gram project clustering, Marathi land area conversion (Hectare-Are-Guntha to Sq.m), automated multi-file "
+        "human review merging with missing-column matrix audit reporting, MahaRERA master reconciliation, automated Non-RERA (NR) sequencing, buyer demographics "
+        "geo-enrichment, automated quality-checker notification emails, columnar Parquet export, PostgreSQL upload, and statistical outlier classification. "
+        "Shared core logic is maintained in <b>pipeline_core.py</b>, supporting both interactive terminal execution and the real-time SSE Web Dashboard (<b>server.py</b>).",
         body_style
     ))
 
@@ -200,7 +201,7 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
         [
             Paragraph("<b>Mode [2]</b>", table_cell_bold),
             Paragraph("<b>Run from STEP 7</b><br/>Steps 7 to 20<br/>(Resume Mode)", table_cell_style),
-            Paragraph("Directly loads a verified/corrected manual review workbook from Google Drive (<i>3. Manually Corrected</i>). Bypasses raw ingestion & clustering, immediately executing RERA matching, NR index assignment, coordinate enrichment, Parquet export, DB upload, and outlier classification.", table_cell_style)
+            Paragraph("Directly loads verified/corrected manual review workbooks from Google Drive (<i>3. Manually Corrected</i>). Supports single, multiple, or all files with automated schema harmonization and missing-column audit reporting. Executes RERA matching, NR index assignment, coordinate enrichment, Parquet export, DB upload, and outlier classification.", table_cell_style)
         ],
         [
             Paragraph("<b>Mode [3]</b>", table_cell_bold),
@@ -210,7 +211,12 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
         [
             Paragraph("<b>Mode [4]</b>", table_cell_bold),
             Paragraph("<b>Run STEP 20 ONLY</b><br/>Step 20 Only<br/>(Outlier Update)", table_cell_style),
-            Paragraph("Standalone statistical outlier detection and classification directly on PostgreSQL database records. Computes P1/P99 trimmed medians, updates flags (<code>is_outlier</code>, <code>outlier_type</code>), and exports multi-sheet audit workbooks without re-running data ingestion.", table_cell_style)
+            Paragraph("Standalone statistical outlier detection and classification directly on PostgreSQL database records. Computes P1/P99 trimmed medians, updates flags (<code>rate</code>, <code>is_outlier</code>, <code>outlier_type</code>), and exports multi-sheet audit workbooks without re-running data ingestion.", table_cell_style)
+        ],
+        [
+            Paragraph("<b>Dubai Mode</b>", table_cell_bold),
+            Paragraph("<b>2-Step Workflow</b><br/>Scraping & Processing<br/>(Dubai DLD)", table_cell_style),
+            Paragraph("Dedicated workflow for Dubai Land Department (City ID: 15). Step 1 executes automated Selenium scraper (<code>dubai_scraper.py</code>) with automated date sync from DB. Step 2 executes end-to-end processing pipeline (<code>dld_pipeline.py</code>) with coordinate enrichment and NR indexing.", table_cell_style)
         ],
     ]
     t_modes = Table(modes_data, colWidths=[65, 110, 329])
@@ -231,7 +237,7 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
 
     steps = [
         ("Pre-Step: City Configuration & Google Drive Binding",
-         "Initializes the active city context via <code>city_config.py</code> (Pune: 9, Mumbai: 8, Thane: 12, Dubai: 15, Abu Dhabi: 1). Dynamically binds to Google Drive desktop shortcuts on <code>G:\\.shortcut-targets-by-id\\...</code> for input, review, and final folders. Loads city carpet area divisors (Mumbai: 1.45, Pune: 1.35, Dubai: 1.0 from <code>divisor.py</code>)."),
+         "Initializes the active city context via <code>city_config.py</code> (Pune: 9, Mumbai: 8, Thane: 12, Dubai: 15, Abu Dhabi: 1). Dynamically binds to Google Drive desktop shortcuts on <code>G:\\.shortcut-targets-by-id\\...</code> for input, review, and final folders. Loads city carpet area divisors (Mumbai: 1.45, Pune: 1.35, Thane: 1.40, Dubai: 1.0 from <code>divisor.py</code>)."),
 
         ("Step 1: Input File Discovery (Location-Wise Drive Browser)",
          "Recursively scans <i>2. LLM Processed Data</i> on Google Drive. Groups and displays available localities (e.g., Andheri, Kothrud, Wakad). Captures selected location globally for structured subfolder export downstream."),
@@ -243,7 +249,7 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
          "Populates <code>final_project_name</code> from <code>project_name_en</code>. Falls back to <code>building_name_en</code> if blank, recording audit provenance in <code>final_project_name_status</code> ('Project Name Considered' vs 'Building Name Considered')."),
 
         ("Step 4: Static Dictionary Transaction Type Mapping",
-         "Imports <code>static.py</code>. Translates localized Marathi deed classifications (Kharedikhat, Bhadepatta, Bakshispatra, etc.) into standardized English transaction types (Sale Deed, Lease Deed, Gift Deed, Mortgage Deed)."),
+         "Imports <code>static.py</code>. Translates localized Marathi deed classifications (Kharedikhat, Bhadepatta, Bakshispatra, etc.) into standardized English transaction types (Sale Deed, Lease Deed, Gift Deed, Mortgage Deed). Reports value counts of 100% matched transaction types."),
 
         ("Step 5: High-Level Transaction Categorisation",
          "Applies <code>transaction_categorizer.py</code> to categorize transactions into primary analytical buckets: <b>Sale</b> (capital purchases/conveyances), <b>Lease / Mortgage</b> (rental agreements and bank liens), and <b>Other</b>."),
@@ -255,13 +261,18 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
          "Core ML component via <code>project_name_Std_and_area_conversion.py</code>:<br/>"
          "• <b>Part A (Entity Resolution)</b>: Strips legal suffixes (CHS, Phase, Wing); builds character n-gram TF-IDF matrices; computes pairwise cosine nearest neighbours; applies conservative rejection heuristics; executes greedy clustering.<br/>"
          "• <b>Part B (Marathi Area Parsing)</b>: Regex-parses Marathi units (Hectare-Are-Sq.m, Guntha, Are, Sq.ft, Sq.m) into normalized square metres.<br/>"
-         "• <b>Part C (Unit & Floor)</b>: Extracts flat/shop numbers (<code>unit_number</code>) and floor numbers (<code>floor_number</code>).<br/>"
-         "• <b>Part D (Carpet Derivation)</b>: Applies city divisors to derive <code>net_carpet_area_sq_m</code> for Sale deeds.<br/>"
-         "• <b>Export</b>: Generates multi-sheet workbook <code>&lt;Location&gt;_for_manual.xlsx</code> in Google Drive (<i>3. Manually Corrected/&lt;Location&gt;/</i>).<br/>"
-         "• <b>Review Alert</b>: Prompts user to send automated email notification to reviewers with review guidelines and Drive links."),
+         "• <b>Part C (Unit & Floor)</b>: Extracts flat numbers (<code>flat_number</code>) and floor numbers (<code>floor_number</code>) via regex and floor mapping.<br/>"
+         "• <b>Part D (Carpet & Rate Derivation)</b>: Applies city divisors to derive <code>net_carpet_area_sq_m</code>. Calculates <code>rate_in_sqft</code> and creates <code>is_manual_processed</code> flag ('Yes' for Sale >= 70,000 INR).<br/>"
+         "• <b>Clean Export</b>: Drops internal helper columns and exports multi-sheet workbook <code>&lt;Location&gt;_for_manual.xlsx</code> to Google Drive (<i>3. Manually Corrected/&lt;Location&gt;/</i>)."),
 
-        ("Step 7: Load Manually Corrected Review File",
-         "Pipeline pauses for human review. Once project name corrections and area validations are complete, Step 7 loads the reviewed file directly from Drive or custom path. Pressing 'Enter' automatically selects the Step 6 file."),
+        ("Step 7: Multi-File Ingestion, Schema Audit & Merging Engine",
+         "Implemented in <code>pipeline_core.py</code> (<code>load_and_merge_step7_files</code>):<br/>"
+         "• Supports loading a single file, multiple comma-separated files, or 'all' location files.<br/>"
+         "• Pre-maps raw columns: <code>flat_no</code> → <code>flat_no_raw</code>, <code>floor_no</code> → <code>floor_no_raw</code>.<br/>"
+         "• Evaluates each file against the union of all columns, detecting missing fields per file.<br/>"
+         "• Automatically saves merged dataset to Google Drive: <i>3. Manually Corrected / FINAL MERGE / final merge file.xlsx</i>.<br/>"
+         "• Generates 3-sheet audit report <code>Step7_Missing_Columns_Report.xlsx</code> (Summary, Column Matrix, Detail) and CSV matrix.<br/>"
+         "• Strips over 100 internal and unneeded helper columns (e.g., <code>society_name_en</code>, <code>FLAT AREAS</code>, <code>AREA DETAILS_*</code>)."),
 
         ("Step 8: Standardize Database Column Schema",
          "Executes <code>rename_columns()</code> to align raw fields to production PostgreSQL schema: <code>docno</code> → <code>document_number</code>, <code>consideration_amt</code> → <code>agreement_price</code>, <code>marketvalue</code> → <code>guideline_value</code>, <code>sellerparty</code> → <code>seller_name</code>, <code>purchaserparty</code> → <code>buyer_name</code>, <code>flat_number</code> → <code>unit_number</code>, <code>srocode</code> → <code>sub_registrar_office_code</code>."),
@@ -272,8 +283,8 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
         ("Step 10: Buyer Location & Postal PIN Code Enrichment",
          "Uses regex to extract 6-digit Indian PIN codes from <code>buyer_name</code>. Merges against <code>postal_pincode.csv</code> to append <code>buyer_locality</code>, <code>buyer_district</code>, and <code>buyer_state</code>."),
 
-        ("Step 11: MahaRERA Master Dataset Matching",
-         "Runs <code>rera_matching.py</code> against city-specific MahaRERA grand files (e.g., <i>mumbai RERA GRAND EXCEL VERSION.xlsx</i>, <i>Pune RERA GRAND EXCEL VERSION 9.xlsx</i>). Appends official RERA index, verified project names, geocoded coordinates (<code>project_latitude</code>, <code>project_longitude</code>), and configurations (<code>BHK</code>). Non-RERA cities safely bypass with null placeholders."),
+        ("Step 11: MahaRERA Master Dataset Matching & BHK Derivation",
+         "Runs <code>rera_matching.py</code> against city-specific MahaRERA grand files. Handles nested JSON sold unit metrics and carpet range fallbacks to append verified project names, geocoded coordinates, official RERA index, and unit configuration (<code>BHK</code>). Non-RERA cities safely bypass with null placeholders."),
 
         ("Intermediate: Financial & Chronological Calculations",
          "• Derives registration quarters (e.g. Q1-2026) and standardizes date formatting to <code>DD/MM/YYYY</code>.<br/>"
@@ -307,12 +318,11 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
          "Executes <code>DB1_DB2_Uploading_Pipeline\\final_code.py</code> via subprocess in the active Python virtual environment to ingest the Parquet records directly into PostgreSQL tables."),
 
         ("Step 20: Post-Upload Statistical Outlier Detection (outlier_update.py)",
-         "Statistical outlier classification engine (<code>outlier_update.py</code> / <code>incremental_outlier_update.py</code>):<br/>"
-         "• <b>Trimmed Baseline</b>: Computes P1/P99 trimmed medians and IQR boundaries per <code>(city, location, category, property_type)</code> slice.<br/>"
-         "• <b>Dynamic Thresholds</b>: Sets <code>lower_limit = median / 4</code> and <code>upper_limit = median * 4</code>.<br/>"
-         "• <b>Classification</b>: Flags records as <code>Normal</code>, <code>Lower Outlier</code>, <code>Upper Outlier</code>, <code>Mumbai Low Price Outlier</code>, or <code>Zero Area/Price</code>.<br/>"
-         "• <b>Database Update</b>: Performs batch update on PostgreSQL columns: <code>rate</code>, <code>is_outlier</code>, and <code>outlier_type</code>.<br/>"
-         "• <b>Audit Workbook</b>: Generates multi-sheet Excel summary report in <code>outlier_summaries/</code>.")
+         "Statistical outlier classification engine (<code>outlier_update.py</code>):<br/>"
+         "• <b>Grouping & Trimming</b>: Groups by <code>(city, location, category, property_type)</code> (international markets collapsed into <code>__ALL_LOCATIONS__</code>). Trims 1st and 99th percentiles (P1/P99) on <code>calc_rate</code>.<br/>"
+         "• <b>Trimmed Median Bounds</b>: Sets <code>lower_limit = median / 4</code> and <code>upper_limit = median * 4</code>.<br/>"
+         "• <b>Classifications</b>: Flags records as <code>Normal</code>, <code>Lower Outlier</code>, <code>Upper Outlier</code>, <code>Mumbai Low Price Outlier (Sale < 1L)</code>, <code>Mumbai Zero Area & Rate - Not Outlier</code>, or <code>Invalid/Excluded</code>.<br/>"
+         "• <b>Database Update</b>: Performs batch update on PostgreSQL columns: <code>rate</code>, <code>is_outlier</code>, and <code>outlier_type</code> via <code>execute_values</code>.")
     ]
 
     for title, desc in steps:
@@ -325,11 +335,12 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
     story.append(Paragraph("4. Web Dashboard Architecture (server.py & web/)", h1_style))
     story.append(Paragraph(
         "A full-stack, browser-based management interface is integrated in <code>Processing/server.py</code> and <code>Processing/web/</code>. "
-        "Built with a high-performance FastAPI backend and vanilla modern CSS/JS frontend, it provides:<br/>"
-        "• <b>Real-Time SSE Streaming</b>: Server-Sent Events stream live terminal logs from <code>project.py</code> directly to the browser UI with auto-scroll and status indicators.<br/>"
-        "• <b>Dynamic Mode Routing & Auto-Scroll</b>: Selecting a mode automatically redirects, scrolls, and focuses the relevant form card (Mode 1: Start/Drive Picker, Mode 2: Step 7 Resume Card, Mode 3: Parquet Conversion Card, Mode 4: Outlier Detection Card).<br/>"
-        "• <b>Interactive Drive Explorer</b>: Recursively scans local Google Drive shortcut trees and allows point-and-click file selection.<br/>"
-        "• <b>Multi-City Support</b>: Dropdown configuration populated from <code>public.dim_city</code> with automatic divisor binding.",
+        "Built with a high-performance HTTP/FastAPI backend and modern CSS/JS frontend, it provides:<br/>"
+        "• <b>Real-Time SSE Streaming</b>: Server-Sent Events stream live terminal logs from the pipeline directly to the browser UI with auto-scroll and status pills.<br/>"
+        "• <b>Multi-File Review Selector</b>: Allows operators to pick multiple review files directly from the browser UI with instant merge audit feedback.<br/>"
+        "• <b>Dynamic Database Switcher</b>: Dynamically change the active PostgreSQL database via <code>/api/set-db</code> on the fly.<br/>"
+        "• <b>Dynamic Mode Routing & Auto-Scroll</b>: Form cards automatically expand and focus for Mode 1 (Drive Picker), Mode 2 (Step 7 Resume), Mode 3 (Parquet), and Mode 4 (Outliers).<br/>"
+        "• <b>Interactive Drive Explorer</b>: Recursively scans local Google Drive shortcut trees for input, manual review, and final file locations.",
         body_style
     ))
     story.append(Spacer(1, 6))
@@ -338,9 +349,10 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
     story.append(Paragraph("5. International Real Estate Processing (Dubai & Abu Dhabi)", h1_style))
     story.append(Paragraph(
         "The system natively accommodates international datasets from the Middle East:<br/>"
-        "• <b>Automated Portal Scraper (<code>Processing/Dubai_processing/</code>)</b>: Includes <code>dubai_scraper_all_in_one.py</code> for the Dubai Land Department (DLD) Open Data portal. Handles automated reCAPTCHA, date filtering, CSV download, and Google Drive upload.<br/>"
-        "• <b>City-Wide Grouping in Outlier Detection</b>: For Dubai (City ID: 15) and Abu Dhabi (City ID: 1), all micro-locations are collapsed into <code>__ALL_LOCATIONS__</code> in <code>outlier_update.py</code> to compute unified, robust price distribution statistics across the emirate.<br/>"
-        "• <b>Historical Calendar Serialization</b>: Date parsing in <code>parquet_conersion.py</code> preserves historical and Hijri dates as safe strings without conversion failures.",
+        "• <b>Automated Portal Scraper (<code>Processing/Dubai_processing/dubai_scraper.py</code>)</b>: Automated Selenium scraper for the Dubai Land Department (DLD) Open Data portal. Queries DB for the latest transaction date to fetch incremental data, handles reCAPTCHA, and uploads to Google Drive.<br/>"
+        "• <b>End-to-End Processing (<code>dld_pipeline.py</code>)</b>: Normalizes DLD transaction records, enriches coordinates from PostgreSQL, allocates sequential NR indexes (<code>nrXXXX</code>), and produces database-ready outputs.<br/>"
+        "• <b>Unified Outlier Grouping</b>: For Dubai (City ID: 15) and Abu Dhabi (City ID: 1), all micro-locations are collapsed into <code>__ALL_LOCATIONS__</code> in <code>outlier_update.py</code> to compute robust emirate-wide medians.<br/>"
+        "• <b>Historical Calendar Serialization</b>: Date parsing preserves historical and Hijri dates as safe strings without conversion failures.",
         body_style
     ))
     story.append(Spacer(1, 6))
@@ -351,19 +363,22 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
     files_data = [
         [Paragraph("File / Module", table_header_style), Paragraph("Role & Core Responsibility", table_header_style)],
         [Paragraph("<b>project.py</b>", table_cell_bold), Paragraph("Master CLI orchestrator coordinating full 20-step execution pipeline.", table_cell_style)],
-        [Paragraph("<b>server.py</b>", table_cell_bold), Paragraph("FastAPI Web Server providing real-time SSE progress streaming and web dashboard.", table_cell_style)],
+        [Paragraph("<b>pipeline_core.py</b>", table_cell_bold), Paragraph("Shared core library: DB parameters, Step 7 multi-file merging, schema renaming, NR indexing, village mapping.", table_cell_style)],
+        [Paragraph("<b>server.py</b>", table_cell_bold), Paragraph("FastAPI/HTTP Web Server providing real-time SSE progress streaming, dynamic DB switcher, and web dashboard.", table_cell_style)],
         [Paragraph("<b>web/ (index.html, app.js, style.css)</b>", table_cell_bold), Paragraph("Modern browser operations interface with mode routing, live log viewer, and Drive explorer.", table_cell_style)],
         [Paragraph("<b>city_config.py</b>", table_cell_bold), Paragraph("Central registry for city IDs, Google Drive URLs/IDs, RERA paths, and automated checker email dispatcher.", table_cell_style)],
         [Paragraph("<b>divisor.py</b>", table_cell_bold), Paragraph("Carpet area divisors by city (Mumbai: 1.45, Pune: 1.35, Thane: 1.40, Dubai: 1.0).", table_cell_style)],
         [Paragraph("<b>DictToColumn.py</b>", table_cell_bold), Paragraph("JSON flattener extracting stringified dictionary entries into typed DataFrame columns.", table_cell_style)],
         [Paragraph("<b>transaction_categorizer.py</b>", table_cell_bold), Paragraph("Rule-based transaction categorizer classifying deeds into Sale, Lease/Mortgage, and Other.", table_cell_style)],
         [Paragraph("<b>project_name_Std_and_area_conversion.py</b>", table_cell_bold), Paragraph("TF-IDF n-gram clustering, Marathi area converter, unit/floor parser, and manual review workbook exporter.", table_cell_style)],
-        [Paragraph("<b>rera_matching.py</b>", table_cell_bold), Paragraph("Fuzzy matching engine reconciling project names, RERA indexes, and coordinates against MahaRERA master records.", table_cell_style)],
+        [Paragraph("<b>rera_matching.py</b>", table_cell_bold), Paragraph("Fuzzy matching engine reconciling project names, RERA indexes, coordinates, and BHK configurations against MahaRERA master records.", table_cell_style)],
         [Paragraph("<b>postal_pincode.csv</b>", table_cell_bold), Paragraph("Master Indian postal directory for buyer locality, district, and state geo-enrichment.", table_cell_style)],
         [Paragraph("<b>db_columns.py</b>", table_cell_bold), Paragraph("Canonical PostgreSQL column sequence definition (<code>DB_SEQUENCE</code>).", table_cell_style)],
         [Paragraph("<b>parquet_conersion.py</b>", table_cell_bold), Paragraph("High-speed columnar Parquet conversion utility with type validation and date string normalization.", table_cell_style)],
-        [Paragraph("<b>outlier_update.py / incremental_outlier_update.py</b>", table_cell_bold), Paragraph("Statistical outlier detection engine calculating trimmed medians and updating PostgreSQL flags.", table_cell_style)],
-        [Paragraph("<b>Dubai_processing/ (dubai_scraper_all_in_one.py)</b>", table_cell_bold), Paragraph("Automated scraper and Drive uploader for Dubai Land Department real estate transaction records.", table_cell_style)],
+        [Paragraph("<b>outlier_update.py</b>", table_cell_bold), Paragraph("Statistical outlier detection engine calculating trimmed medians and updating PostgreSQL flags via execute_values.", table_cell_style)],
+        [Paragraph("<b>Dubai_processing/dubai_scraper.py</b>", table_cell_bold), Paragraph("Automated Selenium scraper and Drive uploader for Dubai Land Department real estate transaction records.", table_cell_style)],
+        [Paragraph("<b>Dubai_processing/dld_pipeline.py</b>", table_cell_bold), Paragraph("End-to-end data transformation, coordinate enrichment, and NR index allocator for Dubai DLD records.", table_cell_style)],
+        [Paragraph("<b>generate_pdf_doc.py</b>", table_cell_bold), Paragraph("ReportLab script that compiles this comprehensive documentation into a publication-quality PDF.", table_cell_style)],
     ]
 
     t_files = Table(files_data, colWidths=[150, 354])
@@ -383,4 +398,7 @@ def build_pdf(filename="PIPELINE_DOCUMENTATION.pdf"):
     print(f"Successfully generated {filename}")
 
 if __name__ == '__main__':
-    build_pdf()
+    output_filename = "PIPELINE_DOCUMENTATION.pdf"
+    if len(sys.argv) > 1:
+        output_filename = sys.argv[1]
+    build_pdf(output_filename)
