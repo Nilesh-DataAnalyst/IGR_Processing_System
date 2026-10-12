@@ -47,6 +47,83 @@ GROUP_COLS = ["k_city", "k_loc", "k_cat", "k_ptype"]
 ALL_LOCATIONS_CITIES = {"dubai", "abu_dhabi"}
 
 
+def normalize_locations(loc_input) -> list[str]:
+    """
+    Normalizes location input (string, comma-separated string, list, tuple, set)
+    into a clean list of location names. Returns [] if ALL locations should be processed.
+    """
+    if loc_input is None:
+        return []
+    if isinstance(loc_input, (list, tuple, set)):
+        raw_list = list(loc_input)
+    elif isinstance(loc_input, str):
+        loc_str = loc_input.strip()
+        if loc_str.startswith("[") and loc_str.endswith("]"):
+            try:
+                import json
+                raw_list = json.loads(loc_str)
+            except Exception:
+                raw_list = [p.strip() for p in loc_str.strip("[]").split(",") if p.strip()]
+        else:
+            raw_list = [p.strip() for p in loc_str.split(",") if p.strip()]
+    else:
+        raw_list = [str(loc_input).strip()]
+
+    locations = []
+    for item in raw_list:
+        clean = str(item).strip()
+        if clean and clean.lower() not in {"all", "none", "*", "null", "all locations", "__all_locations__", ""}:
+            if clean not in locations:
+                locations.append(clean)
+    return locations
+
+
+def resolve_canonical_locations(conn, city_id: int, locations: list[str]) -> list[str]:
+    """
+    Resolves location names to match dim_location or transactions in PostgreSQL.
+    Handles common spelling variations (e.g. 'Goregoan' -> 'Goregaon', trailing whitespace, etc.).
+    """
+    if not locations:
+        return []
+    resolved = []
+    with conn.cursor() as cur:
+        for loc in locations:
+            # 1. Exact match in dim_location
+            cur.execute(
+                "SELECT location_name FROM public.dim_location WHERE city_id = %s AND lower(trim(location_name)) = lower(trim(%s)) LIMIT 1;",
+                (city_id, loc),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                resolved.append(row[0])
+                continue
+
+            # 2. Try common phonetic/spelling variation: 'goan' <-> 'gaon'
+            alt_loc = loc.replace("goan", "gaon").replace("Goan", "Gaon") if "goan" in loc.lower() else loc.replace("gaon", "goan").replace("Gaon", "Goan")
+            cur.execute(
+                "SELECT location_name FROM public.dim_location WHERE city_id = %s AND lower(trim(location_name)) = lower(trim(%s)) LIMIT 1;",
+                (city_id, alt_loc),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                resolved.append(row[0])
+                continue
+
+            # 3. Fallback: check if transactions table has this location or alt
+            cur.execute(
+                "SELECT location_name FROM public.transactions WHERE city_id = %s AND lower(trim(location_name)) = lower(trim(%s)) LIMIT 1;",
+                (city_id, alt_loc),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                resolved.append(row[0])
+                continue
+
+            # 4. If nothing else matches, keep original
+            resolved.append(loc)
+    return resolved
+
+
 def get_city_name(conn, city_id: int) -> str | None:
     with conn.cursor() as cur:
         cur.execute("SELECT city_name FROM public.dim_city WHERE city_id = %s", (city_id,))
@@ -54,16 +131,20 @@ def get_city_name(conn, city_id: int) -> str | None:
         return row[0] if row else None
 
 
-def fetch_data(conn, city_id: int, location_name: str | None = None, log_fn=None) -> pd.DataFrame:
+def fetch_data(conn, city_id: int, location_name: str | list[str] | None = None, log_fn=None) -> pd.DataFrame:
     city_name = get_city_name(conn, city_id)
     city_clean = (city_name or "").strip().lower()
 
-    if location_name and city_clean in ALL_LOCATIONS_CITIES:
+    locations = normalize_locations(location_name)
+    if locations:
+        locations = resolve_canonical_locations(conn, city_id, locations)
+
+    if locations and city_clean in ALL_LOCATIONS_CITIES:
         msg = f"City ID {city_id} ({city_name}) groups all locations together; pulling entire city dataset."
         print(f"Note: {msg}")
         if log_fn:
             log_fn(f"Step 20: ℹ️ {msg}", "info")
-        location_name = None
+        locations = []
 
     query = """
         SELECT
@@ -80,11 +161,19 @@ def fetch_data(conn, city_id: int, location_name: str | None = None, log_fn=None
     """
     params = [city_id]
 
-    if location_name:
-        query += " AND lower(trim(t.location_name)) = lower(trim(%s))"
-        params.append(location_name)
+    if locations:
+        if len(locations) == 1:
+            query += " AND lower(trim(t.location_name)) = lower(trim(%s))"
+            params.append(locations[0])
+            target_desc = f"location='{locations[0]}'"
+        else:
+            placeholders = ", ".join(["lower(trim(%s))"] * len(locations))
+            query += f" AND lower(trim(t.location_name)) IN ({placeholders})"
+            params.extend(locations)
+            target_desc = f"{len(locations)} locations: {', '.join(locations)}"
+    else:
+        target_desc = f"all locations in {city_name or 'City ' + str(city_id)}"
 
-    target_desc = f"location='{location_name}'" if location_name else f"all locations in {city_name or 'City ' + str(city_id)}"
     if log_fn:
         log_fn(f"Step 20: 🔍 Fetching transactions from public.transactions for {target_desc}...", "info")
 
@@ -198,6 +287,7 @@ def compute_outliers(df: pd.DataFrame, save_merged_path: str | None = None, log_
     df["outlier_type"] = df.apply(outlier_type, axis=1)
 
     if save_merged_path:
+        os.makedirs(os.path.dirname(os.path.abspath(save_merged_path)), exist_ok=True)
         if save_merged_path.lower().endswith(".csv"):
             df.to_csv(save_merged_path, index=False)
         else:
@@ -272,7 +362,7 @@ def update_db(conn, result_df: pd.DataFrame, batch_size: int = 5000, log_fn=None
 # --------------------------------------------------------------------------- #
 def main(
     city_id: int | None = None,
-    location_name: str | None = None,
+    location_name: str | list[str] | None = None,
     db_params: dict | None = None,
     save_merged_path: str | None = None,
     log_fn=None,
@@ -291,7 +381,8 @@ def main(
     try:
         df = fetch_data(conn, city_id, location_name, log_fn=log_fn)
         if df.empty:
-            where = f", location_name='{location_name}'" if location_name else ""
+            locs = normalize_locations(location_name)
+            where = f", location(s)={locs}" if locs else ""
             msg = f"No transactions found for city_id={city_id}{where} in database '{db_name}'."
             print(msg)
             if log_fn:
@@ -313,7 +404,11 @@ def main(
         update_db(conn, result_df, log_fn=log_fn, is_stopped_fn=is_stopped_fn)
 
         n_outliers = int(result_df["is_outlier"].sum())
-        scope = f"city_id={city_id}" + (f", location='{location_name}'" if location_name else " (all locations)")
+        locs = normalize_locations(location_name)
+        if locs:
+            scope = f"city_id={city_id}, locations={', '.join(locs)}"
+        else:
+            scope = f"city_id={city_id} (all locations)"
         print(f"{scope}: updated {len(result_df)} rows ({n_outliers} flagged as outliers).")
     finally:
         conn.close()
@@ -323,7 +418,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Outlier detection & update")
     parser.add_argument("--city_id", type=int, default=None, help="Target city ID (e.g. Pune: 9, Mumbai: 8, Thane: 12)")
-    parser.add_argument("--location", type=str, default=None, help="Location name (or None / all for all locations)")
+    parser.add_argument("--location", type=str, default=None, help="Location name(s) (comma-separated, or None / all for all locations)")
     parser.add_argument("--save_excel", type=str, default=None, help="Optional file path to save merged outlier Excel report")
     args, _ = parser.parse_known_args()
 
@@ -353,9 +448,22 @@ if __name__ == "__main__":
 
     target_location = args.location
     if target_location is None:
-        loc_input = input("\nEnter location name to filter (press Enter for ALL locations): ").strip()
+        loc_input = input("\nEnter location name(s) to filter (comma-separated, or press Enter for ALL locations): ").strip()
         target_location = loc_input if loc_input and loc_input.lower() not in ["none", "all", ""] else None
     else:
         target_location = None if target_location.lower() in ["none", "all", ""] else target_location
 
-    main(city_id=target_city_id, location_name=target_location, save_merged_path=args.save_excel)
+    save_excel_path = args.save_excel
+    outlier_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outlier_implementaion")
+    if save_excel_path is None and sys.stdin.isatty():
+        save_prompt = input("\nDo you want to save the detailed merged outlier Excel report? (y/n) [default: n]: ").strip().lower()
+        if save_prompt in ["y", "yes"]:
+            loc_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(target_location)).strip("_")[:50] if target_location else "all_locations"
+            os.makedirs(outlier_dir, exist_ok=True)
+            save_excel_path = os.path.join(outlier_dir, f"outliers_{target_city_id}_{loc_slug}.xlsx")
+            print(f"  📄 Report will be saved to: {save_excel_path}")
+    elif save_excel_path and not os.path.isabs(save_excel_path):
+        os.makedirs(outlier_dir, exist_ok=True)
+        save_excel_path = os.path.join(outlier_dir, os.path.basename(save_excel_path))
+
+    main(city_id=target_city_id, location_name=target_location, save_merged_path=save_excel_path)

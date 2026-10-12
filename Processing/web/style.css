@@ -292,15 +292,18 @@ body {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   padding: 4px;
-  gap: 4px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .mode-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  text-align: center;
+  flex: 1 1 200px;
   cursor: pointer;
-  padding: 8px 16px;
+  padding: 9px 16px;
   border-radius: var(--radius-sm);
   font-size: 0.85rem;
   font-weight: 500;

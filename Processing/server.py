@@ -1025,17 +1025,24 @@ def run_pipeline_worker(params):
         if mode == "4":
             # MODE 4: OUTLIER DETECTION & DATABASE UPDATE (STEP 20 ONLY)
             t0 = time.time()
+            from outlier_update import main as run_outlier_main, normalize_locations
             outlier_loc = params.get("outlier_location") or params.get("location_name")
-            if outlier_loc and str(outlier_loc).strip().lower() in ["all", "none", "", "null", "*"]:
-                outlier_loc = None
+            norm_locs = normalize_locations(outlier_loc)
 
             save_outlier_report = params.get("save_outlier_report", False)
             save_path = None
             if save_outlier_report:
-                loc_slug = str(outlier_loc).replace(" ", "_") if outlier_loc else "all_locations"
-                save_path = os.path.join(CURR_DIR, f"outliers_{city_name.lower()}_{loc_slug}.xlsx")
+                if norm_locs:
+                    loc_slug = "_".join(re.sub(r"[^a-zA-Z0-9_-]+", "_", str(l)) for l in norm_locs[:3])
+                    if len(norm_locs) > 3:
+                        loc_slug += f"_and_{len(norm_locs)-3}_more"
+                else:
+                    loc_slug = "all_locations"
+                outlier_dir = os.path.join(os.path.dirname(CURR_DIR), "outlier_implementaion")
+                os.makedirs(outlier_dir, exist_ok=True)
+                save_path = os.path.join(outlier_dir, f"outliers_{city_name.lower()}_{loc_slug}.xlsx")
 
-            scope_desc = f"location='{outlier_loc}'" if outlier_loc else f"ALL locations in {city_name}"
+            scope_desc = f"{len(norm_locs)} location(s): {', '.join(norm_locs)}" if norm_locs else f"ALL locations in {city_name}"
             update_step_status(20, "running", f"Running Outlier Detection ({scope_desc})...")
             with state_lock:
                 pipeline_state["current_step_id"] = 20
@@ -1044,10 +1051,9 @@ def run_pipeline_worker(params):
 
             add_log(f"Step 20: 📊 Starting Outlier Detection for {city_name} ({scope_desc}, City ID: {city_id})...", "info")
 
-            from outlier_update import main as run_outlier_main
             run_outlier_main(
                 city_id=city_id,
-                location_name=outlier_loc,
+                location_name=norm_locs,
                 db_params=core.get_db_params(selected_db),
                 save_merged_path=save_path,
                 log_fn=add_log,
@@ -1796,23 +1802,30 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_name"] = "Outlier Detection & Update"
                 pipeline_state["progress"] = 99
 
+            from outlier_update import main as run_outlier_main, normalize_locations
             outlier_loc = params.get("outlier_location") or location_name
-            if outlier_loc and str(outlier_loc).strip().lower() in ["all", "none", "", "null", "*"]:
-                outlier_loc = None
+            norm_locs = normalize_locations(outlier_loc)
+
             save_outlier_report = params.get("save_outlier_report", False)
             save_path = None
             if save_outlier_report:
-                loc_slug = str(outlier_loc).replace(" ", "_") if outlier_loc else "all_locations"
-                save_path = os.path.join(CURR_DIR, f"outliers_{city_name.lower()}_{loc_slug}.xlsx")
+                if norm_locs:
+                    loc_slug = "_".join(re.sub(r"[^a-zA-Z0-9_-]+", "_", str(l)) for l in norm_locs[:3])
+                    if len(norm_locs) > 3:
+                        loc_slug += f"_and_{len(norm_locs)-3}_more"
+                else:
+                    loc_slug = "all_locations"
+                outlier_dir = os.path.join(os.path.dirname(CURR_DIR), "outlier_implementaion")
+                os.makedirs(outlier_dir, exist_ok=True)
+                save_path = os.path.join(outlier_dir, f"outliers_{city_name.lower()}_{loc_slug}.xlsx")
 
-            scope_desc = f"location='{outlier_loc}'" if outlier_loc else f"ALL locations in {city_name}"
+            scope_desc = f"{len(norm_locs)} location(s): {', '.join(norm_locs)}" if norm_locs else f"ALL locations in {city_name}"
             add_log(f"Step 20: 📊 Running Outlier Detection & Update on PostgreSQL for {city_name} ({scope_desc})...", "info")
 
             try:
-                from outlier_update import main as run_outlier_main
                 run_outlier_main(
                     city_id=city_id,
-                    location_name=outlier_loc,
+                    location_name=norm_locs,
                     db_params=core.get_db_params(selected_db),
                     save_merged_path=save_path,
                     log_fn=add_log,
@@ -1958,6 +1971,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if loc.get("location"):
                     l_clean = loc["location"].strip()
                     if l_clean.lower() not in ["general", "none", "null", "all_locations", "all locations"]:
+                        # Normalize folder spelling differences to match database naming
+                        if "goan" in l_clean.lower():
+                            l_clean = l_clean.replace("goan", "gaon").replace("Goan", "Gaon")
                         loc_names.add(l_clean)
 
             # Also check dedicated location drive configs for this city (e.g. Bandra in Mumbai)

@@ -55,44 +55,26 @@
     <main class="dashboard-main">
       <!-- CONFIGURATION SECTION -->
       <section class="card config-card">
-        <div class="card-header">
+        <div class="card-header" style="margin-bottom: 14px;">
           <div class="card-title-group">
             <span class="card-icon">⚙️</span>
             <div>
               <h2 class="card-title">Pipeline Configuration</h2>
-              <p class="card-desc">Select execution mode and provide file paths</p>
+              <p class="card-desc">Select target city, execution mode, and provide required parameters</p>
             </div>
-          </div>
-          <div class="mode-switch-group">
-            <label class="mode-pill active" id="mode1-label">
-              <input type="radio" name="pipeline-mode" value="1" checked id="mode1-radio">
-              <span>Mode 1: Start (Steps 1 → 20)</span>
-            </label>
-            <label class="mode-pill" id="mode2-label">
-              <input type="radio" name="pipeline-mode" value="2" id="mode2-radio">
-              <span>Mode 2: Resume (Step 7 → 20)</span>
-            </label>
-            <label class="mode-pill" id="mode3-label">
-              <input type="radio" name="pipeline-mode" value="3" id="mode3-radio">
-              <span>Mode 3: Parquet (Step 18 → 20)</span>
-            </label>
-            <label class="mode-pill" id="mode4-label">
-              <input type="radio" name="pipeline-mode" value="4" id="mode4-radio">
-              <span>Mode 4: Outlier (Step 20 Only)</span>
-            </label>
           </div>
         </div>
 
         <form id="pipeline-form" class="config-grid">
-          <!-- Target City (dim_city) - Placed on the Left Side -->
-          <div class="form-group" id="target-city-group">
+          <!-- 1. TARGET CITY (AT THE VERY TOP) -->
+          <div class="form-group full-width" id="target-city-group">
             <div class="label-with-badge">
-              <label for="city-id">Target City (dim_city) <span class="req">*</span></label>
+              <label for="city-id" style="font-weight: 600; color: #e2e8f0; font-size: 0.92rem;">🏙️ Target City (dim_city) <span class="req">*</span></label>
               <span class="badge-autodetect hidden" id="city-detect-badge">✨ Auto-detected</span>
             </div>
             <div class="input-with-icon">
               <span class="input-icon">🏙️</span>
-              <select id="city-id" required>
+              <select id="city-id" required style="font-size: 0.95rem; font-weight: 500;">
                 <optgroup label="Supported Cities (Google Drive & Custom Divisors)">
                   <option value="9" selected>Pune (ID: 9) — Divisor: 1.35</option>
                   <option value="8">Mumbai (ID: 8) — Divisor: 1.45</option>
@@ -112,12 +94,34 @@
                 </optgroup>
               </select>
             </div>
-            <small class="form-hint">Fetched from public.dim_city. Configures NR sequences & location
-              coordinates.</small>
+            <small class="form-hint">Fetched from public.dim_city. Configures NR sequences & location coordinates.</small>
+          </div>
+
+          <!-- 2. MODE OPTIONS (BELOW TARGET CITY) -->
+          <div class="form-group full-width" id="mode-selection-group">
+            <label style="font-weight: 600; color: #e2e8f0; font-size: 0.92rem; margin-bottom: 2px;">⚡ Select Execution Mode:</label>
+            <div class="mode-switch-group" style="width: 100%; display: flex; flex-wrap: wrap;">
+              <label class="mode-pill active" id="mode1-label" style="flex: 1 1 200px; text-align: center; justify-content: center;">
+                <input type="radio" name="pipeline-mode" value="1" checked id="mode1-radio">
+                <span>Mode 1: Start (Steps 1 → 20)</span>
+              </label>
+              <label class="mode-pill" id="mode2-label" style="flex: 1 1 200px; text-align: center; justify-content: center;">
+                <input type="radio" name="pipeline-mode" value="2" id="mode2-radio">
+                <span>Mode 2: Resume (Step 7 → 20)</span>
+              </label>
+              <label class="mode-pill" id="mode3-label" style="flex: 1 1 200px; text-align: center; justify-content: center;">
+                <input type="radio" name="pipeline-mode" value="3" id="mode3-radio">
+                <span>Mode 3: Parquet (Step 18 → 20)</span>
+              </label>
+              <label class="mode-pill" id="mode4-label" style="flex: 1 1 200px; text-align: center; justify-content: center;">
+                <input type="radio" name="pipeline-mode" value="4" id="mode4-radio">
+                <span>Mode 4: Outlier (Step 20 Only)</span>
+              </label>
+            </div>
           </div>
 
           <!-- Mode 1 Input -->
-          <div class="form-group" id="input-file-group">
+          <div class="form-group full-width" id="input-file-group">
             <div class="label-with-badge">
               <label for="input-file-path">Input File from Google Drive (.xlsx) <span class="req">*</span></label>
               <a href="https://drive.google.com/drive/folders/1i-dPwAQce86kR552YF03XcvLHsOoDjb-?usp=drive_link"
@@ -249,7 +253,7 @@
           </div>
 
           <!-- Mode 2 Input (Hidden initially) -->
-          <div class="form-group hidden" id="manual-file-group">
+          <div class="form-group full-width hidden" id="manual-file-group">
             <div class="label-with-badge">
               <label for="manual-file-path">Manual Corrected Excel File (.xlsx) <span class="req">*</span></label>
               <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (3. Manually
@@ -280,7 +284,7 @@
           </div>
 
           <!-- Mode 3 Input (Hidden initially) -->
-          <div class="form-group hidden" id="final-file-group">
+          <div class="form-group full-width hidden" id="final-file-group">
             <div class="label-with-badge">
               <label for="final-file-path">Final Processed Excel File (.xlsx) <span class="req">*</span></label>
               <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (4. Final
@@ -333,8 +337,10 @@
             <div style="display: flex; flex-direction: column; gap: 10px;">
               <div class="label-with-badge"
                 style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                <label style="color: #e2e8f0; font-weight: 600; font-size: 0.92rem; margin: 0;">📍 Select Location to
-                  Process:</label>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <label style="color: #e2e8f0; font-weight: 600; font-size: 0.92rem; margin: 0;">📍 Select Location(s) to Process:</label>
+                  <span style="font-size: 0.72rem; color: #38bdf8; background: rgba(56, 189, 248, 0.12); padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(56, 189, 248, 0.25);">✨ Multi-Select Enabled</span>
+                </div>
                 <label class="checkbox-pill">
                   <input type="checkbox" id="mode4-all-locations" checked>
                   <span>Run for ALL locations in city (Recommended)</span>
@@ -352,8 +358,7 @@
               <!-- Quick Clickable Location Chips -->
               <div id="outlier-chips-wrapper" style="margin-top: 2px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                  <span style="font-size: 0.76rem; color: #94a3b8; font-weight: 500;">⚡ Quick-Select Updated
-                    Location:</span>
+                  <span style="font-size: 0.76rem; color: #94a3b8; font-weight: 500;">⚡ Quick-Select Location(s) (Click to toggle multiple):</span>
                   <button type="button" class="picker-refresh-btn" id="btn-refresh-outlier-locs"
                     title="Refresh locations from Google Drive folders" style="font-size: 0.72rem; padding: 2px 8px;">🔄
                     Refresh Locations</button>
@@ -366,11 +371,10 @@
               <!-- Specific Location Text Input -->
               <div style="margin-top: 4px;">
                 <input type="text" id="mode4-location-input"
-                  placeholder="e.g. Andheri, Baner, Wakad (click a chip above or type custom location)" disabled
+                  placeholder="e.g. Borivali, Kandivali, Malad (click chips to multi-select or type comma-separated)" disabled
                   style="padding: 9px 14px;">
               </div>
-              <small class="form-hint" style="color: #94a3b8;">Choose a location from the dropdown/chips above or leave
-                'ALL' checked for the entire city.</small>
+              <small class="form-hint" style="color: #94a3b8;">Click one or more location chips above to multi-select, type comma-separated locations, or leave 'ALL' checked for the entire city.</small>
             </div>
           </div>
 
@@ -427,8 +431,7 @@
                     <input type="checkbox" id="save-outlier-report">
                     <span class="adv-card-title">📄 Save Outlier Excel Report</span>
                   </div>
-                  <span class="adv-card-desc">Exports a spreadsheet (.xlsx) of all records with detected outlier
-                    tags.</span>
+                  <span class="adv-card-desc">Exports detailed spreadsheet (.xlsx) with detected outlier tags into <code>outlier_implementaion</code> folder.</span>
                 </label>
 
                 <!-- Option 4: Step 14 Geocoding -->

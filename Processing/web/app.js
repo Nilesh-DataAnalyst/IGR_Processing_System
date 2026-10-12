@@ -1080,6 +1080,8 @@ function attachEventListeners() {
           document.querySelectorAll(".outlier-chip").forEach(c => c.classList.remove("active"));
           const allChip = document.querySelector(".outlier-chip.chip-all");
           if (allChip) allChip.classList.add("active");
+        } else {
+          mode4LocationInput.focus();
         }
       }
     });
@@ -1088,33 +1090,55 @@ function attachEventListeners() {
   if (outlierLocationSelect) {
     outlierLocationSelect.addEventListener("change", (e) => {
       const val = e.target.value;
-      if (mode4LocationInput) {
-        mode4LocationInput.value = val;
-      }
-      if (mode4AllLocations) {
-        mode4AllLocations.checked = !val;
-        if (mode4LocationInput) mode4LocationInput.disabled = !val;
-      }
-      document.querySelectorAll(".outlier-chip").forEach(c => {
-        if (!val && c.classList.contains("chip-all")) {
-          c.classList.add("active");
-        } else if (val && c.dataset.loc === val) {
-          c.classList.add("active");
-        } else {
-          c.classList.remove("active");
+      if (!val) {
+        if (mode4AllLocations) mode4AllLocations.checked = true;
+        if (mode4LocationInput) {
+          mode4LocationInput.value = "";
+          mode4LocationInput.disabled = true;
         }
-      });
+        document.querySelectorAll(".outlier-chip").forEach(c => c.classList.remove("active"));
+        const allChip = document.querySelector(".outlier-chip.chip-all");
+        if (allChip) allChip.classList.add("active");
+      } else {
+        if (mode4AllLocations) mode4AllLocations.checked = false;
+        if (mode4LocationInput) {
+          mode4LocationInput.value = val;
+          mode4LocationInput.disabled = false;
+        }
+        document.querySelectorAll(".outlier-chip").forEach(c => {
+          if (c.dataset.loc === val) {
+            c.classList.add("active");
+          } else {
+            c.classList.remove("active");
+          }
+        });
+      }
     });
   }
 
   if (mode4LocationInput) {
     mode4LocationInput.addEventListener("input", (e) => {
       const val = e.target.value.trim();
+      const enteredLocs = val.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+      const isAll = (enteredLocs.length === 0);
       if (mode4AllLocations) {
-        mode4AllLocations.checked = !val;
+        mode4AllLocations.checked = isAll;
       }
+      document.querySelectorAll(".outlier-chip").forEach(c => {
+        if (c.classList.contains("chip-all")) {
+          c.classList.toggle("active", isAll);
+        } else {
+          const locName = (c.dataset.loc || "").trim().toLowerCase();
+          c.classList.toggle("active", enteredLocs.includes(locName));
+        }
+      });
       if (outlierLocationSelect) {
-        outlierLocationSelect.value = val;
+        if (enteredLocs.length === 1) {
+          const matchingOpt = Array.from(outlierLocationSelect.options).find(o => o.value.trim().toLowerCase() === enteredLocs[0]);
+          outlierLocationSelect.value = matchingOpt ? matchingOpt.value : "";
+        } else {
+          outlierLocationSelect.value = "";
+        }
       }
     });
   }
@@ -2263,14 +2287,36 @@ async function loadOutlierLocations(cityId) {
       chip.dataset.loc = loc;
       chip.innerHTML = `📍 ${loc}`;
       chip.addEventListener("click", () => {
-        if (mode4AllLocations) mode4AllLocations.checked = false;
-        if (mode4LocationInput) {
-          mode4LocationInput.value = loc;
-          mode4LocationInput.disabled = false;
+        // Toggle this chip
+        const willBeActive = !chip.classList.contains("active");
+        chip.classList.toggle("active", willBeActive);
+
+        // Deselect ALL chip
+        allChip.classList.remove("active");
+
+        // Gather all currently active location chips
+        const activeLocChips = Array.from(document.querySelectorAll(".outlier-chip.active:not(.chip-all)"));
+        const activeLocNames = activeLocChips.map(c => c.dataset.loc).filter(Boolean);
+
+        if (activeLocNames.length === 0) {
+          // No location selected, revert to ALL
+          allChip.classList.add("active");
+          if (mode4AllLocations) mode4AllLocations.checked = true;
+          if (mode4LocationInput) {
+            mode4LocationInput.value = "";
+            mode4LocationInput.disabled = true;
+          }
+          if (outlierLocationSelect) outlierLocationSelect.value = "";
+        } else {
+          if (mode4AllLocations) mode4AllLocations.checked = false;
+          if (mode4LocationInput) {
+            mode4LocationInput.disabled = false;
+            mode4LocationInput.value = activeLocNames.join(", ");
+          }
+          if (outlierLocationSelect) {
+            outlierLocationSelect.value = (activeLocNames.length === 1 ? activeLocNames[0] : "");
+          }
         }
-        if (outlierLocationSelect) outlierLocationSelect.value = loc;
-        document.querySelectorAll(".outlier-chip").forEach(c => c.classList.remove("active"));
-        chip.classList.add("active");
       });
       outlierChipsRow.appendChild(chip);
     });
@@ -2279,7 +2325,7 @@ async function loadOutlierLocations(cityId) {
       const note = document.createElement("span");
       note.style.fontSize = "0.76rem";
       note.style.color = "#94a3b8";
-      note.textContent = "No saved locations found. Enter location manually below.";
+      note.textContent = "No saved locations found. Enter location(s) manually below.";
       outlierChipsRow.appendChild(note);
     }
   }
@@ -2292,7 +2338,7 @@ async function runOutlierDetection() {
   const chosenLoc = isAll ? null : ((mode4LocationInput ? mode4LocationInput.value.trim() : "") || (outlierLocationSelect ? outlierLocationSelect.value.trim() : ""));
   const saveReport = saveOutlierReportCb ? saveOutlierReportCb.checked : false;
 
-  const scopeMsg = chosenLoc ? `location '${chosenLoc}'` : `ALL locations in ${cityName}`;
+  const scopeMsg = chosenLoc ? `location(s) '${chosenLoc}'` : `ALL locations in ${cityName}`;
   if (!confirm(`Run Outlier Detection for ${scopeMsg} (City ID: ${currentCityId})?`)) return;
 
   logToConsole(`[Outlier] Requesting Outlier Detection for ${scopeMsg}...`, "info");

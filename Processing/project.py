@@ -2120,17 +2120,17 @@ print(f"\n{HEADER}{'-' * 60}{RESET}")
 print(f"{CYAN}Select Outlier Scope for {city_name_to_process}:{RESET}")
 if loc_candidate:
     print(f"  {CYAN}[1]{RESET} Current detected location ({BOLD}{loc_candidate}{RESET})")
-    print(f"  {CYAN}[2]{RESET} Enter a different specific location")
+    print(f"  {CYAN}[2]{RESET} Enter specific location(s) (comma-separated, e.g. 'Andheri, Bandra')")
     print(f"  {CYAN}[3]{RESET} ALL locations in {city_name_to_process} (whole city)")
     print(f"  {CYAN}[0]{RESET} Skip / Cancel")
     print(f"{HEADER}{'-' * 60}{RESET}")
-    scope_choice = input(f"\n{YELLOW}Select option (1, 2, 3, or 0 / enter location name) [default: 1]: {RESET}").strip()
+    scope_choice = input(f"\n{YELLOW}Select option (1, 2, 3, or 0 / enter location name(s)) [default: 1]: {RESET}").strip()
 else:
-    print(f"  {CYAN}[1]{RESET} Specific location (enter location name, e.g. 'Andheri', 'Baner')")
+    print(f"  {CYAN}[1]{RESET} Specific location(s) (enter name(s), e.g. 'Andheri' or 'Andheri, Bandra')")
     print(f"  {CYAN}[2]{RESET} ALL locations in {city_name_to_process} (whole city)")
     print(f"  {CYAN}[0]{RESET} Skip / Cancel")
     print(f"{HEADER}{'-' * 60}{RESET}")
-    scope_choice = input(f"\n{YELLOW}Select option (1, 2, or 0 / enter location name) [default: 1]: {RESET}").strip()
+    scope_choice = input(f"\n{YELLOW}Select option (1, 2, or 0 / enter location name(s)) [default: 1]: {RESET}").strip()
 
 loc_to_process = None
 skip_outlier = False
@@ -2140,22 +2140,22 @@ if loc_candidate:
         loc_to_process = loc_candidate
     elif scope_choice == "2":
         while True:
-            custom_loc = input(f"\n{YELLOW}Enter specific location name for {city_name_to_process}: {RESET}").strip().strip('"')
+            custom_loc = input(f"\n{YELLOW}Enter specific location(s) for {city_name_to_process} (comma-separated): {RESET}").strip().strip('"')
             if custom_loc:
                 loc_to_process = custom_loc
                 break
-            print(f"{RED}❌ Location name cannot be empty. Please enter a valid location name.{RESET}")
+            print(f"{RED}❌ Location name cannot be empty. Please enter valid location name(s).{RESET}")
     elif scope_choice in ["3", "all", "*"]:
         loc_to_process = None
     elif scope_choice in ["0", "skip", "cancel", "n", "no"]:
         skip_outlier = True
     else:
-        # User directly typed a location name
+        # User directly typed location name(s)
         loc_to_process = scope_choice
 else:
     if scope_choice in ["1", ""]:
         while True:
-            custom_loc = input(f"\n{YELLOW}Enter specific location name for {city_name_to_process} (or 'all' for whole city): {RESET}").strip().strip('"')
+            custom_loc = input(f"\n{YELLOW}Enter specific location(s) for {city_name_to_process} (comma-separated, or 'all' for whole city): {RESET}").strip().strip('"')
             if custom_loc.lower() in ["all", "*", "none"]:
                 loc_to_process = None
                 break
@@ -2168,19 +2168,21 @@ else:
     elif scope_choice in ["0", "skip", "cancel", "n", "no"]:
         skip_outlier = True
     else:
-        # User directly typed a location name
+        # User directly typed location name(s)
         loc_to_process = scope_choice
 
 if not skip_outlier:
-    scope_str = f"location='{loc_to_process}'" if loc_to_process else f"ALL locations in {city_name_to_process}"
+    scope_str = f"location(s)='{loc_to_process}'" if loc_to_process else f"ALL locations in {city_name_to_process}"
     print(f"\n{CYAN}⏳ Starting outlier update for {BOLD}{scope_str}{RESET}{CYAN} (city_id={city_id_to_process})...{RESET}")
 
     # Optional prompt to save merged df to Excel
     save_prompt = input(f"\n{YELLOW}Do you want to save the detailed merged outlier Excel report? (y/n) [default: n]: {RESET}").strip().lower()
     save_path = None
     if save_prompt in ["y", "yes"]:
-        loc_slug = loc_to_process.replace(" ", "_") if loc_to_process else "all_locations"
-        save_path = f"outliers_{city_name_to_process.lower()}_{loc_slug}.xlsx"
+        loc_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(loc_to_process)).strip("_")[:50] if loc_to_process else "all_locations"
+        outlier_dir = Path(__file__).resolve().parents[1] / "outlier_implementaion"
+        outlier_dir.mkdir(parents=True, exist_ok=True)
+        save_path = str(outlier_dir / f"outliers_{city_name_to_process.lower()}_{loc_slug}.xlsx")
         print(f"  {CYAN}📄 Merged report will be saved to:{RESET} {save_path}")
 
     try:
@@ -2198,7 +2200,9 @@ if not skip_outlier:
         if outlier_script.exists():
             cmd = [sys.executable, str(outlier_script), "--city_id", str(city_id_to_process)]
             if loc_to_process:
-                cmd.extend(["--location", loc_to_process])
+                cmd.extend(["--location", str(loc_to_process)])
+            if save_path:
+                cmd.extend(["--save_excel", str(save_path)])
             subprocess.run(cmd, cwd=str(Path(__file__).resolve().parent), check=True)
             print(f"\n{GREEN}{BOLD}🎉 [STEP 20/20] outlier_update.py finished successfully via subprocess!{RESET}")
         else:
