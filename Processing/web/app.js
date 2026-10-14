@@ -187,6 +187,114 @@ const DUBAI_STEPS = [
   }
 ];
 
+// Abu Dhabi Real Estate (ADREC) 14-Step Interactive Pipeline Definitions
+const ABU_DHABI_STEPS = [
+  {
+    id: 1,
+    name: "ADREC Portal Ingestion",
+    desc: "Automated transaction scraping from ADREC portal with Google Drive sync (adrec_downloader.py). Skippable.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 2,
+    name: "Raw CSV Loading & Validation",
+    desc: "Loads raw ADREC transaction CSV (UTF-8-SIG) from Google Drive or local storage.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 3,
+    name: "Duplicate Transaction Removal",
+    desc: "Identifies and drops identical transaction records across all attributes.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 4,
+    name: "Date Parsing & Quarter Normalization",
+    desc: "Converts Sale Application Date to ISO YYYY-MM-DD, extracts year, quarter, and agreement date.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 5,
+    name: "Property Type Categorization",
+    desc: "Maps raw property types (Apartment, Villa, Duplex, Plot, etc.) into standardized taxonomy.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 6,
+    name: "Project Type & Asset Class Mapping",
+    desc: "Classifies asset classes into Residential, Commercial, Industrial, Agricultural, etc.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 7,
+    name: "Unit Configuration Normalization",
+    desc: "Normalizes bedroom count and property layouts into standardized BHK and unit types.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 8,
+    name: "Location Coordinates & ID Lookup",
+    desc: "Maps location_id, latitude, and longitude from master location reference with Jabal Hafeet fallback.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 9,
+    name: "Project Master Reference Matching",
+    desc: "Matches projects against Abudhabi_project_coordinates.csv using 3-key composite matching.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 10,
+    name: "Google Places & Geocoding Enrichment",
+    desc: "Enriches missing commercial project coordinates via Google Places API (unmatched project coordinates kept blank without copying location coordinates).",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 11,
+    name: "PostgreSQL NR Index Assignment",
+    desc: "Assigns Non-RERA index (internal_index_id) sequentially starting from nr468 for all projects and Private [project_name + location_name].",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 12,
+    name: "DB Schema Column Alignment",
+    desc: "Filters and orders columns strictly to Abu Dhabi schema with internal_index_id, Title Case, and project_id purged.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  },
+  {
+    id: 13,
+    name: "Final Output Save & Google Drive Upload",
+    desc: "Exports database-ready final processed files (.xlsx and .csv) directly to Google Drive Processed Data folder.",
+    status: "pending",
+    detail: "Waiting...",
+    duration: "-"
+  }
+];
+
 // App State
 let appState = {
   mode: "1",
@@ -312,6 +420,22 @@ const dubaiFromDate = document.getElementById("dubai-from-date");
 const dubaiToDate = document.getElementById("dubai-to-date");
 const dubaiRunProcessing = document.getElementById("dubai-run-processing");
 const dubaiCustomCsv = document.getElementById("dubai-custom-csv");
+
+// Abu Dhabi ADREC Workflow Elements
+const abuDhabiWorkflowCard = document.getElementById("abu-dhabi-workflow-card");
+const adRunScraping = document.getElementById("ad-run-scraping");
+const adFromDate = document.getElementById("ad-from-date");
+const adToDate = document.getElementById("ad-to-date");
+const adHeadless = document.getElementById("ad-headless");
+const adDriveFileSelect = document.getElementById("ad-drive-file-select");
+const adCustomCsv = document.getElementById("ad-custom-csv");
+const btnRefreshAdFiles = document.getElementById("btn-refresh-ad-files");
+const btnAdQuickDownload = document.getElementById("btn-ad-quick-download");
+const btnAdRunProcessing = document.getElementById("btn-ad-run-processing");
+const btnAdQuickStep2 = document.getElementById("btn-ad-quick-step2");
+const adFileInfoText = document.getElementById("ad-file-info-text");
+const adFileViewLink = document.getElementById("ad-file-view-link");
+
 const stepsSectionTitle = document.getElementById("steps-section-title");
 const modeSwitchGroup = document.querySelector(".mode-switch-group");
 const outputPathGroup = document.getElementById("output-path-group");
@@ -417,7 +541,7 @@ function detectCityFromPath(filepath) {
     { id: "10", patterns: ["rangareddy"] },
     { id: "11", patterns: ["sangareddy"] },
     { id: "13", patterns: ["yadadri", "bhuvanagiri"] },
-    { id: "1", patterns: ["abu_dhabi", "abudhabi"] },
+    { id: "1", patterns: ["abu_dhabi", "abudhabi", "abu dhabi", "adrec", "1h_cuque4nqermgve__lajgluanxu1ov2"] },
     { id: "15", patterns: ["dubai"] }
   ];
 
@@ -450,10 +574,17 @@ document.addEventListener("DOMContentLoaded", () => {
   checkServerHealth();
 });
 
-// Render the step cards in the grid (20 steps for India, 2 steps for Dubai)
-function renderStepCards(isDubai = false) {
+// Render the step cards in the grid (20 steps for India, 2 steps for Dubai, 14 steps for Abu Dhabi)
+function renderStepCards(mode = false) {
   stepsGrid.innerHTML = "";
-  const steps = isDubai ? DUBAI_STEPS : PIPELINE_STEPS;
+  let steps = PIPELINE_STEPS;
+  if (mode === "abu_dhabi" || (cityIdInput && cityIdInput.value === "1" && mode !== false)) {
+    steps = ABU_DHABI_STEPS;
+  } else if (mode === true || mode === "dubai" || (cityIdInput && cityIdInput.value === "15" && mode !== false)) {
+    steps = DUBAI_STEPS;
+  }
+
+  const isCustom2Step = (steps === DUBAI_STEPS);
 
   steps.forEach(step => {
     const card = document.createElement("div");
@@ -461,14 +592,14 @@ function renderStepCards(isDubai = false) {
     card.id = `step-card-${step.id}`;
 
     let actionsHtml = "";
-    if (!isDubai && step.id === 19) {
+    if (!isCustom2Step && step.id === 19) {
       actionsHtml = `
         <div class="step-actions-row">
           <button type="button" class="btn-step-action" onclick="launchUploadPipeline()" title="Launch final_code.py in interactive console">
             🚀 Launch final_code.py
           </button>
         </div>`;
-    } else if (!isDubai && step.id === 20) {
+    } else if (!isCustom2Step && step.id === 20) {
       actionsHtml = `
         <div class="step-actions-row">
           <button type="button" class="btn-step-action" onclick="runOutlierDetection()" title="Run Outlier Detection on Database">
@@ -595,12 +726,133 @@ function disableDubaiView() {
   setMode(appState.mode);
 }
 
+// Abu Dhabi 2-Step Workflow Controller Functions
+async function fetchAbuDhabiConfig(forceRefresh = false) {
+  try {
+    const res = await fetch(`/api/abu-dhabi/config`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (adFromDate && (forceRefresh || !adFromDate.value)) {
+      adFromDate.value = data.from_date || "2026-09-01";
+    }
+    if (adToDate && (forceRefresh || !adToDate.value)) {
+      adToDate.value = data.to_date || new Date().toISOString().split("T")[0];
+    }
+    logToConsole(`[Abu Dhabi] Config loaded. Default date range: ${adFromDate ? adFromDate.value : ""} to ${adToDate ? adToDate.value : ""}`);
+  } catch (err) {
+    console.error("Failed to fetch Abu Dhabi config:", err);
+  }
+}
+
+async function fetchAbuDhabiDriveFiles(forceRefresh = false) {
+  if (!adDriveFileSelect) return;
+  try {
+    if (forceRefresh) {
+      adDriveFileSelect.innerHTML = '<option value="">⏳ Scanning Google Drive files...</option>';
+    }
+    const res = await fetch(`/api/abu-dhabi/files`);
+    if (!res.ok) throw new Error("Server returned " + res.status);
+    const data = await res.json();
+    const files = data.files || [];
+    adDriveFileSelect.innerHTML = '<option value="">[Auto: Latest uploaded file in Google Drive]</option>';
+    files.forEach(f => {
+      const opt = document.createElement("option");
+      opt.value = f.name;
+      const sizeStr = f.size ? ` (${(f.size / (1024 * 1024)).toFixed(2)} MB)` : "";
+      const dateStr = f.modified ? ` - ${new Date(f.modified).toLocaleDateString()}` : "";
+      opt.textContent = `${f.name}${sizeStr}${dateStr}`;
+      opt.dataset.size = f.size || "";
+      opt.dataset.link = f.link || "";
+      opt.dataset.modified = f.modified || "";
+      opt.dataset.id = f.id || "";
+      adDriveFileSelect.appendChild(opt);
+    });
+    if (adFileInfoText) {
+      adFileInfoText.textContent = `Found ${files.length} file(s) in Raw Data folder (1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG)`;
+    }
+    if (forceRefresh) {
+      logToConsole(`[Abu Dhabi Drive] Refreshed files list: ${files.length} file(s) found.`, "info");
+    }
+  } catch (err) {
+    console.error("Failed to fetch Abu Dhabi drive files:", err);
+    adDriveFileSelect.innerHTML = '<option value="">⚠️ Error loading Drive files</option>';
+  }
+}
+
+function enableAbuDhabiView() {
+  if (modeSwitchGroup) modeSwitchGroup.classList.remove("hidden");
+  if (mode1Label) {
+    const s = mode1Label.querySelector("span");
+    if (s) s.textContent = "Mode 1: Start (Abu Dhabi Workflow)";
+  }
+  if (mode2Label) mode2Label.classList.add("hidden");
+  if (mode3Label) {
+    const s = mode3Label.querySelector("span");
+    if (s) s.textContent = "Mode 3: Parquet (Processed Files)";
+  }
+  if (mode4Label) {
+    const s = mode4Label.querySelector("span");
+    if (s) s.textContent = "Mode 4: Outlier (Step 20 Only)";
+  }
+
+  if (outputPathGroup) outputPathGroup.classList.add("hidden");
+  if (advancedSettingsWrapper) advancedSettingsWrapper.classList.add("hidden");
+  const quickToolsStrip = document.querySelector(".quick-tools-strip");
+  if (quickToolsStrip) quickToolsStrip.classList.add("hidden");
+
+  if (inputFilePath) inputFilePath.required = false;
+  if (manualFilePath) manualFilePath.required = false;
+  if (finalFilePath) finalFilePath.required = false;
+
+  if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
+  if (abuDhabiWorkflowCard) abuDhabiWorkflowCard.classList.remove("hidden");
+  if (stepsSectionTitle) stepsSectionTitle.textContent = "🕌 Abu Dhabi Real Estate (ADREC) Pipeline Steps (1 to 13)";
+
+  updateAbuDhabiButtonState();
+  renderStepCards("abu_dhabi");
+
+  fetchAbuDhabiConfig();
+  fetchAbuDhabiDriveFiles();
+
+  if (appState.mode === "3") {
+    setMode("3");
+    return;
+  }
+  if (appState.mode === "4") {
+    setMode("4");
+    return;
+  }
+
+  setMode("1");
+}
+
+function updateAbuDhabiButtonState() {
+  if (!btnRun) return;
+  const isScrapingOn = adRunScraping ? adRunScraping.checked : true;
+  if (isScrapingOn) {
+    btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Abu Dhabi Execution (Download + Process)</span>';
+  } else {
+    btnRun.innerHTML = '<span class="btn-icon">⚡</span> <span class="btn-text">Run Abu Dhabi Processing (Step 2 → 13)</span>';
+  }
+}
+
+function disableAbuDhabiView() {
+  if (abuDhabiWorkflowCard) abuDhabiWorkflowCard.classList.add("hidden");
+  const quickToolsStrip = document.querySelector(".quick-tools-strip");
+  if (quickToolsStrip) quickToolsStrip.classList.remove("hidden");
+}
+
 function handleCityChange(cid) {
   cid = String(cid || (cityIdInput ? cityIdInput.value : "9"));
   if (cid === "15") {
+    disableAbuDhabiView();
     enableDubaiView();
+  } else if (cid === "1") {
+    disableDubaiView();
+    enableAbuDhabiView();
   } else {
     disableDubaiView();
+    disableAbuDhabiView();
     loadInputDriveLocations(cid);
     loadManualDriveLocations(cid);
     loadFinalDriveLocations(cid);
@@ -639,6 +891,75 @@ function attachEventListeners() {
   if (btnDubaiQuickParquet) {
     btnDubaiQuickParquet.addEventListener("click", () => {
       setMode("3");
+    });
+  }
+
+  // Abu Dhabi event listeners
+  if (btnRefreshAdFiles) {
+    btnRefreshAdFiles.addEventListener("click", () => {
+      fetchAbuDhabiDriveFiles(true);
+    });
+  }
+  if (adDriveFileSelect) {
+    adDriveFileSelect.addEventListener("change", (e) => {
+      const val = e.target.value;
+      const opt = e.target.selectedOptions[0];
+      if (val) {
+        if (adCustomCsv) adCustomCsv.value = val;
+        if (adFileInfoText && opt) {
+          const sz = opt.dataset.size ? `${(parseInt(opt.dataset.size) / (1024 * 1024)).toFixed(2)} MB` : "";
+          const mod = opt.dataset.modified ? new Date(opt.dataset.modified).toLocaleString() : "";
+          adFileInfoText.textContent = `Size: ${sz || "N/A"} | Modified: ${mod || "N/A"}`;
+        }
+        if (adFileViewLink && opt && opt.dataset.link) {
+          adFileViewLink.href = opt.dataset.link;
+          adFileViewLink.textContent = "Open in Drive ↗";
+        }
+        logToConsole(`[Abu Dhabi] Selected Drive file: ${val}`, "info");
+      } else {
+        if (adCustomCsv) adCustomCsv.value = "";
+        if (adFileInfoText) adFileInfoText.textContent = "Folder ID: 1h_cUque4NqERMGvE__LaJgLuanXu1Ov2";
+        if (adFileViewLink) {
+          adFileViewLink.href = "https://drive.google.com/drive/folders/1h_cUque4NqERMGvE__LaJgLuanXu1Ov2?usp=drive_link";
+          adFileViewLink.textContent = "View on Drive ↗";
+        }
+      }
+    });
+  }
+  if (btnAdQuickDownload) {
+    btnAdQuickDownload.addEventListener("click", () => {
+      if (adRunScraping) adRunScraping.checked = true;
+      updateAbuDhabiButtonState();
+      startPipeline();
+    });
+  }
+
+  if (btnAdRunProcessing) {
+    btnAdRunProcessing.addEventListener("click", () => {
+      if (adRunScraping) adRunScraping.checked = false;
+      updateAbuDhabiButtonState();
+      logToConsole("[Abu Dhabi] ⚡ Triggered direct Step 2 processing on selected file (Skipping Downloader)...", "info");
+      startPipeline();
+    });
+  }
+
+  if (btnAdQuickStep2) {
+    btnAdQuickStep2.addEventListener("click", () => {
+      if (adRunScraping) adRunScraping.checked = false;
+      updateAbuDhabiButtonState();
+      logToConsole("[Abu Dhabi] ⚡ Triggered direct processing on chosen file (Skipping Downloader)...", "info");
+      startPipeline();
+    });
+  }
+
+  if (adRunScraping) {
+    adRunScraping.addEventListener("change", () => {
+      updateAbuDhabiButtonState();
+      if (!adRunScraping.checked) {
+        logToConsole("[Abu Dhabi] Downloader disabled. Starting directly from Step 2 on selected file.", "warning");
+      } else {
+        logToConsole("[Abu Dhabi] Downloader enabled. Full workflow (Download -> Process) active.", "info");
+      }
     });
   }
 
@@ -1179,6 +1500,7 @@ function setMode(mode) {
   appState.mode = mode;
   const currentCityId = cityIdInput ? cityIdInput.value : "9";
   const isDubai = (currentCityId === "15");
+  const isAbuDhabi = (currentCityId === "1");
 
   if (mode === "1") {
     mode1Label.classList.add("active");
@@ -1188,6 +1510,7 @@ function setMode(mode) {
 
     if (isDubai) {
       if (dubaiWorkflowCard) dubaiWorkflowCard.classList.remove("hidden");
+      if (abuDhabiWorkflowCard) abuDhabiWorkflowCard.classList.add("hidden");
       inputFileGroup.classList.add("hidden");
       manualFileGroup.classList.add("hidden");
       if (finalFileGroup) finalFileGroup.classList.add("hidden");
@@ -1208,7 +1531,33 @@ function setMode(mode) {
       return;
     }
 
+    if (isAbuDhabi) {
+      if (abuDhabiWorkflowCard) abuDhabiWorkflowCard.classList.remove("hidden");
+      if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
+      inputFileGroup.classList.add("hidden");
+      manualFileGroup.classList.add("hidden");
+      if (finalFileGroup) finalFileGroup.classList.add("hidden");
+      if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
+      const quickToolsStrip = document.querySelector(".quick-tools-strip");
+      if (quickToolsStrip) quickToolsStrip.classList.add("hidden");
+
+      if (!appState.isRunning) {
+        if (pauseCard) pauseCard.classList.add("hidden");
+        if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
+      }
+
+      inputFilePath.required = false;
+      manualFilePath.required = false;
+      if (finalFilePath) finalFilePath.required = false;
+      updateAbuDhabiButtonState();
+      if (stepsSectionTitle) stepsSectionTitle.textContent = "🕌 Abu Dhabi Real Estate (ADREC) Pipeline Steps (1 to 13)";
+      renderStepCards("abu_dhabi");
+      logToConsole("[Mode] Selected Mode 1: Abu Dhabi ADREC Workflow (Downloader -> Drive Sync)");
+      return;
+    }
+
     if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
+    if (abuDhabiWorkflowCard) abuDhabiWorkflowCard.classList.add("hidden");
     inputFileGroup.classList.remove("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
@@ -1403,6 +1752,72 @@ function setMode(mode) {
 // =========================================================
 async function startPipeline() {
   const isDubai = cityIdInput && cityIdInput.value === "15";
+  const isAbuDhabi = cityIdInput && (cityIdInput.value === "1" || cityIdInput.value.toLowerCase() === "abu_dhabi");
+
+  // Abu Dhabi scraping & file selection workflow
+  if (isAbuDhabi && appState.mode !== "3" && appState.mode !== "4") {
+    const runScraping = adRunScraping ? adRunScraping.checked : true;
+    const fromDate = adFromDate ? adFromDate.value.trim() : "";
+    const toDate = adToDate ? adToDate.value.trim() : "";
+    const customCsv = adCustomCsv ? adCustomCsv.value.trim() : "";
+    const headless = adHeadless ? adHeadless.checked : true;
+
+    const payload = {
+      city_id: 1,
+      city_name: "Abu Dhabi",
+      city_key: "abu_dhabi",
+      mode: "1",
+      from_date: fromDate,
+      to_date: toDate,
+      input_file: customCsv,
+      headless: headless,
+      database: getSelectedDb(),
+      skip_scraping: !runScraping
+    };
+
+    // Reset UI
+    appState.isRunning = true;
+    appState.lastLogIndex = 0;
+    renderStepCards("abu_dhabi");
+    if (!runScraping) {
+      updateStepUI(1, "skipped", "Downloader skipped - Direct processing started", "-");
+    }
+    progressBar.style.width = "0%";
+    progressPercent.textContent = "0%";
+    btnRun.disabled = true;
+    btnStop.disabled = false;
+    btnStop.classList.remove("hidden");
+    startTimer();
+
+    logToConsole(`\n[Execution] Triggering Abu Dhabi Real Estate (ADREC) Workflow...`);
+    if (runScraping) {
+      logToConsole(`  - Step 1 (ADREC Downloader): Date range ${fromDate || "Auto 30d"} to ${toDate || "Yesterday"} (Headless: ${headless})`);
+    } else {
+      logToConsole(`  - Step 1 (ADREC Downloader): Skipped (Direct Processing from Step 2)`);
+    }
+    logToConsole(`  - Input File Selection: ${customCsv ? customCsv : "Auto: Latest in Drive/local folder"}`);
+
+    try {
+      const res = await fetch("/api/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to start Abu Dhabi workflow.");
+      }
+
+      logToConsole(`[Server] Abu Dhabi workflow worker started successfully.`);
+      startPolling();
+    } catch (err) {
+      logToConsole(`[Error] ${err.message}`, "error");
+      alert(`Could not start Abu Dhabi workflow: ${err.message}`);
+      resetRunState();
+    }
+    return;
+  }
 
   // Dubai scraping & processing is ONLY run for Mode 1 (or default Dubai mode).
   // If Mode 3 (Parquet conversion) or Mode 4 (Outlier) is selected, DO NOT run scraping!
@@ -1571,8 +1986,8 @@ function startPolling() {
         resetRunState();
 
         if (status.state === "completed") {
-          logToConsole(`\n🎉 [Pipeline Finished] File saved to: ${status.output_file}`, "success");
-          alert(`🎉 Pipeline execution completed successfully!\nSaved to: ${status.output_file}`);
+          const outMsg = status.output_file ? `Saved: ${status.output_file}` : "Execution finished and uploaded to Google Drive!";
+          logToConsole(`\n🎉 [Pipeline Finished] Pipeline execution completed successfully! ${outMsg}`, "success");
         } else if (status.state === "failed") {
           logToConsole(`\n❌ [Pipeline Failed] Error: ${status.error}`, "error");
         }
@@ -1580,19 +1995,24 @@ function startPolling() {
     } catch (err) {
       console.error("Polling error:", err);
     }
-  }, 700);
+  }, 250);
 }
 
 function applyStatusUpdate(status) {
-  // Only auto-switch to Dubai 2-Step view if the active mode is Dubai 2-step (Mode 1 / "dubai")
+  // Auto-switch to Dubai 2-Step or Abu Dhabi 13-Step view if active
   const isDubai2Step = (status.city_id === 15 || status.city_key === "dubai") && (status.mode === "dubai" || (status.steps && status.steps.length === 2));
-  const currentlyShowingDubai2Step = stepsGrid.querySelectorAll(".step-card").length === 2;
+  const isAbuDhabiWorkflow = (status.city_id === 1 || status.city_key === "abu_dhabi");
+  const currentCardCount = stepsGrid.querySelectorAll(".step-card").length;
 
-  if (isDubai2Step && !currentlyShowingDubai2Step && appState.mode !== "3" && appState.mode !== "4") {
+  if (isDubai2Step && currentCardCount !== 2 && appState.mode !== "3" && appState.mode !== "4") {
     if (cityIdInput && cityIdInput.value !== "15") cityIdInput.value = "15";
     enableDubaiView();
-  } else if (!isDubai2Step && currentlyShowingDubai2Step && !appState.isRunning && cityIdInput && cityIdInput.value !== "15") {
+  } else if (isAbuDhabiWorkflow && currentCardCount !== 13 && appState.mode !== "3" && appState.mode !== "4") {
+    if (cityIdInput && cityIdInput.value !== "1") cityIdInput.value = "1";
+    enableAbuDhabiView();
+  } else if (!isDubai2Step && !isAbuDhabiWorkflow && (currentCardCount === 2 || currentCardCount === 13) && !appState.isRunning && cityIdInput && cityIdInput.value !== "15" && cityIdInput.value !== "1") {
     disableDubaiView();
+    disableAbuDhabiView();
   }
 
   // Update progress percentage
@@ -1623,10 +2043,11 @@ function applyStatusUpdate(status) {
     renderStep7MergeReport(status.step7_merge_report);
   }
 
-  // Handle Step 7 and Step 18 Pause States (strictly hide for Dubai)
+  // Handle Step 7 and Step 18 Pause States (strictly hide for Dubai & Abu Dhabi)
   const isDubaiActive = (cityIdInput && cityIdInput.value === "15") || isDubai2Step || (status.city_id === 15) || (status.city_key === "dubai") || appState.mode === "dubai";
+  const isAbuDhabiActive = (cityIdInput && cityIdInput.value === "1") || isAbuDhabiWorkflow || (status.city_id === 1) || (status.city_key === "abu_dhabi");
 
-  if (isDubaiActive) {
+  if (isDubaiActive || isAbuDhabiActive) {
     if (pauseCard) pauseCard.classList.add("hidden");
     if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
   } else {
@@ -1738,10 +2159,14 @@ function updateStepUI(id, status, detail, duration) {
 
   card.className = `step-card ${status}`;
   badge.className = `step-badge badge-${status}`;
-  badge.innerHTML = `${getBadgeIcon(status)} ${status}`;
+  badge.innerHTML = `${getBadgeIcon(status)} ${status.toUpperCase()}`;
 
   if (detail) detailEl.textContent = detail;
-  if (duration) durationEl.textContent = duration;
+  if (status === "running") {
+    durationEl.textContent = duration && duration !== "-" ? duration : "running...";
+  } else if (duration) {
+    durationEl.textContent = duration;
+  }
 }
 
 function resetRunState() {
@@ -1977,7 +2402,7 @@ async function loadManualDriveLocations(cityId) {
           chip.type = "button";
           chip.className = "loc-folder-chip";
           const firstFile = loc.files[0];
-          const allInLocSelected = loc.files.length > 0 && loc.files.every(f => 
+          const allInLocSelected = loc.files.length > 0 && loc.files.every(f =>
             appState.step7SelectedFiles.some(sf => sf.path.toLowerCase() === f.path.toLowerCase())
           );
           if (allInLocSelected) chip.classList.add("active");
@@ -1986,7 +2411,7 @@ async function loadManualDriveLocations(cityId) {
           chip.title = `Click to toggle ${loc.location} folder files for Step 7 merge`;
 
           chip.addEventListener("click", () => {
-            const currentlyAllSelected = loc.files.length > 0 && loc.files.every(f => 
+            const currentlyAllSelected = loc.files.length > 0 && loc.files.every(f =>
               appState.step7SelectedFiles.some(sf => sf.path.toLowerCase() === f.path.toLowerCase())
             );
 
@@ -2463,7 +2888,7 @@ function renderStep7MergeReport(report) {
     step7MergeReportTbody.innerHTML = report.files.map(f => {
       let missingHtml = "";
       if (f.missing_count > 0 && Array.isArray(f.missing_columns)) {
-        const pills = f.missing_columns.map(col => 
+        const pills = f.missing_columns.map(col =>
           `<span style="display: inline-block; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; font-family: var(--font-mono); margin: 2px;">${col}</span>`
         ).join("");
         missingHtml = `<div style="display: flex; flex-wrap: wrap; gap: 2px; align-items: center;">${pills}</div>`;

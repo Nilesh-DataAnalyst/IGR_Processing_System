@@ -111,6 +111,18 @@ CITY_CONFIG = {
         "rera_grand_file": None,
         "saleable_to_carpet_divisor": SALEABLE_TO_CARPET_DIVISOR_BY_CITY.get("dubai", 1.0),
     },
+    "abu_dhabi": {
+        "city_id": 1,
+        "display_name": "Abu Dhabi",
+        "parent_drive_url": "https://drive.google.com/drive/folders/1h_cUque4NqERMGvE__LaJgLuanXu1Ov2?usp=drive_link",
+        "input_drive_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
+        "final_drive_url": "https://drive.google.com/drive/folders/126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s?usp=drive_link",
+        "raw_folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+        "processed_folder_id": "126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s",
+        "manual_correction_drive_url": None,
+        "rera_grand_file": None,
+        "saleable_to_carpet_divisor": 1.0,
+    },
 }
 
 # Specific location Google Drive configurations (e.g. Bandra in Mumbai)
@@ -135,7 +147,7 @@ for _city, _cfg in CITY_CONFIG.items():
 
 
 DIM_CITY_CONFIG = {
-    1: {"city_id": 1, "key": "abu_dhabi", "display_name": "Abu_Dhabi", "saleable_to_carpet_divisor": 1.0, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
+    1: {"city_id": 1, "key": "abu_dhabi", "display_name": "Abu_Dhabi", "saleable_to_carpet_divisor": 1.0, "input_drive_url": CITY_CONFIG["abu_dhabi"]["input_drive_url"], "manual_correction_drive_url": None, "final_drive_url": CITY_CONFIG["abu_dhabi"]["final_drive_url"]},
     2: {"city_id": 2, "key": "ahmedabad", "display_name": "Ahmedabad", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
     3: {"city_id": 3, "key": "banglore", "display_name": "Banglore", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
     5: {"city_id": 5, "key": "ghaziabad", "display_name": "Ghaziabad", "saleable_to_carpet_divisor": 1.35, "input_drive_url": None, "manual_correction_drive_url": None, "final_drive_url": None},
@@ -172,7 +184,10 @@ def get_city_config(city_identifier: str | int = "pune") -> dict:
         # Keep parent city display name (e.g. "Mumbai") so city_name in DB and files remains clean
         return parent_cfg
 
-    # Match by key (e.g. "pune", "mumbai", "thane")
+    # Match by key (e.g. "pune", "mumbai", "thane", "abu_dhabi")
+    clean_k = cid_str.replace(" ", "_").replace("-", "_")
+    if clean_k in CITY_CONFIG:
+        return CITY_CONFIG[clean_k]
     if cid_str in CITY_CONFIG:
         return CITY_CONFIG[cid_str]
 
