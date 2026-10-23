@@ -67,5 +67,6 @@ DB_SEQUENCE = [
     "project_stage",
     "final_project_name",
     "survey_no",
-    "docname"
+    "docname",
+    "rate"
 ]

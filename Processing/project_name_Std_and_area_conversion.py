@@ -26,7 +26,7 @@ PART B - Area-unit conversion (applied to the clustered dataframe)
 pip install pandas numpy rapidfuzz scikit-learn openpyxl xlsxwriter tqdm
 """
 
-import ast, datetime, re, sys
+import os, ast, datetime, re, sys
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -50,6 +50,7 @@ try:
     from static import result_dict, word_number_dict
 except ImportError:
     try:
+        # pyrefly: ignore [missing-import]
         from required_files.static import result_dict, word_number_dict
     except ImportError:
         result_dict, word_number_dict = {}, {}
@@ -74,6 +75,25 @@ PRESERVE_NUMERIC_IDENTIFIERS = True
 PRESERVE_PHASE_IDENTIFIERS = False
 PRESERVE_WING_IDENTIFIERS = True
 REMOVE_PHASE_IDENTIFIERS = True
+
+# =============================================================================
+# INTERMEDIATE COLUMNS EXPORT TOGGLE
+# If set to False (default), the following 10 internal clustering scratch and 
+# confidence columns are removed before saving the output workbook:
+#   - project_name_list
+#   - project_name_text
+#   - Modified_Project_Name_1
+#   - project_count
+#   - project_comparison_key
+#   - is_generic_project_name
+#   - project_match_confidence_label
+#   - project_match_reason
+#   - cluster_min_confidence_score
+#   - requires_manual_review
+# (Note: project_match_confidence_score is retained in the output data)
+# Change to True if you ever need to inspect or audit these columns in the output Excel.
+# =============================================================================
+KEEP_INTERMEDIATE_PROJECT_COLUMNS = False
 
 MULTI_SPACE_PATTERN = re.compile(r"\s+")
 NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9\s]", flags=re.IGNORECASE)
@@ -429,7 +449,7 @@ def tfidf_pair_similarity(name_1, name_2, name_to_index, matrix):
 # ============================================================
 def cluster_names_complete_linkage(unique_names, name_frequencies):
     if not unique_names:
-        return {}, {}, [], {}
+        return {}, {}, [], pd.DataFrame(columns=["name_1", "name_2", "accepted", "confidence_score", "reason"])
 
     ordered_names = sorted(
         unique_names,
@@ -717,23 +737,43 @@ def run_project_clustering(input_path_val=None, input_df=None):
     # 7. Manual review sheet
     manual_review_df = df.loc[
         df["requires_manual_review"],
-        [COL_PROJECT, COL_PROJECT_TEXT, COL_CLEANED_PROJECT, "project_cluster_id",
+        [COL_PROJECT, "project_cluster_id",
          "project_name_canonical", "project_match_confidence_score",
          "project_match_confidence_label", "project_match_reason", "cluster_min_confidence_score"],
     ].copy()
     manual_review_df.sort_values(by=["project_match_confidence_score", "project_cluster_id"], inplace=True)
 
-    if not pair_review_df.empty:
+    if isinstance(pair_review_df, pd.DataFrame) and not pair_review_df.empty:
         pair_review_df.sort_values(by=["accepted", "confidence_score"], ascending=[False, False], inplace=True)
+    elif not isinstance(pair_review_df, pd.DataFrame):
+        pair_review_df = pd.DataFrame(columns=["name_1", "name_2", "accepted", "confidence_score", "reason"])
 
-    # 8. Reorder columns
-    generated_columns = [
+    unique_cleaned_count = df[COL_CLEANED_PROJECT].nunique(dropna=True)
+
+    rows_needing_review = int(df["requires_manual_review"].sum()) if "requires_manual_review" in df.columns else 0
+
+    # 8. Drop intermediate clustering columns (if not enabled) and reorder final columns
+    intermediate_columns = [
         COL_PROJECT_LIST, COL_PROJECT_TEXT, COL_CLEANED_PROJECT, "project_count",
-        "project_comparison_key", "is_generic_project_name", "project_cluster_id",
-        "project_name_canonical", "project_name","project_match_confidence_score",
-        "project_match_confidence_label", "project_match_reason",
-        "cluster_min_confidence_score", "requires_manual_review",
+        "project_comparison_key", "is_generic_project_name",
+        "project_match_confidence_label",
+        "project_match_reason", "cluster_min_confidence_score", "requires_manual_review",
     ]
+    if not KEEP_INTERMEDIATE_PROJECT_COLUMNS:
+        df.drop(columns=[c for c in intermediate_columns if c in df.columns], inplace=True, errors="ignore")
+        generated_columns = [
+            "project_cluster_id",
+            "project_name_canonical", "project_name", "project_match_confidence_score",
+        ]
+    else:
+        generated_columns = [
+            COL_PROJECT_LIST, COL_PROJECT_TEXT, COL_CLEANED_PROJECT, "project_count",
+            "project_comparison_key", "is_generic_project_name", "project_cluster_id",
+            "project_name_canonical", "project_name", "project_match_confidence_score",
+            "project_match_confidence_label", "project_match_reason",
+            "cluster_min_confidence_score", "requires_manual_review",
+        ]
+
     original_columns = [c for c in df.columns if c not in generated_columns]
     final_order = []
     for column in original_columns:
@@ -750,9 +790,9 @@ def run_project_clustering(input_path_val=None, input_df=None):
     print("PART A - HYBRID PROJECT-NAME CLUSTERING COMPLETED")
     print("=" * 70)
     print(f"Total records: {len(df):,}")
-    print(f"Unique cleaned project names: {df[COL_CLEANED_PROJECT].nunique(dropna=True):,}")
+    print(f"Unique cleaned project names: {unique_cleaned_count:,}")
     print(f"Total project clusters: {df['project_cluster_id'].nunique():,}")
-    print(f"Rows requiring manual review: {df['requires_manual_review'].sum():,}")
+    print(f"Rows requiring manual review: {rows_needing_review:,}")
 
     return df, cluster_summary, manual_review_df, pair_review_df
 
@@ -763,10 +803,12 @@ def run_project_clustering(input_path_val=None, input_df=None):
 SQFT_TO_SQMT = 0.09290304
 
 AREA_COLUMNS = [
-    "carpet_area", "builtup_area", "super_builtup_area", "saleable_area",
-    "terrace_area", "balcony_area", "total_area", "plot_area", "parking_area",
-    "covered_parking_area", "car_parking_area", "garden_area", "gallery_area",
-    "loft_area", "office_area", "shop_area", "mezzanine_area", "open_area",
+    "carpet_area",
+    "builtup_area",
+    "super_builtup_area",
+    "saleable_area",
+    "total_area",
+    "plot_area",
 ]
 
 # ---------------- TEXT CLEANING ----------------
@@ -966,16 +1008,12 @@ def get_conversion_status(value, converted_value) -> str:
         return "Zero area"
     return "Converted"
 
-def get_conversion_done_status(value, converted_value) -> str:
-    if is_missing(value) or is_missing(converted_value):
-        return "No"
-    return "Yes"
-
 # ---------------- APPLY CONVERSION TO ALL AREA COLUMNS ----------------
 def apply_area_conversions(categorised_df: pd.DataFrame) -> pd.DataFrame:
-    """Adds *_sqmt / *_conversion_source / *_conversion_status / *_conversion_done columns."""
+    """Adds *_sqmt / *_conversion_source / *_conversion_status columns immediately after each area column."""
     categorised_df = categorised_df.copy()
     new_columns = {}
+    cols_to_insert_after = {}
 
     for column in AREA_COLUMNS:
         if column not in categorised_df.columns:
@@ -984,7 +1022,6 @@ def apply_area_conversions(categorised_df: pd.DataFrame) -> pd.DataFrame:
         converted_column = f"{column}_sqmt"
         source_column = f"{column}_conversion_source"
         status_column = f"{column}_conversion_status"
-        done_column = f"{column}_conversion_done"
 
         converted_series = (
             categorised_df[column].apply(extract_sqmt).pipe(pd.to_numeric, errors="coerce").round(2)
@@ -993,18 +1030,42 @@ def apply_area_conversions(categorised_df: pd.DataFrame) -> pd.DataFrame:
         status_series = [
             get_conversion_status(o, c) for o, c in zip(categorised_df[column], converted_series)
         ]
-        done_series = [
-            get_conversion_done_status(o, c) for o, c in zip(categorised_df[column], converted_series)
-        ]
 
         new_columns[converted_column] = converted_series
         new_columns[source_column] = source_series
         new_columns[status_column] = status_series
-        new_columns[done_column] = done_series
+
+        cols_to_insert_after[column] = [
+            converted_column,
+            source_column,
+            status_column,
+        ]
 
     if new_columns:
         new_cols_df = pd.DataFrame(new_columns, index=categorised_df.index)
+        # Drop any existing instances of these columns to prevent duplicates
+        existing_to_drop = [c for c in new_cols_df.columns if c in categorised_df.columns]
+        if existing_to_drop:
+            categorised_df = categorised_df.drop(columns=existing_to_drop)
+
         categorised_df = pd.concat([categorised_df, new_cols_df], axis=1)
+
+        # Build column order so each area column is immediately followed by its conversion columns
+        final_order = []
+        new_col_names = set(new_columns.keys())
+        for c in categorised_df.columns:
+            if c in new_col_names:
+                continue
+            final_order.append(c)
+            if c in cols_to_insert_after:
+                final_order.extend(cols_to_insert_after[c])
+
+        # Ensure any remaining columns are preserved
+        for c in categorised_df.columns:
+            if c not in final_order:
+                final_order.append(c)
+
+        categorised_df = categorised_df[final_order]
 
     return categorised_df
 
@@ -1061,14 +1122,41 @@ def process_unit_and_floor(df: pd.DataFrame) -> pd.DataFrame:
     # Transaction type mapping if docname is available
     if "docname" in df.columns:
         mapped_tx = df["docname"].map(result_dict.get)
+        if mapped_tx.isna().any() and df["docname"].notna().any():
+            fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
+            mapped_tx = mapped_tx.fillna(fallback_map)
+
         if "transaction_type" not in df.columns:
             df["transaction_type"] = mapped_tx
+            matched_mask = mapped_tx.notna()
         else:
+            # 100% exact match between existing transaction_type and mapped docname
+            matched_mask = (
+                df["transaction_type"].notna()
+                & mapped_tx.notna()
+                & (df["transaction_type"].astype(str).str.strip().str.lower() == mapped_tx.astype(str).str.strip().str.lower())
+            )
             df["transaction_type"] = df["transaction_type"].fillna(mapped_tx)
 
+        matched_count = int(matched_mask.sum())
+        total_rows = len(df)
+
+        print("\n" + "=" * 60)
+        print(f"Total rows matched 100% (docname == transaction_type): {matched_count:,} / {total_rows:,}")
+        print("=" * 60)
+        print("Value Counts of 100% Matched Transaction Types:")
+        matched_counts = df.loc[matched_mask, "transaction_type"].value_counts()
+        if not matched_counts.empty:
+            for tx, cnt in matched_counts.items():
+                print(f"  • {str(tx):<35}: {cnt:>6,}")
+        else:
+            print("  • No 100% matched records found.")
+        print("=" * 60 + "\n")
+
     # 1. Flat number
-    if "flat_no" in df.columns:
-        df["flat_number"] = df["flat_no"]
+    flat_col = next((c for c in ["flat_no_raw", "flat_no"] if c in df.columns), None)
+    if flat_col:
+        df["flat_number"] = df[flat_col]
     else:
         df["flat_number"] = pd.NA
 
@@ -1101,8 +1189,9 @@ def process_unit_and_floor(df: pd.DataFrame) -> pd.DataFrame:
 
         return ", ".join(result) if result else value
 
-    if "floor_no" in df.columns:
-        df["floor_number"] = df["floor_no"].apply(map_floor)
+    floor_col = next((c for c in ["floor_no_raw", "floor_no"] if c in df.columns), None)
+    if floor_col:
+        df["floor_number"] = df[floor_col].apply(map_floor)
     else:
         df["floor_number"] = pd.NA
 
@@ -1127,13 +1216,48 @@ def export_combined_workbook(
 ):
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not isinstance(pair_review_df, pd.DataFrame):
+        pair_review_df = pd.DataFrame(columns=["name_1", "name_2", "accepted", "confidence_score", "reason"])
 
     def _write(save_path):
+        if not KEEP_INTERMEDIATE_PROJECT_COLUMNS:
+            intermediate_cols_to_drop = [
+                "project_name_list",
+                "project_name_text",
+                "Modified_Project_Name_1",
+                "project_count",
+                "project_comparison_key",
+                "is_generic_project_name",
+                "project_match_confidence_label",
+                "project_match_reason",
+                "cluster_min_confidence_score",
+                "requires_manual_review",
+            ]
+            clean_categorised_df = categorised_df.drop(
+                columns=[c for c in intermediate_cols_to_drop if c in categorised_df.columns],
+                errors="ignore",
+            )
+            raw_keys_to_drop = [
+                "project_name_list",
+                "project_name_text",
+                "Modified_Project_Name_1",
+                "project_count",
+                "project_comparison_key",
+                "is_generic_project_name",
+            ]
+            clean_manual_df = manual_review_df.drop(
+                columns=[c for c in raw_keys_to_drop if c in manual_review_df.columns],
+                errors="ignore",
+            )
+        else:
+            clean_categorised_df = categorised_df
+            clean_manual_df = manual_review_df
+
         with pd.ExcelWriter(save_path, engine="xlsxwriter") as writer:
             sheets_data = {
-                "Processed_Data": categorised_df,
+                "Processed_Data": clean_categorised_df,
                 "cluster_summary": cluster_summary,
-                "manual_review": manual_review_df,
+                "manual_review": clean_manual_df,
                 "pair_review": pair_review_df,
                 "Area_Review": review_df,
                 "Conversion_Test": test_df,
@@ -1156,7 +1280,6 @@ def export_combined_workbook(
                     elif (
                         col_str.endswith("_conversion_source")
                         or col_str.endswith("_conversion_status")
-                        or col_str.endswith("_conversion_done")
                         or col_str == "conversion_source"
                     ):
                         worksheet.set_column(column_index, column_index, 35)
@@ -1192,9 +1315,109 @@ def export_combined_workbook(
     print("  3. manual_review     (Project names requiring manual review)")
     print("  4. pair_review       (Project pair candidate matches)")
     print("  5. Area_Review       (Unrecognized area values requiring review)")
-    print("  6. Conversion_Test   (Area conversion self-test suite)")
+    print("  6. Conversion_Test   (Area conversion self-test suite)")  
+    
+# ---------------- NET CARPET AREA DERIVATION ----------------
+from divisor import SALEABLE_TO_CARPET_DIVISOR_BY_CITY
 
-def process_dataframe(df, output_path=None):
+BUILDUP_TO_CARPET_DIVISOR = 1.2
+
+
+def resolve_city_and_divisor(city: str | int = None) -> tuple:
+    """
+    Resolves city key and its saleable-to-carpet divisor dynamically as per the selected city:
+    - Mumbai -> 1.45
+    - Thane  -> 1.40
+    - Pune   -> 1.35
+    """
+    if not city or str(city).strip().lower() in ["none", "", "null", "nan"]:
+        try:
+            from city_config import CURRENT_CITY_KEY
+            city = CURRENT_CITY_KEY
+        except Exception:
+            city = None
+
+    if not city:
+        available_cities = ", ".join(SALEABLE_TO_CARPET_DIVISOR_BY_CITY.keys())
+        raise ValueError(
+            f"City must be selected for area conversion. Available cities: {available_cities}."
+        )
+
+    raw = str(city).strip().lower()
+    id_map = {
+        "8": "mumbai",
+        "12": "thane",
+        "9": "pune",
+        "2": "ahmedabad",
+        "3": "bangalore",
+        "6": "hyderabad",
+        "5": "ghaziabad",
+    }
+    city_str = id_map.get(raw, raw)
+
+    if city_str not in SALEABLE_TO_CARPET_DIVISOR_BY_CITY:
+        if any(k in city_str for k in ["mumbai", "bandra", "borivali", "andheri", "kurla"]):
+            city_str = "mumbai"
+        elif any(k in city_str for k in ["thane", "kalyan", "dombivli"]):
+            city_str = "thane"
+        elif any(k in city_str for k in ["pune", "pcmc", "haveli"]):
+            city_str = "pune"
+
+    saleable_divisor = SALEABLE_TO_CARPET_DIVISOR_BY_CITY.get(city_str)
+    if saleable_divisor is None:
+        available_cities = ", ".join(SALEABLE_TO_CARPET_DIVISOR_BY_CITY.keys())
+        raise ValueError(
+            f"No Saleable->Carpet divisor configured for selected city '{city}'. "
+            f"Configured cities in divisor.py: {available_cities}."
+        )
+
+    return city_str, saleable_divisor
+
+
+def derive_net_carpet_area(df: pd.DataFrame, city: str | int = None) -> pd.DataFrame:
+    """Fill net_carpet_area_sq_m from whichever area column is available using city-specific divisor."""
+    city_key, saleable_divisor = resolve_city_and_divisor(city=city)
+    print(f"[Area Conversion] Selected City: '{city_key}' | Saleable->Carpet Divisor: {saleable_divisor} | Buildup Divisor: {BUILDUP_TO_CARPET_DIVISOR}")
+
+    df["net_carpet_area_sq_m"] = np.nan
+
+    mask = df["carpet_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sq_m"] = df.loc[mask, "carpet_area_sqmt"].values
+
+    mask = df["net_carpet_area_sq_m"].isna() & df["builtup_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sq_m"] = (
+        df.loc[mask, "builtup_area_sqmt"].values / BUILDUP_TO_CARPET_DIVISOR
+    )
+
+    mask = df["net_carpet_area_sq_m"].isna() & df["saleable_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sq_m"] = (
+        df.loc[mask, "saleable_area_sqmt"].values / saleable_divisor
+    )
+
+    mask = (
+        df["net_carpet_area_sq_m"].isna() & df["super_builtup_area_sqmt"].notna()
+    )
+    df.loc[mask, "net_carpet_area_sq_m"] = (
+        df.loc[mask, "super_builtup_area_sqmt"].values / saleable_divisor
+    )
+
+    mask = df["net_carpet_area_sq_m"].isna() & df["plot_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sq_m"] = df.loc[mask, "plot_area_sqmt"].values
+
+    mask = df["net_carpet_area_sq_m"].isna() & df["total_area_sqmt"].notna()
+    df.loc[mask, "net_carpet_area_sq_m"] = df.loc[mask, "total_area_sqmt"].values
+
+    df["net_carpet_area_sq_m"] = df["net_carpet_area_sq_m"].round(2)
+
+    # Calculate rate_in_sqft directly
+    df["rate_in_sqft"] = (df["consideration_amt"] / (df["net_carpet_area_sq_m"].replace(0, np.nan) * 10.764)).round(2)
+    # create is_manual_processed column
+    df["is_manual_processed"] = np.where(df["transaction_category"].str.strip().str.lower().eq("sale") & df["consideration_amt"].fillna(0).ge(70000), "Yes", "No")
+    return df
+
+
+
+def process_dataframe(df, output_path=None, city=None, progress_callback=None):
 
     # Remove any duplicate column names if already present
     df = df.loc[:, ~df.columns.duplicated()].copy()
@@ -1203,10 +1426,16 @@ def process_dataframe(df, output_path=None):
     print("RUNNING PIPELINE USING EXISTING DATAFRAME")
     print("=" * 70)
 
+    if progress_callback:
+        progress_callback("Stage 1/5: Running project clustering...")
+
     # Part A - Project clustering
     categorised_df, cluster_summary, manual_review_df, pair_review_df = (
         run_project_clustering(input_df=df)
     )
+
+    if progress_callback:
+        progress_callback("Stage 2/5: Applying area conversions...")
 
     # Part B - Area conversion
     print("\n" + "=" * 70)
@@ -1219,6 +1448,8 @@ def process_dataframe(df, output_path=None):
 
     test_df = run_area_conversion_tests()
 
+    if progress_callback:
+        progress_callback("Stage 3/5: Processing unit and floor mapping...")
 
     # Part C - Unit and Floor processing
     print("\n" + "=" * 70)
@@ -1229,9 +1460,16 @@ def process_dataframe(df, output_path=None):
         categorised_df
     )
 
+    if progress_callback:
+        progress_callback("Stage 4/5: Deriving net carpet area & rates...")
+
+    # Part D - Calculate Net_carpet_area
+    categorised_df = derive_net_carpet_area(categorised_df, city=city)
 
     # Optional final export
     if output_path is not None:
+        if progress_callback:
+            progress_callback(f"Stage 5/5: Saving manual review workbook to Google Drive ({os.path.basename(str(output_path))})...")
 
         export_combined_workbook(
             categorised_df,
@@ -1243,5 +1481,7 @@ def process_dataframe(df, output_path=None):
             output_path
         )
 
+        if progress_callback:
+            progress_callback(f"✓ Saved to Google Drive: {os.path.basename(str(output_path))}")
 
     return categorised_df

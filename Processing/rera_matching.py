@@ -242,7 +242,7 @@ def assign_bhk_carpet_match(village_df: pd.DataFrame,
         return i, (None if final in SKIP_BHK else final)
 
     # Extract first number from mixed strings
-    village_df['net_carpet_area_sqmt'] = village_df['net_carpet_area_sqmt'].apply(
+    village_df['net_carpet_area_sq_m'] = village_df['net_carpet_area_sq_m'].apply(
         lambda x: re.findall(r"[-+]?\d*\.?\d+|\d+", str(x))[0] if not isinstance(x, float) else x
     )
 
@@ -267,7 +267,7 @@ def assign_bhk_carpet_match(village_df: pd.DataFrame,
     village_df['BHK'] = None
 
     mask = village_df['building_wise_carpet_area'].notna() & (village_df['property_type'] == 'Flat')
-    target = village_df[mask][['net_carpet_area_sqmt', 'building_wise_carpet_area']].copy()
+    target = village_df[mask][['net_carpet_area_sq_m', 'building_wise_carpet_area']].copy()
 
     parse_cache = {}
     for raw in target['building_wise_carpet_area'].unique():
@@ -280,7 +280,7 @@ def assign_bhk_carpet_match(village_df: pd.DataFrame,
     print(f"Processing {len(target)} rows, {len(parse_cache)} unique building configs...")
 
     results = Parallel(n_jobs=-1, backend='threading', verbose=1)(
-        delayed(process_row)(i, row['net_carpet_area_sqmt'], row['building_wise_carpet_area'], parse_cache)
+        delayed(process_row)(i, row['net_carpet_area_sq_m'], row['building_wise_carpet_area'], parse_cache)
         for i, row in target.iterrows()
     )
     valid = {i: bhk for i, bhk in results if bhk is not None}
@@ -294,35 +294,38 @@ def assign_bhk_carpet_match(village_df: pd.DataFrame,
 def _build_bhk_phase_data(rera_grand: pd.DataFrame) -> pd.DataFrame:
     phase_data_list = []
     for _, row in rera_grand.iterrows():
-        data_str = row['carpet_wise_total_sold_units']
+        data_str = row.get('carpet_wise_total_sold_units')
         data_list = data_str if isinstance(data_str, dict) else {}
         if isinstance(data_str, str):
             try:
                 data_list = ast.literal_eval(data_str)
             except Exception:
                 pass
-        for phase, phase_data in data_list.items():
-            if isinstance(phase_data, list) and phase_data:
-                for item in phase_data[0]:
-                    phase_data_list.append({
-                        "modified_project_name": row["modified_project_name"],
-                        "Rera_Location": row["rera_location"],
-                        "Phase": phase, "Data": item,
-                    })
+        if isinstance(data_list, dict):
+            for phase, phase_data in data_list.items():
+                items = phase_data if isinstance(phase_data, list) else [phase_data]
+                for item in items:
+                    if isinstance(item, dict):
+                        phase_data_list.append({
+                            "modified_project_name": row.get("modified_project_name"),
+                            "Rera_Location": row.get("rera_location", row.get("Rera_Location")),
+                            "Phase": phase, "Data": item,
+                        })
     return pd.DataFrame(phase_data_list)
 
 
 def _reshape_bhk_row(row):
     new_rows = []
-    if isinstance(row["Data"], dict):
-        for bhk, data in row["Data"].items():
+    data_obj = row.get("Data")
+    if isinstance(data_obj, dict):
+        for bhk, data in data_obj.items():
             if isinstance(data, dict):
                 for carpet, values in data.items():
-                    if isinstance(values, list) and len(values) == 2:
+                    if values is not None and isinstance(values, (list, tuple, int, float, str)):
                         new_rows.append({
-                            "modified_project_name": row["modified_project_name"],
-                            "Rera_Location": row["Rera_Location"],
-                            "Phase": row["Phase"],
+                            "modified_project_name": row.get("modified_project_name"),
+                            "Rera_Location": row.get("Rera_Location", row.get("rera_location")),
+                            "Phase": row.get("Phase"),
                             "BHK": bhk, "carpet_sqmt": carpet,
                         })
     return pd.DataFrame(new_rows) if new_rows else None
@@ -343,7 +346,12 @@ def assign_bhk_range_fallback(village_df: pd.DataFrame,
             print("[WARN] No phase data — skipping range fallback")
             return village_df
 
-        df_expanded = pd.concat(df2.apply(_reshape_bhk_row, axis=1).dropna().tolist(), ignore_index=True)
+        reshaped_list = df2.apply(_reshape_bhk_row, axis=1).dropna().tolist()
+        if not reshaped_list:
+            print("[WARN] No reshaped BHK rows — skipping range fallback")
+            return village_df
+
+        df_expanded = pd.concat(reshaped_list, ignore_index=True)
 
         df_expanded["BHK"] = df_expanded["BHK"].str.replace(" ", "").str.upper()
         rera_keywords["Keywords"] = rera_keywords["Keywords"].str.replace(" ", "")
@@ -379,13 +387,22 @@ def assign_bhk_range_fallback(village_df: pd.DataFrame,
             print(f"  {label}: {round(lo, 2)} -> {round(hi, 2)}")
 
         def assign_bhk_range(carpet_area):
+            if pd.isna(carpet_area):
+                return None
+            try:
+                c_val = float(carpet_area)
+                if np.isnan(c_val):
+                    return None
+            except (ValueError, TypeError):
+                return None
+
             for bhk, (low, high) in ranges.items():
-                if float(low) <= carpet_area < float(high):
+                if float(low) <= c_val < float(high):
                     return bhk
             return None
 
         village_df['BHK'] = village_df.apply(
-            lambda row: assign_bhk_range(row['net_carpet_area_sqmt'])
+            lambda row: assign_bhk_range(row['net_carpet_area_sq_m'])
             if pd.isna(row['BHK']) and row['property_type'] == 'Flat'
             else row['BHK'],
             axis=1
@@ -430,23 +447,52 @@ def process_rera_matching(
     df = df.copy()
     base_dir = os.path.dirname(os.path.abspath(__file__))
     if rera_grand_path is None:
-        rera_grand_path = os.path.join(base_dir, "Pune RERA GRAND EXCEL VERSION 9.xlsx")
-        if not os.path.exists(rera_grand_path):
-            rera_grand_path = r"D:\Nilesh\Task\Sogaon\processing\required_files\Pune RERA GRAND EXCEL VERSION 9.xlsx"
+        try:
+            from city_config import resolve_rera_grand_path
+            rera_grand_path = resolve_rera_grand_path(city)
+        except Exception:
+            pass
+
+    if rera_grand_path is None or not os.path.exists(rera_grand_path):
+        raise FileNotFoundError(
+            f"RERA Grand dataset not found for city '{city}'. "
+            f"Please ensure 'rera_grand_file' is configured in city_config.py or placed in {base_dir}"
+        )
 
     if rera_keywords_path is None:
-        rera_keywords_path = os.path.join(base_dir, "RERA_All_Keywords_BHK_Prop_Type.xlsx")
-        if not os.path.exists(rera_keywords_path):
-            rera_keywords_path = r"D:\Nilesh\Task\Sogaon\processing\required_files\RERA_All_Keywords_BHK_Prop_Type.xlsx"
+        candidate = os.path.join(base_dir, "RERA_All_Keywords_BHK_Prop_Type.xlsx")
+        rera_keywords_path = candidate if os.path.exists(candidate) else "RERA_All_Keywords_BHK_Prop_Type.xlsx"
 
-    print("[RERA] Reading RERA grand reference dataset...")
+    print(f"[RERA] Reading RERA grand reference dataset: {os.path.basename(rera_grand_path)}...")
     rera_grand = pd.read_excel(rera_grand_path)
+
+    # Standardize column names (strip whitespace)
+    rera_grand.columns = [c.strip() if isinstance(c, str) else c for c in rera_grand.columns]
+
     rera_grand = rera_grand[[
         'index', 'modified_project_name', 'rera_location_v1',
         'rera_location', 'project_lat', 'project_lng',
         'bhk_wise_ca', 'carpet_wise_total_sold_units', 'project_type'
     ]]
     rera_grand = rera_grand[rera_grand['modified_project_name'] != 0]
+
+    # Defensive coordinate cleaning (handles strings with comma e.g. "19.08, 72.90")
+    def _clean_coord(v):
+        if pd.isna(v):
+            return np.nan
+        if isinstance(v, str) and ',' in v:
+            parts = v.split(',')
+            try:
+                return float(parts[0].strip())
+            except Exception:
+                return np.nan
+        try:
+            return float(v)
+        except Exception:
+            return np.nan
+
+    rera_grand['project_lat'] = rera_grand['project_lat'].apply(_clean_coord)
+    rera_grand['project_lng'] = rera_grand['project_lng'].apply(_clean_coord)
 
     merged_df = assign_rera_index(df, rera_grand, city)
     print("Total  Index found in merged df ", merged_df['index'].unique())

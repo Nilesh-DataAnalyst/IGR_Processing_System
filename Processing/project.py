@@ -29,33 +29,50 @@ RESET = "\033[0m"
 # ============================================================
 
 from divisor import SALEABLE_TO_CARPET_DIVISOR_BY_CITY
-from city_config import CITY_CONFIG, get_city_config, extract_folder_id
+from city_config import (
+    CITY_CONFIG,
+    get_city_config,
+    extract_folder_id,
+    get_manual_correction_drive_url,
+    render_correction_email_html,
+    send_final_checker_email,
+    get_google_drive_file_url,
+    get_clean_drive_path,
+)
 
 BUILDUP_TO_CARPET_DIVISOR = 1.2
+
+CLI_DB = None
+for _i, _arg in enumerate(sys.argv):
+    if _arg in ["--db", "-d"] and _i + 1 < len(sys.argv):
+        CLI_DB = sys.argv[_i + 1].strip()
 
 DB_PARAMS = {
     "host": "localhost",
     "port": "5432",
-    "database": "nilesh",
+    "database": CLI_DB or "nilesh",
     "user": "postgres",
     "password": "nilesh",
 }
 
-# Initial default city configuration (Pune)
-CURRENT_CITY_CONFIG = get_city_config("pune")
-CURRENT_CITY_KEY = "pune"
+# Active city configuration (initialized to None; set dynamically upon city selection)
+CURRENT_CITY_CONFIG = None
+CURRENT_CITY_KEY = None
 
-DEFAULT_DRIVE_FOLDER_URL = CURRENT_CITY_CONFIG["final_drive_url"]
-DEFAULT_DRIVE_FOLDER_ID = CURRENT_CITY_CONFIG["final_drive_id"]
+DEFAULT_DRIVE_FOLDER_URL = None
+DEFAULT_DRIVE_FOLDER_ID = None
 
-DEFAULT_INPUT_DRIVE_FOLDER_URL = CURRENT_CITY_CONFIG["input_drive_url"]
-DEFAULT_INPUT_DRIVE_FOLDER_ID = CURRENT_CITY_CONFIG["input_drive_id"]
+DEFAULT_INPUT_DRIVE_FOLDER_URL = None
+DEFAULT_INPUT_DRIVE_FOLDER_ID = None
 
-DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL = CURRENT_CITY_CONFIG["manual_correction_drive_url"]
-DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_ID = CURRENT_CITY_CONFIG["manual_correction_drive_id"]
+DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL = None
+DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_ID = None
+
+# Selected location name from Google Drive folder (if applicable)
+selected_location = None
 
 
-def set_active_city(city_key_or_id: str | int = "pune") -> dict:
+def set_active_city(city_key_or_id: str | int) -> dict:
     """
     Sets the active city and dynamically configures:
     1. Input, Manual Correction, and Final Google Drive URLs and IDs
@@ -84,9 +101,10 @@ def set_active_city(city_key_or_id: str | int = "pune") -> dict:
 
 
 
-def resolve_drive_directory(drive_target: str = DEFAULT_DRIVE_FOLDER_URL) -> str:
+def resolve_drive_directory(drive_target: str = None) -> str:
     """Resolves a Google Drive folder URL, folder ID, or local Drive path to a writable local directory on G:."""
-    if not drive_target or not str(drive_target).strip():
+    target = drive_target or (DEFAULT_DRIVE_FOLDER_URL if "DEFAULT_DRIVE_FOLDER_URL" in globals() else None)
+    if not target or not str(target).strip():
         return None
 
     # If it is already an existing directory, test write access
@@ -136,17 +154,18 @@ def resolve_drive_directory(drive_target: str = DEFAULT_DRIVE_FOLDER_URL) -> str
 
 
 def resolve_manual_correction_directory(
-    drive_target: str = DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL,
+    drive_target: str = None,
     location_name: str = None,
 ) -> str:
     """
     Resolves the Google Drive folder for Manually Corrected files.
     If location_name is given, ensures a subfolder for that location is created and returned.
     """
-    if not drive_target or not str(drive_target).strip():
+    target = drive_target or (DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL if "DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL" in globals() else None)
+    if not target or not str(target).strip():
         return None
 
-    clean_target = str(drive_target).strip()
+    clean_target = str(target).strip()
     match = re.search(r"folders/([a-zA-Z0-9_-]+)", clean_target)
     folder_id = match.group(1) if match else clean_target
 
@@ -170,8 +189,8 @@ def resolve_manual_correction_directory(
             manual_root = sub_items[0]
         elif not manual_root:
             manual_root = base_shortcut_path
-    elif os.path.isdir(str(drive_target)):
-        manual_root = drive_target
+    elif os.path.isdir(str(clean_target)):
+        manual_root = clean_target
 
     if not manual_root or not os.path.exists(manual_root):
         return None
@@ -186,7 +205,7 @@ def resolve_manual_correction_directory(
 
 def get_manual_corrected_file(
     default_file: str = None,
-    drive_url: str = DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL,
+    drive_url: str = None,
 ) -> tuple:
     """
     Lists available location folders in Google Drive '3. Manually Corrected' directory,
@@ -194,8 +213,17 @@ def get_manual_corrected_file(
     Also supports custom manual file path entry.
     """
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 7/20] Loading Manually Corrected File...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 7/19] Loading Manually Corrected File...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+
+    if not drive_url:
+        drive_url = (
+            get_manual_correction_drive_url(
+                city_identifier=CURRENT_CITY_KEY if "CURRENT_CITY_KEY" in globals() else None,
+                file_path=default_file,
+            )
+            or (DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL if "DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL" in globals() else "")
+        )
 
     clean_target = str(drive_url).strip() if drive_url else ""
     match = re.search(r"folders/([a-zA-Z0-9_-]+)", clean_target)
@@ -260,26 +288,45 @@ def get_manual_corrected_file(
         default_hint = f" [default: {default_candidate}]" if default_candidate else ""
 
         while True:
-            prompt_text = f"\n{YELLOW}Press Enter to use default{default_hint},\nor select location (1 to {len(locations)}) / enter path: {RESET}"
+            prompt_text = f"\n{YELLOW}Press Enter to use default{default_hint},\nor select location(s) (e.g. '1', '1,2,3', 'all') / enter path(s): {RESET}"
             user_choice = input(prompt_text).strip().strip('"')
 
             if not user_choice:
                 if default_candidate:
-                    selected_file = default_candidate
+                    selected_files = [default_candidate]
                     break
                 else:
                     print(f"{YELLOW}No default available. Please select an option.{RESET}")
                     continue
 
             if user_choice == "0":
-                manual_path = input(f"{YELLOW}Please provide Manual Corrected File path: {RESET}").strip().strip('"')
-                selected_file = manual_path
+                manual_path = input(f"{YELLOW}Please provide Manual Corrected File path(s, comma-separated if multiple): {RESET}").strip().strip('"')
+                selected_files = [p.strip() for p in manual_path.split(",") if p.strip()]
                 break
 
-            if os.path.exists(user_choice) or os.path.isabs(user_choice):
-                selected_file = user_choice
+            if user_choice.lower() == "all":
+                selected_files = []
+                for loc in locations:
+                    selected_files.extend(location_dict[loc]["files"])
                 break
 
+            # Check if multiple comma-separated indices/paths
+            tokens = [t.strip() for t in user_choice.split(",") if t.strip()]
+            all_valid_indices = all(t.isdigit() and 1 <= int(t) <= len(locations) for t in tokens)
+
+            if all_valid_indices and len(tokens) > 0:
+                selected_files = []
+                for t in tokens:
+                    chosen_loc = locations[int(t) - 1]
+                    selected_files.extend(location_dict[chosen_loc]["files"])
+                break
+
+            # If user directly passed existing file path(s)
+            if any(os.path.exists(t) or os.path.isabs(t) for t in tokens):
+                selected_files = tokens
+                break
+
+            # Single location check
             if user_choice.isdigit() and 1 <= int(user_choice) <= len(locations):
                 chosen_loc = locations[int(user_choice) - 1]
             else:
@@ -292,38 +339,39 @@ def get_manual_corrected_file(
                     key=lambda f: 0 if ("_for_manual" in f.lower() or "_corrected" in f.lower()) else 1,
                 )
                 if len(sorted_files) == 1:
-                    selected_file = sorted_files[0]
+                    selected_files = [sorted_files[0]]
                     break
                 else:
                     print(f"\n{CYAN}Files in '{chosen_loc}':{RESET}")
                     for f_idx, f_path in enumerate(sorted_files, 1):
                         print(f"  {CYAN}[{f_idx}]{RESET} {os.path.basename(f_path)}")
                     while True:
-                        f_choice = input(f"\n{YELLOW}Select file (1 to {len(sorted_files)}) [default: 1]: {RESET}").strip()
+                        f_choice = input(f"\n{YELLOW}Select file(s) (e.g. '1', '1,2') [default: 1]: {RESET}").strip()
                         if not f_choice or f_choice == "1":
-                            selected_file = sorted_files[0]
+                            selected_files = [sorted_files[0]]
                             break
-                        if f_choice.isdigit() and 1 <= int(f_choice) <= len(sorted_files):
-                            selected_file = sorted_files[int(f_choice) - 1]
+                        sub_tokens = [st.strip() for st in f_choice.split(",") if st.strip()]
+                        if all(st.isdigit() and 1 <= int(st) <= len(sorted_files) for st in sub_tokens):
+                            selected_files = [sorted_files[int(st) - 1] for st in sub_tokens]
                             break
-                        print(f"{RED}❌ Invalid selection. Please enter 1 to {len(sorted_files)}.{RESET}")
+                        print(f"{RED}❌ Invalid selection. Please enter valid index numbers.{RESET}")
                     break
 
-            print(f"{RED}❌ Invalid selection '{user_choice}'. Please enter 1 to {len(locations)}, a path, or press Enter for default.{RESET}")
+            print(f"{RED}❌ Invalid selection '{user_choice}'. Please enter 1 to {len(locations)}, '1,2', 'all', a path, or press Enter for default.{RESET}")
     else:
         default_hint = f" [default: {default_file}]" if default_file else ""
-        user_input = input(f"{YELLOW}Please provide Manual Corrected File path{default_hint}: {RESET}").strip().strip('"')
-        selected_file = user_input if user_input else (default_file if default_file else "")
+        user_input = input(f"{YELLOW}Please provide Manual Corrected File path(s){default_hint}: {RESET}").strip().strip('"')
+        selected_files = [p.strip() for p in (user_input if user_input else (default_file if default_file else "")).split(",") if p.strip()]
 
-    print(f"\n  {CYAN}📖 Loading:{RESET} {selected_file}")
-    df = pd.read_excel(selected_file, engine="openpyxl")
-    print(f"{GREEN}✓ [STEP 7/20] Loaded {len(df)} rows from manual corrected file.{RESET}")
-    return selected_file, df
+    print(f"\n  {CYAN}📖 Loading & Merging {len(selected_files)} file(s)...{RESET}")
+    df, merge_report = pipeline_core.load_and_merge_step7_files(selected_files)
+    print(f"{GREEN}✓ [STEP 7/19] {merge_report['status_message']}{RESET}")
+    return selected_files[0] if len(selected_files) == 1 else ", ".join(selected_files), df
 
 
 def get_final_processed_file(
     default_file: str = None,
-    drive_url: str = DEFAULT_DRIVE_FOLDER_URL,
+    drive_url: str = None,
 ) -> str:
     """
     Lists available location folders in Google Drive '4. Final processed file' directory,
@@ -331,9 +379,10 @@ def get_final_processed_file(
     Also supports custom manual file path entry.
     """
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 19/20] Loading Final Processed File for Parquet Conversion...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 18/19] Loading Final Processed File for Parquet Conversion...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
+    drive_url = drive_url or (DEFAULT_DRIVE_FOLDER_URL if "DEFAULT_DRIVE_FOLDER_URL" in globals() else None)
     clean_target = str(drive_url).strip() if drive_url else ""
     match = re.search(r"folders/([a-zA-Z0-9_-]+)", clean_target)
     folder_id = match.group(1) if match else clean_target
@@ -464,15 +513,109 @@ def get_final_processed_file(
 
 
 
+def build_correction_email_content(
+    loc_intro: str,
+    file_name: str,
+    drive_url: str,
+    file_path: str,
+    deadline_body: str = "",
+    formatted_dl: str = None,
+    is_attachment: bool = False,
+    file_url: str = None,
+    drive_path: str = None,
+) -> tuple:
+    """Builds both plain-text and HTML versions of the manual correction email with bold formatting."""
+    delivery_note_plain = "Please find the file attached with this email." if is_attachment else "Please access the file directly from Google Drive using the link above."
+    delivery_note_html = "📎 <strong>Please find the file attached with this email.</strong>" if is_attachment else "🌐 <strong>Please access the file directly from Google Drive using the link above.</strong>"
+
+    deadline_banner_html = ""
+    if formatted_dl:
+        deadline_banner_html = f"""
+        <div style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 10px 14px; margin: 14px 0; border-radius: 4px; font-size: 13.5px;">
+            <strong style="color: #b45309;">⏰ Expected Deadline:</strong> <span style="color: #92400e; font-weight: 600;">{formatted_dl}</span>
+        </div>
+        """
+
+    if not file_url:
+        file_url = get_google_drive_file_url(file_path) or drive_url
+    if not drive_path:
+        drive_path = get_clean_drive_path(file_path)
+
+    plain_text = f"""Hello,
+
+{loc_intro} is ready for review.{deadline_body}
+📄 File: {file_name}
+🔗 Direct File Link: {file_url}
+📁 Drive Location: {drive_path}
+
+{delivery_note_plain}
+
+Please review and correct the following fields:
+
+Project Name :-
+• Keep the project name clean and consistent with the original Property Details.
+• Remove unnecessary suffixes such as CHS, Building, Phase, etc.
+• Do not use English-translated names generated by the LLM. For example, if the Property Details mention “Swapnapoorti”, retain “Swapnapoorti” instead of “Dream Fulfillment.”
+• Remove values such as Shop No., Room No., Gat No., Survey No., etc., if they have been incorrectly captured as the project name.
+
+Net Carpet Area :-
+• Review net_carpet_area only for Sale transactions.
+• Where multiple areas are mentioned, such as Total Land Area, Owner’s Share, or Sold Portion, select the actual transacted/sold area.
+• If multiple flats/shops are included in the same transaction, add their individual areas and use the total area.
+• Please manually verify records where:
+  - the area unit is not mentioned,
+  - the mentioned unit appears incorrect, or
+  - there is confusion in identifying the correct carpet/transacted area.
+  In such cases, refer carefully to the original Property Details before finalizing the area.
+
+Unit Number & Floor Number :-
+• Review unit_number and floor_number against the original Property Details.
+• unit_number should contain only the actual Flat No., Shop No., Room No., Unit No., etc.
+• floor_number should contain only the actual floor information, such as Ground Floor, 1st Floor, 2nd Floor, etc.
+• Do not consider project/building names, Gat No., Survey No., road names, or other location details as unit or floor numbers.
+
+Example:
+Shop No: Shop No - B 402, Floor No: Prisma L, Building Name: Gat No - 79, Block Sector: Moshi 412105, Road: Borhadewadi, City: Moshi, District: Pune
+In this case, B 402 should be captured as the unit_number. Prisma L should not be considered the floor_number if it represents a building/project name. If the actual floor is not mentioned, keep the floor_number blank.
+
+For better understanding and reference, please refer to the following sheet:
+https://docs.google.com/spreadsheets/d/1q_HORd89098vHCav494NeFej8zHVWyDHWkvkE-B6mmE/edit?gid=1073436546#gid=1073436546
+
+Please complete the review and corrections accordingly.
+
+Best regards,
+Nilesh K.
+"""
+
+    html_text = render_correction_email_html(
+        loc_intro=loc_intro,
+        file_name=file_name,
+        drive_url=drive_url,
+        file_path=file_path,
+        delivery_note_html=delivery_note_html,
+        deadline_banner_html=deadline_banner_html,
+        file_url=file_url,
+        drive_path=drive_path,
+    )
+
+    return plain_text, html_text
+
+
 def prompt_share_correction_file(
     file_path: str,
     location_name: str = None,
-    drive_url: str = DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL,
+    drive_url: str = None,
 ):
     """
     Prompts the user if they wish to share the manual correction file with colleagues.
     Sharing is completely optional. Can send an email with the file attached or provide the Drive link.
     """
+    if not drive_url:
+        drive_url = get_manual_correction_drive_url(
+            city_identifier=CURRENT_CITY_KEY if "CURRENT_CITY_KEY" in globals() else None,
+            location_name=location_name,
+            file_path=file_path,
+        ) or (DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL if "DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL" in globals() else "")
     print(f"\n{HEADER}{'-' * 60}{RESET}")
     print(f"{CYAN}📤 [OPTIONAL] SHARE CORRECTION FILE{RESET}")
     print(f"  {CYAN}📄 File      :{RESET} {BOLD}{os.path.basename(file_path)}{RESET}")
@@ -526,14 +669,30 @@ def prompt_share_correction_file(
         f"\n{YELLOW}Enter expected deadline (e.g. 'Today 6 PM' / 'Tomorrow 12 PM', or press Enter to skip): {RESET}"
     ).strip()
 
+    cc_emails = [
+        "deeksha@sigmavalue.co.in",
+        #"paryushan@sigmavalue.co.in",
+        #"anurag@sigmavalue.co.in",
+        "nilesh@sigmavalue.co.in",
+    ]
+    clean_recipients = [r.strip() for r in recipient_emails if r and r.strip()]
+    clean_cc = [c.strip() for c in (cc_emails or []) if c and c.strip()]
+    all_recipients = list(dict.fromkeys(clean_recipients + clean_cc))
+
     file_name = os.path.basename(file_path)
     file_size_mb = os.path.getsize(file_path) / (1024 * 1024) if os.path.exists(file_path) else 0
 
-    print(f"\n{CYAN}📧 Preparing email to:{RESET} {', '.join(recipient_emails)}")
+    print(f"\n{CYAN}📧 Preparing email to:{RESET} {', '.join(clean_recipients)}")
+    if clean_cc:
+        print(f"  {CYAN}📋 CC      :{RESET} {', '.join(clean_cc)}")
     if deadline_input:
         print(f"  {CYAN}⏰ Deadline:{RESET} {deadline_input}")
-    print(f"  {CYAN}📎 Attachment size:{RESET} {file_size_mb:.2f} MB")
-    print(f"  {YELLOW}⏳ Uploading file over SMTP (may take 1-2 minutes for large files)...{RESET}")
+
+    file_url = get_google_drive_file_url(file_path) or drive_url
+    drive_path = get_clean_drive_path(file_path)
+    print(f"  {CYAN}🔗 Direct Link:{RESET} {file_url}")
+    print(f"  {CYAN}📁 Drive Path :{RESET} {drive_path}")
+    print(f"  {YELLOW}⏳ Sending Google Drive link notification (no heavy attachment)...{RESET}")
 
     deadline_str = f"\n⏰ Expected Deadline: {deadline_input}\n" if deadline_input else ""
     deadline_subj = f" [Deadline: {deadline_input}]" if deadline_input else ""
@@ -542,128 +701,54 @@ def prompt_share_correction_file(
         import smtplib
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
-        from email.mime.base import MIMEBase
-        from email import encoders
 
         sender_email = "nilesh@sigmavalue.co.in"
         sender_password = "nvlf igcl tyxm nnwo"
         smtp_server = "smtp.gmail.com"
         smtp_port = 587
 
-        msg = MIMEMultipart()
+        msg = MIMEMultipart("alternative")
         msg["From"] = f"Nilesh <{sender_email}>"
-        msg["To"] = ", ".join(recipient_emails)
+        msg["To"] = ", ".join(clean_recipients)
+        if clean_cc:
+            msg["Cc"] = ", ".join(clean_cc)
         loc_str = f" for {location_name}" if location_name else ""
+        loc_intro = f"The {location_name} manual correction file" if location_name else "The manual correction file"
         msg["Subject"] = f"[Manual Correction Required]{deadline_subj} {loc_str.strip()} - {file_name}"
 
-        body = f"""Hello,
+        plain_body, html_body = build_correction_email_content(
+            loc_intro=loc_intro,
+            file_name=file_name,
+            drive_url=drive_url,
+            file_path=file_path,
+            deadline_body=deadline_str,
+            formatted_dl=deadline_input,
+            is_attachment=False,
+            file_url=file_url,
+            drive_path=drive_path,
+        )
 
-The manual correction file{loc_str} is ready for review and manual correction.{deadline_str}
-📄 File: {file_name}
-🌐 Google Drive Folder: {drive_url}
-📂 Local / Drive Path: {file_path}
+        msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-Please find the file attached with this email.
-
-Best regards,
-Nilesh K
-"""
-        msg.attach(MIMEText(body, "plain"))
-
-        if os.path.exists(file_path):
-            with open(file_path, "rb") as attachment:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(attachment.read())
-            encoders.encode_base64(part)
-            part.add_header(
-                "Content-Disposition",
-                f"attachment; filename= {file_name}",
-            )
-            msg.attach(part)
-
-        # Timeout increased to 300s (5 minutes) for large attachments
-        server = smtplib.SMTP(smtp_server, smtp_port, timeout=300)
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=60)
         server.ehlo()
         server.starttls()
         server.ehlo()
         server.login(sender_email, sender_password)
-        server.sendmail(sender_email, recipient_emails, msg.as_string())
+        server.sendmail(sender_email, all_recipients, msg.as_string())
         server.quit()
 
-        print(f"\n{GREEN}✓ Email sent successfully with attachment to {', '.join(recipient_emails)}!{RESET}")
+        print(f"\n{GREEN}✓ Direct link notification sent successfully to {', '.join(clean_recipients)} (CC: {', '.join(clean_cc)})!{RESET}")
     except Exception as err:
-        print(f"\n{RED}❌ Failed to send attachment ({err}). Sending Drive link notification instead...{RESET}")
-        try:
-            # Fallback: Send email with Drive link without the large attachment
-            fallback_msg = MIMEMultipart()
-            fallback_msg["From"] = f"Nilesh <{sender_email}>"
-            fallback_msg["To"] = ", ".join(recipient_emails)
-            fallback_msg["Subject"] = f"[Manual Correction Required]{deadline_subj} {loc_str.strip()} - {file_name}"
-            fallback_body = f"""Hello,
-
-The manual correction file{loc_str} is ready for review.{deadline_str}
-📄 File: {file_name}
-🌐 Google Drive Folder: {drive_url}
-📂 File Path: {file_path}
-
-Please access the file directly from Google Drive using the link above.
-
-Best regards,
-Nilesh K
-"""
-            fallback_msg.attach(MIMEText(fallback_body, "plain"))
-            server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, recipient_emails, fallback_msg.as_string())
-            server.quit()
-            print(f"{GREEN}✓ Drive link notification sent successfully to {', '.join(recipient_emails)}!{RESET}")
-        except Exception as fb_err:
-            print(f"{RED}❌ Fallback email also failed: {fb_err}{RESET}")
-        print(f"  {CYAN}🌐 You can also share the link directly:{RESET} {drive_url}")
-
-def derive_net_carpet_area(df: pd.DataFrame, city: str) -> pd.DataFrame:
-    """Fill net_carpet_area_sqmt from whichever area column is available."""
-    saleable_divisor = SALEABLE_TO_CARPET_DIVISOR_BY_CITY.get(city.lower())
-    if saleable_divisor is None:
-        raise ValueError(f"No Saleable->Carpet divisor for city '{city}'.")
-
-    df["net_carpet_area_sqmt"] = np.nan
-
-    mask = df["carpet_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "carpet_area_sqmt"].values
-
-    mask = df["net_carpet_area_sqmt"].isna() & df["builtup_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = (
-        df.loc[mask, "builtup_area_sqmt"].values / BUILDUP_TO_CARPET_DIVISOR
-    )
-
-    mask = df["net_carpet_area_sqmt"].isna() & df["saleable_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = (
-        df.loc[mask, "saleable_area_sqmt"].values / saleable_divisor
-    )
-
-    mask = (
-        df["net_carpet_area_sqmt"].isna() & df["super_builtup_area_sqmt"].notna()
-    )
-    df.loc[mask, "net_carpet_area_sqmt"] = (
-        df.loc[mask, "super_builtup_area_sqmt"].values / saleable_divisor
-    )
-
-    mask = df["net_carpet_area_sqmt"].isna() & df["plot_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "plot_area_sqmt"].values
-
-    mask = df["net_carpet_area_sqmt"].isna() & df["total_area_sqmt"].notna()
-    df.loc[mask, "net_carpet_area_sqmt"] = df.loc[mask, "total_area_sqmt"].values
-
-    df["net_carpet_area_sqmt"] = df["net_carpet_area_sqmt"].round(2)
-    return df
-
+        print(f"\n{RED}❌ Failed to send email ({err}).{RESET}")
+        print(f"  {CYAN}🌐 You can share the link directly:{RESET} {file_url or drive_url}")
 
 def rename_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df.rename(
+    df = df.copy()
+    if "property_type_raw" in df.columns and "property_type" in df.columns:
+        df = df.drop(columns=["property_type_raw"])
+    df = df.rename(
         columns={
             "internaldocumentnumber": "internal_document_number",
             "areaname": "village_name_marathi",
@@ -682,13 +767,15 @@ def rename_columns(df: pd.DataFrame) -> pd.DataFrame:
             "stampdutypaid": "stamp_duty_paid",
             "registrationfees": "registration_fee",
             "flat_number": "unit_number",
-        },
-        inplace=True,
+        }
     )
-    return df
+    return df.loc[:, ~df.columns.duplicated()].copy()
 
 
 def _map_property_type(value):
+    if isinstance(value, (pd.Series, np.ndarray, list)):
+        valid = [v for v in value if pd.notna(v) and str(v).strip() != ""]
+        value = valid[0] if valid else None
     if pd.isna(value) or str(value).strip() == "":
         return "Others"
     value = str(value).strip()
@@ -731,7 +818,19 @@ def _map_property_type(value):
     ]:
         return "Plot"
     return "Others"
-
+## map unit configuration
+def map_unit(x):
+    if pd.isna(x): return "Others"
+    x = str(x).lower().replace(" ", "")
+    if "office" in x: return "Office"
+    if "shop" in x: return "Shop"
+    if "flat" in x: return "Flat"
+    m = re.search(r'(\d+(?:\.\d+)?)bhk', x)
+    if not m: return "Others"
+    n = float(m.group(1))
+    if n < 1: return "<1Bhk"
+    if n > 3: return ">3Bhk"
+    return {1:"1Bhk",1.5:"1.5Bhk",2:"2Bhk",2.25:"2.25Bhk",2.5:"2.5Bhk",2.75:"2.75Bhk",3:"3Bhk"}.get(n,"Others")
 
 def assign_nr_indexes(
     df: pd.DataFrame, target_city_id: int, db_params: dict
@@ -748,6 +847,51 @@ def assign_nr_indexes(
         df["project_name"] = (
             df["project_name"].replace(r"^\s*$", np.nan, regex=True)
         )
+
+    if "project_latitude" not in df.columns:
+        df["project_latitude"] = np.nan
+    else:
+        df["project_latitude"] = pd.to_numeric(df["project_latitude"], errors="coerce")
+
+    if "project_longitude" not in df.columns:
+        df["project_longitude"] = np.nan
+    else:
+        df["project_longitude"] = pd.to_numeric(df["project_longitude"], errors="coerce")
+
+    def _to_float(v):
+        if v is None or pd.isna(v):
+            return None
+        try:
+            val = float(v)
+            return val if not np.isnan(val) else None
+        except (ValueError, TypeError):
+            return None
+
+    loc_col = next((c for c in ["location_name"] if c in df.columns), None)
+
+    # 1. Load existing DB index & coordinates mappings for (location_name, project_name)
+    db_mapping = {}
+    db_coords_mapping = {}
+    try:
+        conn = psycopg2.connect(**db_params)
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT lower(trim(location_name)), lower(trim(project_name)), internal_index_id, project_latitude, project_longitude
+                FROM public.transactions
+                WHERE city_id = %s
+                  AND project_name IS NOT NULL AND location_name IS NOT NULL;
+            """, (target_city_id,))
+            for loc, proj, idx, lat, lon in cur.fetchall():
+                if loc and proj:
+                    key = (loc, proj)
+                    if idx and str(idx).strip() and key not in db_mapping:
+                        db_mapping[key] = str(idx).strip()
+                    plat, plon = _to_float(lat), _to_float(lon)
+                    if plat is not None and plon is not None and key not in db_coords_mapping:
+                        db_coords_mapping[key] = (plat, plon)
+        conn.close()
+    except Exception as e:
+        print(f"  {YELLOW}⚠️ DB index mapping lookup note: {e}{RESET}")
 
     # Database lookup for max nr
     conn = psycopg2.connect(**db_params)
@@ -771,6 +915,22 @@ def assign_nr_indexes(
     print(f"  {CYAN}Highest NR in DB for City ID {target_city_id}:{RESET} nr{max_nr}")
     print(f"  {CYAN}New NR sequence starts from:{RESET} nr{next_num}")
 
+    # 2. Build current file mapping for (location_name, project_name) -> index & coordinates
+    file_mapping = {}
+    file_coords_mapping = {}
+    if loc_col and "project_name" in df.columns:
+        valid_rows = df.dropna(subset=[loc_col, "project_name"])
+        for _, row in valid_rows.iterrows():
+            l_key = str(row[loc_col]).strip().lower()
+            p_key = str(row["project_name"]).strip().lower()
+            if l_key and p_key:
+                k = (l_key, p_key)
+                if pd.notna(row.get("index")) and str(row["index"]).strip():
+                    file_mapping.setdefault(k, str(row["index"]).strip())
+                plat, plon = _to_float(row.get("project_latitude")), _to_float(row.get("project_longitude"))
+                if plat is not None and plon is not None:
+                    file_coords_mapping.setdefault(k, (plat, plon))
+
     existing_indexes = set(
         df["index"].dropna().astype(str).str.strip().str.lower()
     )
@@ -785,18 +945,64 @@ def assign_nr_indexes(
     else:
         rows_to_assign = df.index[df["index"].isna()]
 
-    print(f"  {CYAN}Rows eligible for new NR:{RESET} {len(rows_to_assign)}")
+    print(f"  {CYAN}Rows eligible for NR / Index assignment:{RESET} {len(rows_to_assign)}")
+
+    new_count = 0
+    reused_count = 0
 
     for i in rows_to_assign:
-        while f"nr{next_num}" in existing_indexes:
-            next_num += 1
-        new_index = f"nr{next_num}"
-        df.at[i, "index"] = new_index
-        existing_indexes.add(new_index)
-        next_num += 1
+        proj = str(df.at[i, "project_name"]).strip().lower() if "project_name" in df.columns and pd.notna(df.at[i, "project_name"]) else ""
+        loc = str(df.at[i, loc_col]).strip().lower() if loc_col and pd.notna(df.at[i, loc_col]) else ""
+        key = (loc, proj) if (loc and proj) else None
 
-    print(f"  {CYAN}New NR assigned:{RESET} {len(rows_to_assign)}")
-    if len(rows_to_assign) > 0:
+        if key and key in file_mapping:
+            df.at[i, "index"] = file_mapping[key]
+            reused_count += 1
+        elif key and key in db_mapping:
+            existing_idx = db_mapping[key]
+            df.at[i, "index"] = existing_idx
+            file_mapping[key] = existing_idx
+            existing_indexes.add(str(existing_idx).strip().lower())
+            reused_count += 1
+        else:
+            while f"nr{next_num}" in existing_indexes:
+                next_num += 1
+            new_index = f"nr{next_num}"
+            df.at[i, "index"] = new_index
+            if key:
+                file_mapping[key] = new_index
+                db_mapping[key] = new_index
+            existing_indexes.add(new_index.lower())
+            next_num += 1
+            new_count += 1
+
+    # Populate project coordinates for matching (location_name, project_name)
+    coords_reused = 0
+    if loc_col and "project_name" in df.columns:
+        for i in df.index:
+            p_val = df.at[i, "project_name"]
+            l_val = df.at[i, loc_col]
+            if pd.notna(p_val) and pd.notna(l_val):
+                p_key = str(p_val).strip().lower()
+                l_key = str(l_val).strip().lower()
+                if p_key and l_key:
+                    k = (l_key, p_key)
+                    lat_blank = pd.isna(df.at[i, "project_latitude"])
+                    lon_blank = pd.isna(df.at[i, "project_longitude"])
+                    if lat_blank or lon_blank:
+                        coords = file_coords_mapping.get(k) or db_coords_mapping.get(k)
+                        if coords:
+                            lat, lon = coords
+                            if lat_blank and lat is not None:
+                                df.at[i, "project_latitude"] = float(lat)
+                            if lon_blank and lon is not None:
+                                df.at[i, "project_longitude"] = float(lon)
+                            coords_reused += 1
+
+    print(f"  {GREEN}✓ Reused existing Index for same (project + location):{RESET} {reused_count}")
+    print(f"  {GREEN}✓ Reused project coordinates from DB/file:{RESET} {coords_reused} rows")
+    print(f"  {GREEN}✓ Brand new NR assigned:{RESET} {new_count}")
+    if new_count > 0:
         print(f"  {CYAN}Highest new NR:{RESET} nr{next_num - 1}")
     print(f"  {CYAN}Blank indexes remaining:{RESET} {df['index'].isna().sum()}")
 
@@ -814,146 +1020,45 @@ def populate_location_coords(df, city_id, db_params):
     df["location_longitude"] = keys.map(coords.set_index("loc")["longitude"])
     return df
 
-def resolve_city(df: pd.DataFrame, source_file: str, db_params: dict) -> tuple[int, str]:
+def resolve_city(df: pd.DataFrame = None, source_file: str = None, db_params: dict = None) -> tuple[int, str]:
     """
-    Fetches available cities from public.dim_city, auto-detects the city from df / source_file,
-    and prompts the user once to confirm or override. Returns (target_city_id, target_city_name).
+    Returns (target_city_id, target_city_name) as per the target city selected by the user.
+    Uses the active city selected at pipeline start.
     """
-    cities = {}
+    if "CURRENT_CITY_CONFIG" in globals() and CURRENT_CITY_CONFIG:
+        return CURRENT_CITY_CONFIG["city_id"], CURRENT_CITY_CONFIG["display_name"]
+    if "target_city_id" in globals() and "target_city_name" in globals() and target_city_id and target_city_name:
+        return target_city_id, target_city_name
+
+    # Fallback to active city configuration if available
     try:
-        conn = psycopg2.connect(**db_params)
-        cur = conn.cursor()
-        cur.execute("SELECT city_id, city_name FROM public.dim_city ORDER BY city_id;")
-        cities = {row[0]: row[1] for row in cur.fetchall()}
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"{YELLOW}⚠️ Error querying public.dim_city: {e}{RESET}")
-        cities = {9: "Pune"}
-
-    name_to_id = {str(name).strip().lower(): cid for cid, name in cities.items()}
-
-    detected_id = None
-    detected_name = None
-
-    # Check source_file path first
-    file_str = str(source_file).lower()
-    for name_lower, cid in name_to_id.items():
-        clean_name = name_lower.replace("_", " ")
-        if re.search(r"\b" + re.escape(clean_name) + r"\b", file_str) or re.search(r"\b" + re.escape(name_lower) + r"\b", file_str):
-            detected_id = cid
-            detected_name = cities[cid]
-            break
-
-    # If not found from file path, check columns in df
-    if detected_id is None and df is not None:
-        candidate_cols = [
-            "city_name", "city", "city_en", "city_original",
-            "district_name", "district_en", "district_original",
-            "taluka_en", "taluka_original", "areaname", "village_name_marathi"
-        ]
-        found_cols = [c for c in candidate_cols if c in df.columns]
-        for col in found_cols:
-            col_series = df[col].iloc[:, 0] if isinstance(df[col], pd.DataFrame) else df[col]
-            unique_vals = [str(v).strip().lower() for v in col_series.dropna().unique() if str(v).strip()]
-            for val in unique_vals:
-                for name_lower, cid in name_to_id.items():
-                    clean_name = name_lower.replace("_", " ")
-                    if val == name_lower or val == clean_name or name_lower in val:
-                        detected_id = cid
-                        detected_name = cities[cid]
-                        break
-                if detected_id is not None:
-                    break
-            if detected_id is not None:
-                break
-
-    # Default fallback to Pune (9) if still undetected
-    if detected_id is None:
-        detected_id = 9 if 9 in cities else next(iter(cities.keys()), 9)
-        detected_name = cities.get(detected_id, "Pune")
-
-    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   🏙️  CITY RESOLUTION (public.dim_city){RESET}")
-    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"  {CYAN}Detected City :{RESET} {BOLD}{GREEN}{detected_name}{RESET} (City ID: {BOLD}{CYAN}{detected_id}{RESET})")
-    print(f"{HEADER}{'-' * 60}{RESET}")
-
-    while True:
-        prompt = (
-            f"{YELLOW}Press Enter to confirm [{detected_name} (ID: {detected_id})], "
-            f"or enter City ID / Name: {RESET}"
-        )
-        user_val = input(prompt).strip()
-
-        if not user_val:
-            target_city_id = detected_id
-            target_city_name = detected_name
-            break
-
-        if user_val.isdigit() and int(user_val) in cities:
-            target_city_id = int(user_val)
-            target_city_name = cities[target_city_id]
-            break
-
-        val_lower = user_val.lower().replace(" ", "_")
-        if val_lower in name_to_id:
-            target_city_id = name_to_id[val_lower]
-            target_city_name = cities[target_city_id]
-            break
-
-        matched_cid = next((cid for n_l, cid in name_to_id.items() if val_lower in n_l or n_l in val_lower), None)
-        if matched_cid:
-            target_city_id = matched_cid
-            target_city_name = cities[target_city_id]
-            break
-
-        print(f"{YELLOW}⚠️ '{user_val}' not recognized in public.dim_city.{RESET}")
-        print(f"{BLUE}ℹ Available cities:{RESET} {', '.join([f'{CYAN}{cid}:{RESET} {name}' for cid, name in cities.items()])}")
-
-    print(f"{GREEN}✓ City confirmed: {BOLD}{target_city_name}{RESET}{GREEN} (City ID: {target_city_id}){RESET}")
-    set_active_city(target_city_name)
-    return target_city_id, target_city_name
+        from city_config import get_city_config
+        cfg = get_city_config()
+        return cfg["city_id"], cfg["display_name"]
+    except Exception:
+        return 9, "Pune"
 
 def populate_village_mapping(df: pd.DataFrame, city_id: int, db_params: dict) -> pd.DataFrame:
-    """Match areaname / village_name_marathi against transactions table and fill location_name & registered_document_village_name."""
-    col = (
-        "village_name_marathi"
-        if "village_name_marathi" in df.columns
-        else ("areaname" if "areaname" in df.columns else None)
-    )
-    if not col:
-        return df
+    col = next((c for c in ["village_name_marathi", "areaname"] if c in df.columns), None)
+    if col:
+        keys = (df[col].iloc[:, 0] if isinstance(df[col], pd.DataFrame) else df[col]).astype(str).str.strip()
+        try:
+            conn = psycopg2.connect(**db_params)
+            q = "SELECT DISTINCT TRIM(village_name_marathi) AS v, registered_document_village_name AS r FROM public.transactions WHERE city_id = %s AND village_name_marathi = ANY(%s)"
+            lookup = pd.read_sql_query(q, conn, params=(city_id, list(keys.unique()))).drop_duplicates("v").set_index("v")["r"]
+            conn.close()
+            mapped = keys.map(lookup)
+            if "registered_document_village_name" in df.columns:
+                df["registered_document_village_name"] = df["registered_document_village_name"].fillna(mapped)
+            else:
+                df["registered_document_village_name"] = mapped
+        except Exception as e:
+            print(f"  {YELLOW}⚠️ Village mapping DB lookup note: {e}{RESET}")
 
-    for c in ["location_name", "registered_document_village_name"]:
-        if c not in df.columns:
-            df[c] = pd.NA
-
-    conn = psycopg2.connect(**db_params)
-    lookup = pd.read_sql_query(
-        """
-        SELECT DISTINCT TRIM(village_name_marathi) AS village_name_marathi,
-               location_name,
-               registered_document_village_name
-        FROM public.transactions
-        WHERE city_id = %s AND village_name_marathi IS NOT NULL
-        """,
-        conn,
-        params=(city_id,),
-    )
-    conn.close()
-
-    lookup = lookup.drop_duplicates(subset=["village_name_marathi"], keep="first")
-    lookup = lookup.set_index("village_name_marathi")
-
-    col_series = df[col].iloc[:, 0] if isinstance(df[col], pd.DataFrame) else df[col]
-    keys = col_series.astype(str).str.strip()
-    df["location_name"] = keys.map(lookup["location_name"])
-    df["registered_document_village_name"] = keys.map(lookup["registered_document_village_name"])
-
-    matched_count = df["registered_document_village_name"].notna().sum()
-    print(f"  {CYAN}Village mapping matched:{RESET} {matched_count} / {len(df)} rows")
+    if "registered_document_village_name" in df.columns:
+        df["location_name"] = df["registered_document_village_name"]
     return df
+
 
 def keep_db_columns(df, db_sequence):
     existing_cols = [col for col in db_sequence if col in df.columns]
@@ -1000,7 +1105,7 @@ def add_buyer_location(df: pd.DataFrame, postal_csv_path: str | Path = None) -> 
         postal_csv_path = Path(postal_csv_path)
 
     if not postal_csv_path.exists():
-        fallback_path = Path(r"D:\Database\DB1_DB2_Uploading_Pipeline\Pune_IGR_Update_Pipeline\required_files\postal_pincode.csv")
+        fallback_path = Path(r"E:\Nilesh\IGR_processing_System\Processing\postal_pincode.csv")
         if fallback_path.exists():
             postal_csv_path = fallback_path
 
@@ -1048,6 +1153,38 @@ def add_buyer_location(df: pd.DataFrame, postal_csv_path: str | Path = None) -> 
         return df
 
 # ============================================================
+# TARGET DATABASE SELECTION
+# ============================================================
+if CLI_DB:
+    selected_db = CLI_DB
+else:
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   🗄️  SELECT TARGET DATABASE{RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"  {CYAN}[1]{RESET} nilesh (Production / Default)")
+    print(f"  {CYAN}[2]{RESET} test   (Staging / Testing)")
+    print(f"  {CYAN}[3]{RESET} Custom Database Name")
+    print(f"{HEADER}{'-' * 60}{RESET}")
+    db_choice = input(f"{YELLOW}Select database [1-3 or enter name, default: 1 (nilesh)]: {RESET}").strip()
+    if db_choice in ["", "1", "nilesh"]:
+        selected_db = "nilesh"
+    elif db_choice in ["2", "test"]:
+        selected_db = "test"
+    elif db_choice == "3":
+        custom_db = input(f"{YELLOW}Enter custom database name: {RESET}").strip()
+        selected_db = custom_db if custom_db else "nilesh"
+    else:
+        selected_db = db_choice
+
+DB_PARAMS["database"] = selected_db
+try:
+    from pipeline_core import set_active_db
+    set_active_db(selected_db)
+except Exception:
+    pass
+print(f"{GREEN}✓ Target Database set to: {BOLD}{selected_db}{RESET}")
+
+# ============================================================
 # TARGET CITY SELECTION & PIPELINE MODE
 # ============================================================
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
@@ -1058,15 +1195,18 @@ for idx, (ckey, cval) in enumerate(CITY_CONFIG.items(), start=1):
     print(f"  {CYAN}[{idx}]{RESET} {cval['display_name']:<10} (City ID: {cval['city_id']}, Divisor: {div})")
 print(f"{HEADER}{'-' * 60}{RESET}")
 
-selected_city_input = input(f"{YELLOW}Select city (1: Pune, 2: Mumbai, 3: Thane) [default: 1]: {RESET}").strip()
 city_idx_map = {str(i): k for i, k in enumerate(CITY_CONFIG.keys(), start=1)}
+city_prompt_options = ", ".join(f"{i}: {CITY_CONFIG[k]['display_name']}" for i, k in city_idx_map.items())
 
-if selected_city_input in city_idx_map:
-    active_city_key = city_idx_map[selected_city_input]
-elif selected_city_input.lower() in CITY_CONFIG:
-    active_city_key = selected_city_input.lower()
-else:
-    active_city_key = "pune"
+while True:
+    selected_city_input = input(f"{YELLOW}Select city ({city_prompt_options}): {RESET}").strip()
+    if selected_city_input in city_idx_map:
+        active_city_key = city_idx_map[selected_city_input]
+        break
+    elif selected_city_input.lower() in CITY_CONFIG:
+        active_city_key = selected_city_input.lower()
+        break
+    print(f"{RED}❌ Invalid selection '{selected_city_input}'. Please choose a valid city ({city_prompt_options}).{RESET}")
 
 CURRENT_CITY_CONFIG = set_active_city(active_city_key)
 target_city_id = CURRENT_CITY_CONFIG["city_id"]
@@ -1074,19 +1214,80 @@ target_city_name = CURRENT_CITY_CONFIG["display_name"]
 active_divisor = SALEABLE_TO_CARPET_DIVISOR_BY_CITY.get(active_city_key, 1.35)
 print(f"{GREEN}✓ Active City set to: {BOLD}{target_city_name}{RESET}{GREEN} (ID: {target_city_id}, Divisor: {active_divisor}){RESET}")
 
+# ============================================================
+# SPECIAL WORKFLOW: DUBAI (2 STEPS: SCRAPING & PROCESSING)
+# ============================================================
+if active_city_key == "dubai" or target_city_id == 15:
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   🏙️  DUBAI WORKFLOW (2 STEPS: SCRAPING & PROCESSING){RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"  {CYAN}[1]{RESET} Run FULL Workflow (Step 1: Scraping ➔ Step 2: Processing) [Default]")
+    print(f"  {CYAN}[2]{RESET} Run Step 1 ONLY: Scraping (dubai_scraper.py)")
+    print(f"  {CYAN}[3]{RESET} Run Step 2 ONLY: Processing (dld_pipeline.py)")
+    print(f"  {CYAN}[0]{RESET} Cancel")
+    print(f"{HEADER}{'=' * 60}{RESET}")
+
+    dubai_choice = input(f"\n{YELLOW}Select option (1, 2, 3, or 0) [default: 1]: {RESET}").strip()
+    if dubai_choice in ["0", "cancel", "q", "exit"]:
+        print(f"{BLUE}ℹ Operation cancelled.{RESET}")
+        sys.exit(0)
+
+    dubai_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Dubai_processing")
+    scraper_script = os.path.join(dubai_dir, "dubai_scraper.py")
+    pipeline_script = os.path.join(dubai_dir, "dld_pipeline.py")
+
+    if dubai_choice in ["1", "", "all"]:
+        # Step 1: Scraping
+        print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+        print(f"{HEADER}{BOLD}   📥 [STEP 1/2] Launching Dubai Data Scraper...{RESET}")
+        print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+        subprocess.run([sys.executable, scraper_script, "--db", selected_db], cwd=dubai_dir, check=True)
+
+        # Step 2: Processing
+        print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+        print(f"{HEADER}{BOLD}   ⚙️  [STEP 2/2] Launching Dubai Data Processing Pipeline...{RESET}")
+        print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+        subprocess.run([sys.executable, pipeline_script, "--db", selected_db], cwd=dubai_dir, check=True)
+
+        print(f"\n{GREEN}{BOLD}🎉 Dubai 2-step workflow completed successfully!{RESET}\n")
+        sys.exit(0)
+
+    elif dubai_choice == "2":
+        # Step 1 ONLY: Scraping
+        print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+        print(f"{HEADER}{BOLD}   📥 [STEP 1/2] Launching Dubai Data Scraper...{RESET}")
+        print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+        subprocess.run([sys.executable, scraper_script, "--db", selected_db], cwd=dubai_dir, check=True)
+        print(f"\n{GREEN}{BOLD}🎉 Dubai Scraping finished!{RESET}\n")
+        sys.exit(0)
+
+    elif dubai_choice == "3":
+        # Step 2 ONLY: Processing
+        print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+        print(f"{HEADER}{BOLD}   ⚙️  [STEP 2/2] Launching Dubai Data Processing Pipeline...{RESET}")
+        print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+        subprocess.run([sys.executable, pipeline_script, "--db", selected_db], cwd=dubai_dir, check=True)
+        print(f"\n{GREEN}{BOLD}🎉 Dubai Processing finished!{RESET}\n")
+        sys.exit(0)
+
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
 print(f"{HEADER}{BOLD}   🏗️  DATA PROCESSING PIPELINE - {target_city_name.upper()}{RESET}")
 print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 print(f"  {CYAN}[1]{RESET} Run from START (Step 1 to Step 20)")
 print(f"  {CYAN}[2]{RESET} Run from STEP 7 (Load manually corrected file directly, Steps 7 to 20)")
-print(f"  {CYAN}[3]{RESET} Run STEP 19 ONLY (Parquet Conversion directly)")
+print(f"  {CYAN}[3]{RESET} Run STEP 18 ONLY (Parquet Conversion directly)")
+print(f"  {CYAN}[4]{RESET} Run STEP 20 ONLY (Outlier Update directly)")
 print(f"{HEADER}{'=' * 60}{RESET}")
 
-pipeline_mode = input(f"\n{YELLOW}Select option (1, 2, or 3) [default: 1]: {RESET}").strip()
+pipeline_mode = input(f"\n{YELLOW}Select option (1, 2, 3, or 4) [default: 1]: {RESET}").strip()
 
-if pipeline_mode == "3":
-    # STEP 19 ONLY - Direct Parquet Conversion
-    print(f"\n{BLUE}ℹ ⏩ Skipping Steps 1 to 18. Starting directly from STEP 19 (Parquet Conversion)...{RESET}")
+if pipeline_mode == "4":
+    # STEP 20 ONLY - Direct Outlier Update
+    print(f"\n{BLUE}ℹ ⏩ Skipping Steps 1 to 19. Starting directly from STEP 20 (Outlier Update)...{RESET}")
+
+elif pipeline_mode == "3":
+    # STEP 18 ONLY - Direct Parquet Conversion
+    print(f"\n{BLUE}ℹ ⏩ Skipping Steps 1 to 17. Starting directly from STEP 18 (Parquet Conversion)...{RESET}")
     output_path = get_final_processed_file()
     sample_df = None
     try:
@@ -1106,23 +1307,24 @@ else:
     # STEP 1 - INPUT FILE (MANUAL PROMPT HIDDEN)
     # ------------------------------------------------------------
     # print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    # print(f"{HEADER}{BOLD}   ⏳ [STEP 1/20] Getting Input File...{RESET}")
+    # print(f"{HEADER}{BOLD}   ⏳ [STEP 1/19] Getting Input File...{RESET}")
     # print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     # input_file = input(f"{YELLOW}Please provide Input File path: {RESET}").strip().strip('"')
-    # print(f"{GREEN}✓ [STEP 1/20] Input file selected: {input_file}{RESET}")
+    # print(f"{GREEN}✓ [STEP 1/19] Input file selected: {input_file}{RESET}")
 
     # ============================================================
     # STEP 1 - GET FILE FROM GOOGLE DRIVE (LOCATION WISE)
     # ============================================================
     def get_file_from_drive(
-        drive_url: str = DEFAULT_INPUT_DRIVE_FOLDER_URL,
+        drive_url: str = None,
     ) -> str:
         """
         Scans Google Drive folder (via local Google Drive Desktop sync) for location-wise subfolders,
         allows picking location-wise file, and returns the selected file path.
         """
+        drive_url = drive_url or (DEFAULT_INPUT_DRIVE_FOLDER_URL if "DEFAULT_INPUT_DRIVE_FOLDER_URL" in globals() else None)
         print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-        print(f"{HEADER}{BOLD}   📁 [STEP 1/20] Getting Input File from Google Drive...{RESET}")
+        print(f"{HEADER}{BOLD}   📁 [STEP 1/19] Getting Input File from Google Drive...{RESET}")
         print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
         # Extract folder ID from URL or path
@@ -1234,7 +1436,7 @@ else:
                     break
                 print(f"{RED}❌ Invalid file choice. Please choose 1 to {len(loc_files)}.{RESET}")
 
-        print(f"\n{GREEN}✓ [STEP 1/20] Input file selected from Drive:{RESET}")
+        print(f"\n{GREEN}✓ [STEP 1/19] Input file selected from Drive:{RESET}")
         print(f"  {CYAN}📄 File:{RESET} {BOLD}{os.path.basename(selected_file)}{RESET}")
         print(f"  {CYAN}📂 Path:{RESET} {selected_file}")
         global selected_location
@@ -1247,17 +1449,17 @@ else:
 
     # STEP 2 - DictToColumn
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 2/20] Running DictToColumn...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 2/19] Running DictToColumn...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from DictToColumn import process_dict_to_column
 
     df = process_dict_to_column(input_file)
-    print(f"{GREEN}✓ [STEP 2/20] DictToColumn completed - {len(df)} rows{RESET}")
+    print(f"{GREEN}✓ [STEP 2/19] DictToColumn completed - {len(df)} rows{RESET}")
     target_city_id, target_city_name = resolve_city(df, input_file, DB_PARAMS)
 
     # STEP 3 - Create final_project_name
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 3/20] Creating final_project_name...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 3/19] Creating final_project_name...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     project_name_missing = (
         df["project_name_en"].replace(r"^\s*$", pd.NA, regex=True).isna()
@@ -1270,50 +1472,72 @@ else:
     df["final_project_name_status"] = project_name_missing.map(
         {True: "Building Name Considered", False: "Project Name Considered"}
     )
-    print(f"{GREEN}✓ [STEP 3/20] Final project name created.{RESET}")
+    print(f"{GREEN}✓ [STEP 3/19] Final project name created.{RESET}")
 
     # STEP 4 - Static Dictionary Mapping
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 4/20] Mapping transaction types using static dictionary...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 4/19] Mapping transaction types using static dictionary...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from static import result_dict, word_number_dict
 
-    df["transaction_type"] = df["docname"].map(result_dict.get)
-    print(f"{GREEN}✓ [STEP 4/20] Transaction types mapped.{RESET}")
+    mapped_tx = df["docname"].map(result_dict.get) if "docname" in df.columns else pd.Series(index=df.index)
+    if "docname" in df.columns and mapped_tx.isna().any():
+        fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
+        mapped_tx = mapped_tx.fillna(fallback_map)
+
+    if "transaction_type" not in df.columns:
+        df["transaction_type"] = mapped_tx
+    else:
+        df["transaction_type"] = df["transaction_type"].fillna(mapped_tx)
+
+    mapped_count = int(df["transaction_type"].notna().sum())
+    total_docnames = int(df["docname"].notna().sum()) if "docname" in df.columns else 0
+    unmapped_count = total_docnames - mapped_count
+    pct = (mapped_count / total_docnames * 100) if total_docnames > 0 else 0.0
+
+    print(f"{GREEN}✓ [STEP 4/19] Transaction types mapped: {mapped_count:,}/{total_docnames:,} ({pct:.1f}%){RESET}")
+    if unmapped_count > 0:
+        print(f"{YELLOW}  ⚠ Unmapped docnames: {unmapped_count:,}{RESET}")
+    print(f"{BOLD}Transaction Type Value Counts:{RESET}")
+    for tx, cnt in df["transaction_type"].value_counts(dropna=False).head(15).items():
+        tx_label = "<Missing / None>" if pd.isna(tx) else str(tx)
+        print(f"  • {tx_label:<35}: {cnt:>6,}")
 
     # STEP 5 - Transaction Categorisation
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 5/20] Categorising transactions (Sale / Lease / Other)...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 5/19] Categorising transactions (Sale / Lease / Other)...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from transaction_categorizer import categorise
 
     df = categorise(df)
-    print(f"{GREEN}✓ [STEP 5/20] Transaction categorisation completed.{RESET}")
+    print(f"{GREEN}✓ [STEP 5/19] Transaction categorisation completed.{RESET}")
 
     # STEP 5.5 - Populate village_name_marathi from transactions DB if missing
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 5.5/20] Mapping village_name_marathi -> location_name / registered_document_village_name...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 5.5/19] Mapping village_name_marathi -> location_name / registered_document_village_name...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df = populate_village_mapping(df, target_city_id, DB_PARAMS)
-    print(f"{GREEN}✓ [STEP 5.5/20] Village mapping completed.{RESET}")
+    print(f"{GREEN}✓ [STEP 5.5/19] Village mapping completed.{RESET}")
 
 
     # STEP 6 - Project Standardization & Area Conversion
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 6/20] Running Project Standardization & Area Conversion...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 6/19] Running Project Standardization & Area Conversion...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-    from project_name_Std_and_area_conversion import process_dataframe
+    
 
     # Determine location name
-    location_name = (
-        selected_location
-        if ("selected_location" in globals() and selected_location)
-        else os.path.basename(os.path.dirname(input_file))
-    )
+    location_name = selected_location or os.path.basename(os.path.dirname(input_file))
 
     # Resolve manual correction Google Drive folder
+    loc_manual_drive_url = get_manual_correction_drive_url(
+        city_identifier=target_city_name,
+        location_name=location_name,
+        file_path=input_file,
+    ) or (DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL if "DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL" in globals() else None)
+
     manual_dir = resolve_manual_correction_directory(
-        DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL,
+        loc_manual_drive_url,
         location_name=location_name,
     )
 
@@ -1322,75 +1546,92 @@ else:
 
     if manual_dir and os.path.exists(manual_dir):
         v1_output_path = os.path.join(manual_dir, out_file_name)
-        print(f"  {CYAN}🌐 Google Drive Target :{RESET} {DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL}")
+        print(f"  {CYAN}🌐 Google Drive Target :{RESET} {loc_manual_drive_url}")
         print(f"  {CYAN}📂 Location Save Path  :{RESET} {v1_output_path}")
     else:
         input_dir = os.path.dirname(input_file)
         v1_output_path = os.path.join(input_dir, out_file_name)
         print(f"  {YELLOW}⚠️ Manual correction drive folder not detected. Saving locally: {v1_output_path}{RESET}")
 
-    df = process_dataframe(df, output_path=v1_output_path)
+    from project_name_Std_and_area_conversion import process_dataframe
+    df = process_dataframe(df, output_path=v1_output_path, city=target_city_name.lower())
+
     print(
-        f"{GREEN}✓ [STEP 6/20] Standardization completed -> Saved: {v1_output_path}{RESET}"
+        f"{GREEN}✓ [STEP 6/19] Standardization completed Ready For Manual -> Saved: {v1_output_path}{RESET}"
     )
 
     # Optional: Share correction file with colleagues
-    prompt_share_correction_file(v1_output_path, location_name=location_name)
+    prompt_share_correction_file(
+        v1_output_path,
+        location_name=location_name,
+        drive_url=loc_manual_drive_url,
+    )
 
     # STEP 7 - Manually Corrected File Load
-    file_path, df = get_manual_corrected_file(default_file=v1_output_path)
+    file_path, df = get_manual_corrected_file(
+        default_file=v1_output_path,
+        drive_url=loc_manual_drive_url,
+    )
 
 
 if pipeline_mode in ["1", "2"]:
-    # STEP 8 - Calculate Net_carpet_area
+    # STEP 8 - Rename columns & ensure transaction_type is mapped
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 8/20] Calculating Net Carpet Area...{RESET}")
-    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-    df = derive_net_carpet_area(df, city=target_city_name.lower())
-    print(f"{GREEN}✓ [STEP 8/20] Net Carpet Area calculation completed.{RESET}")
-
-    # STEP 9 - Rename columns
-    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 9/20] Renaming columns to standard format...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 8/19] Renaming columns & populating transaction_type...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df = rename_columns(df)
-    print(f"{GREEN}✓ [STEP 9/20] Columns renamed successfully.{RESET}")
 
-    # STEP 10 - Categorise Property Type
+    if "docname" in df.columns:
+        from static import result_dict
+        mapped_tx = df["docname"].map(result_dict.get)
+        fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
+        mapped_tx = mapped_tx.fillna(fallback_map)
+        if "transaction_type" in df.columns:
+            df["transaction_type"] = mapped_tx.fillna(df["transaction_type"])
+        else:
+            df["transaction_type"] = mapped_tx
+
+    from transaction_categorizer import categorise
+    df = categorise(df)
+    print(f"{GREEN}✓ [STEP 8/19] Columns renamed & transaction_type populated successfully.{RESET}")
+
+    # STEP 9 - Categorise Property Type
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 10/20] Categorising property types...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 9/19] Categorising property types...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df["property_type"] = df["property_type_raw"].apply(_map_property_type)
-    print(f"{GREEN}✓ [STEP 10/20] Property types categorised.{RESET}")
+    print(f"{GREEN}✓ [STEP 9/19] Property types categorised.{RESET}")
 
-    # STEP 11 - Add Buyer location and Pincode
+    # STEP 10 - Add Buyer location and Pincode
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 11/20] Adding Buyer Location and Pincode...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 10/19] Adding Buyer Location and Pincode...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df = add_buyer_location(df)
     matched_pincodes = df["buyer_pincode"].notna().sum() if "buyer_pincode" in df.columns else 0
     matched_locations = df["buyer_locality"].notna().sum() if "buyer_locality" in df.columns else 0
-    print(f"{GREEN}✓ [STEP 11/20] Buyer location and pincode added ({matched_pincodes} pincodes, {matched_locations} locations matched).{RESET}")
+    print(f"{GREEN}✓ [STEP 10/19] Buyer location and pincode added ({matched_pincodes} pincodes, {matched_locations} locations matched).{RESET}")
     
-    # STEP 12 - Matching with RERA
+    # STEP 11 - Matching with RERA
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 12/20] Running RERA matching...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 11/19] Running RERA matching...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from rera_matching import process_rera_matching
+    import importlib
+    import city_config
+    importlib.reload(city_config)
+    from city_config import resolve_rera_grand_path
 
-    rera_file = CURRENT_CITY_CONFIG.get("rera_grand_file") if "CURRENT_CITY_CONFIG" in globals() else None
-    rera_path = None
-    if rera_file:
-        candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), rera_file)
-        if os.path.exists(candidate):
-            rera_path = candidate
+    rera_path = resolve_rera_grand_path(target_city_name)
+    if not rera_path and "active_city_key" in globals() and active_city_key:
+        rera_path = resolve_rera_grand_path(active_city_key)
 
-    if rera_path:
+    if rera_path and os.path.exists(rera_path):
+        print(f"  {CYAN}📂 Using RERA Dataset: {os.path.basename(rera_path)}{RESET}")
         df = process_rera_matching(df, city=target_city_name.title(), rera_grand_path=rera_path)
-        print(f"{GREEN}✓ [STEP 12/20] RERA matching completed with {os.path.basename(rera_path)} - {len(df)} rows{RESET}")
+        print(f"{GREEN}✓ [STEP 11/19] RERA matching completed with {os.path.basename(rera_path)} - {len(df)} rows{RESET}")
     elif target_city_name.lower() == "pune":
         df = process_rera_matching(df, city="Pune")
-        print(f"{GREEN}✓ [STEP 12/20] RERA matching completed - {len(df)} rows{RESET}")
+        print(f"{GREEN}✓ [STEP 11/19] RERA matching completed - {len(df)} rows{RESET}")
     else:
         print(f"  {YELLOW}⚠️ No RERA Grand dataset configured or found for {target_city_name} (can be set in city_config.py).{RESET}")
         for c in ["index", "modified_project_name", "rera_location_v1", "rera_location",
@@ -1399,41 +1640,73 @@ if pipeline_mode in ["1", "2"]:
                 df[c] = pd.NA
         if "BHK" in df.columns and "property_type" in df.columns:
             df["BHK"] = df["BHK"].fillna(df["property_type"])
-        print(f"{GREEN}✓ [STEP 12/20] RERA matching skipped safely for {target_city_name}.{RESET}")
+        print(f"{GREEN}✓ [STEP 11/19] RERA matching skipped safely for {target_city_name}.{RESET}")
 
 
     # ============================================================
     # DB SCHEMA ALIGNMENT & DEFAULTS
     # ============================================================
     for col in ["transaction_date", "date_of_agreement_execution"]:
-        df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
 
-    df["quarter"] = (
-        "Q"
-        + df["transaction_date"].dt.quarter.astype(str)
-        + "-"
-        + df["transaction_date"].dt.year.astype(str)
-    )
+    if "transaction_date" in df.columns:
+        dt_year = df["transaction_date"].dt.year
+        if "year" not in df.columns:
+            df["year"] = dt_year
+        else:
+            df["year"] = df["year"].fillna(dt_year)
+
+        df["quarter"] = (
+            "Q"
+            + df["transaction_date"].dt.quarter.astype(str)
+            + "-"
+            + dt_year.astype(str)
+        )
 
     for col in ["transaction_date", "date_of_agreement_execution"]:
-        df[col] = df[col].dt.strftime("%d/%m/%Y")
+        if col in df.columns:
+            df[col] = df[col].dt.strftime("%d/%m/%Y")
+
+    # ------------------------------------------------------------
+    # Ensure Rate Column is Populated & Mapped to DB Schema ("rate")
+    # Rate represents agreement_price per net_carpet_area_sqft.
+    # ------------------------------------------------------------
+    # 1. Derive net_carpet_area_sqft if missing
+    if "net_carpet_area_sqft" not in df.columns:
+        area_m_col = "net_carpet_area_sq_m" if "net_carpet_area_sq_m" in df.columns else ("net_carpet_area_sqmt" if "net_carpet_area_sqmt" in df.columns else None)
+        if area_m_col and area_m_col in df.columns:
+            df["net_carpet_area_sqft"] = (pd.to_numeric(df[area_m_col], errors="coerce") * 10.7639).round(2)
+
+    # 2. Compute rate if not already present as 'rate' or 'rate_in_sqft'
+    if "rate" not in df.columns and "rate_in_sqft" not in df.columns:
+        price_col = "agreement_price" if "agreement_price" in df.columns else ("consideration_amt" if "consideration_amt" in df.columns else None)
+        if price_col and "net_carpet_area_sqft" in df.columns:
+            price_clean = pd.to_numeric(df[price_col].astype(str).str.replace(",", "").str.strip(), errors="coerce")
+            area_clean = pd.to_numeric(df["net_carpet_area_sqft"], errors="coerce")
+            df["rate"] = (price_clean / area_clean).round(2)
+
+    if "location_name" in df.columns and "location" in df.columns:
+        df = df.drop(columns=["location"])
 
     rename_mapping = {
         "city": "city_name",
-        "net_carpet_area_sqmt": "net_carpet_area_sq_m",
         "balcony_area_sqmt": "balcony_sq_m",
         "terrace_area_sqmt": "terrace_sq_m",
         "project_lat": "project_latitude",
         "project_lng": "project_longitude",
         "BHK": "unit_configuration",
-        "manual_processed": "is_manual_processed",
         "locality_en": "sub_locality",
         "wing_no": "tower_name",
+        "rate_in_sqft": "rate"  # Standardize 'rate_in_sqft' to DB schema column 'rate'
     }
 
     df = df.rename(
         columns={k: v for k, v in rename_mapping.items() if k in df.columns}
     )
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    if "registered_document_village_name" in df.columns:
+        df["location_name"] = df["registered_document_village_name"]
 
     defaults = {
         "location_latitude": np.nan,
@@ -1454,77 +1727,72 @@ if pipeline_mode in ["1", "2"]:
         "sourcing_cost": np.nan,
         "sourcing_time": np.nan,
         "data_type": "Registered Document",
-        "normalized_unit_configuration": df.get("unit_configuration", pd.NA),
         "city_name": target_city_name.title(),
         "project_stage": pd.NA,
-        "is_llm_processed": "Yes",
-        "is_manual_processed": "No",
-        "buyer_pincode": pd.NA,
-        "buyer_locality": pd.NA,
-        "buyer_district": pd.NA,
-        "buyer_state": pd.NA,
+        "is_llm_processed": "Yes"
     }
 
     for col, value in defaults.items():
         if col not in df.columns:
             df[col] = value
+    df["normalized_unit_configuration"] = df["unit_configuration"].apply(map_unit)
 
     # ============================================================
-    # STEP 13 - Assign NR Indexes via PostgreSQL
+    # STEP 12 - Assign NR Indexes via PostgreSQL
     # ============================================================
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 13/20] Assigning NR Indexes for {target_city_name} (ID: {target_city_id})...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 12/19] Assigning NR Indexes for {target_city_name} (ID: {target_city_id})...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
     df = assign_nr_indexes(
         df, target_city_id=target_city_id, db_params=DB_PARAMS
     )
-    print(f"{GREEN}✓ [STEP 13/20] NR assignment complete.{RESET}")
+    print(f"{GREEN}✓ [STEP 12/19] NR assignment complete.{RESET}")
 
     # ============================================================
-    # STEP 14 - Fetch Location Latitude & Longitude from DB
+    # STEP 13 - Fetch Location Latitude & Longitude from DB
     # ============================================================
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 14/20] Populating Location Coordinates from DB...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 13/19] Populating Location Coordinates from DB...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     df = populate_location_coords(df, target_city_id, DB_PARAMS)
-    print(f"{GREEN}✓ [STEP 14/20] Location LatLong populated.{RESET}")
-
-    # # ============================================================
-    # # STEP 15 - Fill remaining project coordinates using Google Places API
-    # # ============================================================
-    # print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    # print(f"{HEADER}{BOLD}   ⏳ [STEP 15/20] Populating Project Coordinates (Google Places API)...{RESET}")
-    # print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-    # from project_coordinates import populate_project_coordinates
-    # df = populate_project_coordinates(df)
-    # print(f"{GREEN}✓ [STEP 15/20] Project Coordinates completed.{RESET}")
+    print(f"{GREEN}✓ [STEP 13/19] Location LatLong populated.{RESET}")
 
     # ============================================================
-    # STEP 16 - Filter & Order Selective DB Columns
+    # STEP 14 - Fill remaining project coordinates using Google Places API
     # ============================================================
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 16/20] Filtering and ordering columns according to DB schema...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 14/19] Populating Project Coordinates (Google Places API)...{RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+    from project_coordinates import populate_project_coordinates
+    df = populate_project_coordinates(df)
+    print(f"{GREEN}✓ [STEP 14/19] Project Coordinates completed.{RESET}")
+
+    # ============================================================
+    # STEP 15 - Filter & Order Selective DB Columns
+    # ============================================================
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 15/19] Filtering and ordering columns according to DB schema...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from db_columns import DB_SEQUENCE
     df = keep_db_columns(df, DB_SEQUENCE)
-    print(f"{GREEN}✓ [STEP 16/20] DB columns filtering and ordering completed ({len(df.columns)} columns retained).{RESET}")
+    print(f"{GREEN}✓ [STEP 15/19] DB columns filtering and ordering completed ({len(df.columns)} columns retained).{RESET}")
 
     # ============================================================
-    # STEP 17 - Title Case For all text columns
+    # STEP 16 - Title Case For all text columns
     # ============================================================
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 17/20] Applying Title Case to text columns...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 16/19] Applying Title Case to text columns...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     for col in df.select_dtypes(include=["object"]).columns:
         df[col] = df[col].apply(lambda x: x.title() if isinstance(x, str) else x)
-    print(f"{GREEN}✓ [STEP 17/20] Title Case applied successfully.{RESET}")
+    print(f"{GREEN}✓ [STEP 16/19] Title Case applied successfully.{RESET}")
 
     # ============================================================
-    # STEP 18 - FINAL OUTPUT SAVE (GOOGLE DRIVE & LOCAL)
+    # STEP 17 - FINAL OUTPUT SAVE (GOOGLE DRIVE & LOCAL)
     # ============================================================
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   📁 [STEP 18/20] FINAL OUTPUT SAVE{RESET}")
+    print(f"{HEADER}{BOLD}   📁 [STEP 17/19] FINAL OUTPUT SAVE{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
     # Derive default output filename based on input or manual corrected file
@@ -1534,7 +1802,7 @@ if pipeline_mode in ["1", "2"]:
         else (input_file if ("input_file" in locals() and input_file) else "output.xlsx")
     )
     base_name = os.path.splitext(os.path.basename(source_file))[0]
-    for suffix in ["_for_manual", "_processed_v1", "_processed", "_llm_output", "_Merged_File", "_merged_file", "_merged"]:
+    for suffix in ["_final_processed", "_for_manual", "_processed_v1", "_processed", "_llm_output", "_Merged_File", "_merged_file", "_merged"]:
         base_name = base_name.replace(suffix, "")
     default_filename = f"{base_name}_final_processed.xlsx"
 
@@ -1542,11 +1810,7 @@ if pipeline_mode in ["1", "2"]:
     drive_folder_path = resolve_drive_directory(DEFAULT_DRIVE_FOLDER_URL)
 
     # Determine location name for folder creation
-    location_name = (
-        selected_location
-        if ("selected_location" in globals() and selected_location)
-        else os.path.basename(os.path.dirname(source_file))
-    )
+    location_name = selected_location or os.path.basename(os.path.dirname(source_file))
     if not location_name or location_name.lower() in ["3. manually corrected", "2. llm processed data", "required_files", "processing"]:
         location_name = base_name
 
@@ -1663,6 +1927,33 @@ if pipeline_mode in ["1", "2"]:
                 #         print(f"{BLUE}ℹ (Local backup skipped: {backup_err}){RESET}")
 
             print(f"\n{GREEN}{BOLD}🎉 Pipeline Execution Completed Successfully!{RESET}")
+
+            # Automatically share final processed file with checker (Deeksha) in background
+            import threading
+            print(f"\n{CYAN}📧 [Auto-Share] Sending final processed file to checker (deeksha@sigmavalue.co.in) in background...{RESET}")
+
+            def _send_checker_bg(fpath, cname, lname, rcount, durl):
+                try:
+                    res = send_final_checker_email(
+                        file_path=fpath,
+                        city_name=cname,
+                        location_name=lname,
+                        row_count=rcount,
+                        drive_url=durl,
+                        checker_email="deeksha@sigmavalue.co.in",
+                    )
+                    att_note = " (with Excel attached)" if res.get("attached") else " (with Google Drive link)"
+                    print(f"\n{GREEN}✓ [Auto-Share] Email successfully sent to checker deeksha@sigmavalue.co.in{att_note}!{RESET}\n")
+                except Exception as mail_err:
+                    print(f"\n{YELLOW}⚠️ [Auto-Share] Note: Unable to email checker ({mail_err}){RESET}\n")
+
+            drive_share_url = DEFAULT_DRIVE_FOLDER_URL
+            threading.Thread(
+                target=_send_checker_bg,
+                args=(output_path, target_city_name, location_name, len(df), drive_share_url),
+                daemon=False,
+            ).start()
+
             break
         except PermissionError:
             print(
@@ -1672,55 +1963,56 @@ if pipeline_mode in ["1", "2"]:
             print(f"\n{RED}❌ Error saving file ({e}). Please try entering a different path.{RESET}")
 
 # ============================================================
-# VERIFY FINAL PROCESSED FILE BEFORE STEP 19
+# VERIFY FINAL PROCESSED FILE BEFORE STEP 18
 # ============================================================
-print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-print(f"{HEADER}{BOLD}   🔍 VERIFICATION: FINAL PROCESSED FILE REVIEW{RESET}")
-print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-print(f"  {CYAN}📄 Final Processed File:{RESET} {BOLD}{output_path}{RESET}")
-
 proceed_parquet = False
-while True:
-    is_correct = input(
-        f"\n{YELLOW}Is the final processed file correct? (y/n / enter corrected path / 'corrected') [default: y]: {RESET}"
-    ).strip().strip('"')
+if pipeline_mode != "4":
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   🔍 VERIFICATION: FINAL PROCESSED FILE REVIEW{RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"  {CYAN}📄 Final Processed File:{RESET} {BOLD}{output_path if 'output_path' in locals() else 'N/A'}{RESET}")
 
-    if not is_correct or is_correct.lower() in ["y", "yes", "correct", "corrected"]:
-        print(f"{GREEN}✓ Final processed file confirmed! Proceeding to Parquet conversion...{RESET}")
-        proceed_parquet = True
-        break
-    elif is_correct.lower() in ["skip", "cancel"]:
-        print(f"{BLUE}ℹ Parquet conversion skipped.{RESET}")
-        proceed_parquet = False
-        break
-    elif is_correct.lower() in ["n", "no"]:
-        corrected_input = input(f"{YELLOW}Please provide the path to the corrected file (or type 'skip' to skip conversion): {RESET}").strip().strip('"')
-        if corrected_input.lower() in ["skip", "cancel", "n", "no", ""]:
+    while True:
+        is_correct = input(
+            f"\n{YELLOW}Is the final processed file correct? (y/n / enter corrected path / 'corrected') [default: y]: {RESET}"
+        ).strip().strip('"')
+
+        if not is_correct or is_correct.lower() in ["y", "yes", "correct", "corrected"]:
+            print(f"{GREEN}✓ Final processed file confirmed! Proceeding to Parquet conversion...{RESET}")
+            proceed_parquet = True
+            break
+        elif is_correct.lower() in ["skip", "cancel"]:
             print(f"{BLUE}ℹ Parquet conversion skipped.{RESET}")
             proceed_parquet = False
             break
-        elif os.path.exists(corrected_input):
-            output_path = corrected_input
+        elif is_correct.lower() in ["n", "no"]:
+            corrected_input = input(f"{YELLOW}Please provide the path to the corrected file (or type 'skip' to skip conversion): {RESET}").strip().strip('"')
+            if corrected_input.lower() in ["skip", "cancel", "n", "no", ""]:
+                print(f"{BLUE}ℹ Parquet conversion skipped.{RESET}")
+                proceed_parquet = False
+                break
+            elif os.path.exists(corrected_input):
+                output_path = corrected_input
+                print(f"{GREEN}✓ Corrected file accepted: {output_path}. Proceeding to Parquet conversion...{RESET}")
+                proceed_parquet = True
+                break
+            else:
+                print(f"{RED}❌ File not found: '{corrected_input}'. Please try again.{RESET}")
+        elif os.path.exists(is_correct):
+            output_path = is_correct
             print(f"{GREEN}✓ Corrected file accepted: {output_path}. Proceeding to Parquet conversion...{RESET}")
             proceed_parquet = True
             break
         else:
-            print(f"{RED}❌ File not found: '{corrected_input}'. Please try again.{RESET}")
-    elif os.path.exists(is_correct):
-        output_path = is_correct
-        print(f"{GREEN}✓ Corrected file accepted: {output_path}. Proceeding to Parquet conversion...{RESET}")
-        proceed_parquet = True
-        break
-    else:
-        print(f"{RED}❌ Invalid input '{is_correct}'. Please enter 'y' / 'corrected', 'n', or provide the corrected file path.{RESET}")
+            print(f"{RED}❌ Invalid input '{is_correct}'. Please enter 'y' / 'corrected', 'n', or provide the corrected file path.{RESET}")
 
 # ============================================================
-# STEP 19 - Parquet Conversion
+# STEP 18 - Parquet Conversion
 # ============================================================
 
 if proceed_parquet:
     print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-    print(f"{HEADER}{BOLD}   ⏳ [STEP 19/20] Converting Final Processed File to Parquet...{RESET}")
+    print(f"{HEADER}{BOLD}   ⏳ [STEP 18/20] Converting Final Processed File to Parquet...{RESET}")
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from parquet_conersion import convert_csv_to_parquet
 
@@ -1739,50 +2031,189 @@ if proceed_parquet:
             date_cols=["transaction_date", "date_of_agreement_execution"],
         )
 
-        print(f"{GREEN}✓ [STEP 19/20] Parquet conversion completed successfully!{RESET}")
+        print(f"{GREEN}✓ [STEP 18/20] Parquet conversion completed successfully!{RESET}")
         print(f"  {CYAN}📊 Parquet Summary:{RESET} {result}")
     except Exception as pe:
-        print(f"{RED}❌ [STEP 19/20] Error converting to Parquet: {pe}{RESET}")
-else:
-    print(f"\n{YELLOW}⚠️ [STEP 19/20] Parquet conversion skipped.{RESET}")
+        print(f"{RED}❌ [STEP 18/20] Error converting to Parquet: {pe}{RESET}")
+elif pipeline_mode != "4":
+    print(f"\n{YELLOW}⚠️ [STEP 18/20] Parquet conversion skipped.{RESET}")
 
 # ============================================================
-# STEP 20 - Trigger Database Upload Pipeline (final_code.py)
+# STEP 19 - Trigger Database Upload Pipeline (final_code.py)
+# ============================================================
+if pipeline_mode != "4":
+    import subprocess
+    from pathlib import Path
+
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   🚀 [STEP 19/20] Triggering Database Upload Pipeline...{RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+
+    # Resolve path to DB1_DB2_Uploading_Pipeline root directory
+    project_root = Path(__file__).resolve().parents[2]
+    final_code_path = project_root / "final_code.py"
+
+    # Fallback to central pipeline repository if executed from a task-specific directory
+    if not final_code_path.exists():
+        central_dir = Path(r"E:\Nilesh\Database\DB1_DB2_Uploading_Pipeline")
+        if (central_dir / "final_code.py").exists():
+            project_root = central_dir
+            final_code_path = central_dir / "final_code.py"
+
+    if not final_code_path.exists():
+        print(f"{RED}❌ Error: Could not locate final_code.py at: {final_code_path}{RESET}")
+    else:
+        # Optional: Prompt user before triggering upload
+        trigger = input(f"\n{YELLOW}Do you want to run final_code.py now? (y/n) [default: y]: {RESET}").strip().lower()
+        if trigger in ("", "y", "yes"):
+            try:
+                # sys.executable ensures the same virtual environment (venv) is used
+                subprocess.run([sys.executable, str(final_code_path)], cwd=str(project_root), check=True)
+                print(f"\n{GREEN}{BOLD}🎉 final_code.py finished successfully!{RESET}")
+            except subprocess.CalledProcessError as e:
+                print(f"\n{RED}❌ final_code.py exited with error code: {e.returncode}{RESET}")
+            except KeyboardInterrupt:
+                print(f"\n{YELLOW}⚠️ final_code.py execution interrupted by user.{RESET}")
+        else:
+            print(f"{BLUE}ℹ Database upload skipped.{RESET}")
+
+# ============================================================
+# STEP 20 - Outlier Implementation on Updated Location
 # ============================================================
 import subprocess
 from pathlib import Path
 
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
-print(f"{HEADER}{BOLD}   🚀 [STEP 20/20] Triggering Database Upload Pipeline...{RESET}")
+print(f"{HEADER}{BOLD}   📊 [STEP 20/20] Outlier Detection & Database Update...{RESET}")
 print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
 
-# Resolve path to DB1_DB2_Uploading_Pipeline root directory
-project_root = Path(__file__).resolve().parents[2]
-final_code_path = project_root / "final_code.py"
+# Resolve target city
+city_id_to_process = (
+    target_city_id
+    if ("target_city_id" in locals() and target_city_id)
+    else (CURRENT_CITY_CONFIG.get("city_id", 8) if CURRENT_CITY_CONFIG else 8)
+)
+city_name_to_process = (
+    target_city_name
+    if ("target_city_name" in locals() and target_city_name)
+    else (CURRENT_CITY_CONFIG.get("display_name", "Mumbai") if CURRENT_CITY_CONFIG else "Mumbai")
+)
 
-# Fallback to central pipeline repository if executed from a task-specific directory
-if not final_code_path.exists():
-    central_dir = Path(r"E:\Nilesh\Database\DB1_DB2_Uploading_Pipeline")
-    if (central_dir / "final_code.py").exists():
-        project_root = central_dir
-        final_code_path = central_dir / "final_code.py"
+# Resolve target location
+loc_candidate = None
+if "location_name" in locals() and location_name:
+    loc_candidate = location_name
+elif "selected_location" in globals() and selected_location:
+    loc_candidate = selected_location
+elif "output_path" in locals() and output_path:
+    parent_dir = os.path.basename(os.path.dirname(output_path))
+    if parent_dir and parent_dir.lower() not in ["4. final processed file", "final processed file", "processing"]:
+        loc_candidate = parent_dir
 
-if not final_code_path.exists():
-    print(f"{RED}❌ Error: Could not locate final_code.py at: {final_code_path}{RESET}")
+loc_display = loc_candidate if loc_candidate else "All Locations"
+print(f"  {CYAN}🏙️  Target City :{RESET} {BOLD}{city_name_to_process}{RESET} (City ID: {city_id_to_process})")
+print(f"  {CYAN}🗄️  Database    :{RESET} {BOLD}{DB_PARAMS.get('database', 'nilesh')}{RESET}")
+if loc_candidate:
+    print(f"  {CYAN}📍 Detected Location:{RESET} {BOLD}{loc_candidate}{RESET}")
+
+print(f"\n{HEADER}{'-' * 60}{RESET}")
+print(f"{CYAN}Select Outlier Scope for {city_name_to_process}:{RESET}")
+if loc_candidate:
+    print(f"  {CYAN}[1]{RESET} Current detected location ({BOLD}{loc_candidate}{RESET})")
+    print(f"  {CYAN}[2]{RESET} Enter specific location(s) (comma-separated, e.g. 'Andheri, Bandra')")
+    print(f"  {CYAN}[3]{RESET} ALL locations in {city_name_to_process} (whole city)")
+    print(f"  {CYAN}[0]{RESET} Skip / Cancel")
+    print(f"{HEADER}{'-' * 60}{RESET}")
+    scope_choice = input(f"\n{YELLOW}Select option (1, 2, 3, or 0 / enter location name(s)) [default: 1]: {RESET}").strip()
 else:
-    # Optional: Prompt user before triggering upload
-    trigger = input(f"\n{YELLOW}Do you want to run final_code.py now? (y/n) [default: y]: {RESET}").strip().lower()
-    if trigger in ("", "y", "yes"):
-        try:
-            # sys.executable ensures the same virtual environment (venv) is used
-            subprocess.run([sys.executable, str(final_code_path)], cwd=str(project_root), check=True)
-            print(f"\n{GREEN}{BOLD}🎉 final_code.py finished successfully!{RESET}")
-        except subprocess.CalledProcessError as e:
-            print(f"\n{RED}❌ final_code.py exited with error code: {e.returncode}{RESET}")
-        except KeyboardInterrupt:
-            print(f"\n{YELLOW}⚠️ final_code.py execution interrupted by user.{RESET}")
+    print(f"  {CYAN}[1]{RESET} Specific location(s) (enter name(s), e.g. 'Andheri' or 'Andheri, Bandra')")
+    print(f"  {CYAN}[2]{RESET} ALL locations in {city_name_to_process} (whole city)")
+    print(f"  {CYAN}[0]{RESET} Skip / Cancel")
+    print(f"{HEADER}{'-' * 60}{RESET}")
+    scope_choice = input(f"\n{YELLOW}Select option (1, 2, or 0 / enter location name(s)) [default: 1]: {RESET}").strip()
+
+loc_to_process = None
+skip_outlier = False
+
+if loc_candidate:
+    if scope_choice in ["1", "", "y", "yes", "current"]:
+        loc_to_process = loc_candidate
+    elif scope_choice == "2":
+        while True:
+            custom_loc = input(f"\n{YELLOW}Enter specific location(s) for {city_name_to_process} (comma-separated): {RESET}").strip().strip('"')
+            if custom_loc:
+                loc_to_process = custom_loc
+                break
+            print(f"{RED}❌ Location name cannot be empty. Please enter valid location name(s).{RESET}")
+    elif scope_choice in ["3", "all", "*"]:
+        loc_to_process = None
+    elif scope_choice in ["0", "skip", "cancel", "n", "no"]:
+        skip_outlier = True
     else:
-        print(f"{BLUE}ℹ Database upload skipped.{RESET}")
+        # User directly typed location name(s)
+        loc_to_process = scope_choice
+else:
+    if scope_choice in ["1", ""]:
+        while True:
+            custom_loc = input(f"\n{YELLOW}Enter specific location(s) for {city_name_to_process} (comma-separated, or 'all' for whole city): {RESET}").strip().strip('"')
+            if custom_loc.lower() in ["all", "*", "none"]:
+                loc_to_process = None
+                break
+            elif custom_loc:
+                loc_to_process = custom_loc
+                break
+            print(f"{RED}❌ Location name cannot be empty.{RESET}")
+    elif scope_choice in ["2", "all", "*"]:
+        loc_to_process = None
+    elif scope_choice in ["0", "skip", "cancel", "n", "no"]:
+        skip_outlier = True
+    else:
+        # User directly typed location name(s)
+        loc_to_process = scope_choice
+
+if not skip_outlier:
+    scope_str = f"location(s)='{loc_to_process}'" if loc_to_process else f"ALL locations in {city_name_to_process}"
+    print(f"\n{CYAN}⏳ Starting outlier update for {BOLD}{scope_str}{RESET}{CYAN} (city_id={city_id_to_process})...{RESET}")
+
+    # Optional prompt to save merged df to Excel
+    save_prompt = input(f"\n{YELLOW}Do you want to save the detailed merged outlier Excel report? (y/n) [default: n]: {RESET}").strip().lower()
+    save_path = None
+    if save_prompt in ["y", "yes"]:
+        loc_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(loc_to_process)).strip("_")[:50] if loc_to_process else "all_locations"
+        outlier_dir = Path(__file__).resolve().parent / "Outlier_implementation"
+        if not outlier_dir.exists():
+            root_alt = Path(__file__).resolve().parents[1] / "outlier_implementaion"
+            outlier_dir = outlier_dir if not root_alt.exists() else root_alt
+        outlier_dir.mkdir(parents=True, exist_ok=True)
+        save_path = str(outlier_dir / f"outliers_{city_name_to_process.lower()}_{loc_slug}.xlsx")
+        print(f"  {CYAN}📄 Merged report will be saved to:{RESET} {save_path}")
+
+    try:
+        from outlier_update import main as run_outlier_main
+        run_outlier_main(
+            city_id=city_id_to_process,
+            location_name=loc_to_process,
+            db_params=DB_PARAMS,
+            save_merged_path=save_path,
+        )
+        print(f"\n{GREEN}{BOLD}🎉 [STEP 20/20] Outlier detection & database update finished successfully!{RESET}")
+    except ImportError:
+        # Fallback to subprocess if import fails
+        outlier_script = Path(__file__).resolve().parent / "outlier_update.py"
+        if outlier_script.exists():
+            cmd = [sys.executable, str(outlier_script), "--city_id", str(city_id_to_process)]
+            if loc_to_process:
+                cmd.extend(["--location", str(loc_to_process)])
+            if save_path:
+                cmd.extend(["--save_excel", str(save_path)])
+            subprocess.run(cmd, cwd=str(Path(__file__).resolve().parent), check=True)
+            print(f"\n{GREEN}{BOLD}🎉 [STEP 20/20] outlier_update.py finished successfully via subprocess!{RESET}")
+        else:
+            print(f"{RED}❌ Error: Could not locate outlier_update.py at: {outlier_script}{RESET}")
+    except Exception as oe:
+        print(f"\n{RED}❌ [STEP 20/20] Error executing outlier update: {oe}{RESET}")
+else:
+    print(f"{BLUE}ℹ Outlier update skipped.{RESET}")
 
 
 

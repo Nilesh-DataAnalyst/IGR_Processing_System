@@ -7,7 +7,7 @@ import threading
 import traceback
 from pathlib import Path
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 try:
     from http.server import ThreadingHTTPServer as HTTPServerClass
 except ImportError:
@@ -24,7 +24,7 @@ os.chdir(CURR_DIR)
 sys.path.insert(0, CURR_DIR)
 
 import pipeline_core as core
-from city_config import CITY_CONFIG, get_city_config, extract_folder_id
+from city_config import CITY_CONFIG, get_city_config, extract_folder_id, get_manual_correction_drive_url, LOCATION_DRIVE_CONFIG, render_correction_email_html, get_google_drive_file_url, get_clean_drive_path, send_final_checker_email
 from DictToColumn import process_dict_to_column
 from static import result_dict
 from transaction_categorizer import categorise
@@ -40,19 +40,20 @@ WEB_DIR = os.path.join(CURR_DIR, "web")
 # ============================================================
 # GOOGLE DRIVE CONFIGURATION & CONSTANTS
 # ============================================================
-_DEFAULT_PUNE_CFG = get_city_config("pune")
-DEFAULT_DRIVE_FOLDER_URL = _DEFAULT_PUNE_CFG["final_drive_url"]
-DEFAULT_DRIVE_FOLDER_ID = _DEFAULT_PUNE_CFG["final_drive_id"]
+# Google Drive configuration (initialized to None; resolved dynamically per request / selected city)
+DEFAULT_DRIVE_FOLDER_URL = None
+DEFAULT_DRIVE_FOLDER_ID = None
 
-DEFAULT_INPUT_DRIVE_FOLDER_URL = _DEFAULT_PUNE_CFG["input_drive_url"]
-DEFAULT_INPUT_DRIVE_FOLDER_ID = _DEFAULT_PUNE_CFG["input_drive_id"]
+DEFAULT_INPUT_DRIVE_FOLDER_URL = None
+DEFAULT_INPUT_DRIVE_FOLDER_ID = None
 
-DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL = _DEFAULT_PUNE_CFG["manual_correction_drive_url"]
-DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_ID = _DEFAULT_PUNE_CFG["manual_correction_drive_id"]
+DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL = None
+DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_ID = None
 
 
-def resolve_drive_directory(drive_target: str = DEFAULT_DRIVE_FOLDER_URL) -> str:
+def resolve_drive_directory(drive_target: str = None) -> str:
     """Resolves a Google Drive folder URL, folder ID, or local Drive path to a writable local directory on G:."""
+    drive_target = drive_target or (DEFAULT_DRIVE_FOLDER_URL if "DEFAULT_DRIVE_FOLDER_URL" in globals() else None)
     if not drive_target or not str(drive_target).strip():
         return None
 
@@ -97,13 +98,18 @@ def resolve_drive_directory(drive_target: str = DEFAULT_DRIVE_FOLDER_URL) -> str
 
 
 def resolve_manual_correction_directory(
-    drive_target: str = DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL,
+    drive_target: str = None,
     location_name: str = None,
 ) -> str:
     """
     Resolves the Google Drive folder for Manually Corrected files.
     If location_name is given, ensures a subfolder for that location is created and returned.
     """
+    if not drive_target:
+        drive_target = get_manual_correction_drive_url(
+            location_name=location_name
+        ) or (DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL if "DEFAULT_MANUAL_CORRECTION_DRIVE_FOLDER_URL" in globals() else None)
+
     if not drive_target or not str(drive_target).strip():
         return None
 
@@ -134,22 +140,51 @@ def resolve_manual_correction_directory(
     elif os.path.isdir(clean_target):
         manual_root = clean_target
 
+    # Fallback to general city manual correction folder if specific location shortcut ID is not mounted on G:
+    if not manual_root or not os.path.exists(manual_root):
+        mumbai_mc_id = extract_folder_id(CITY_CONFIG["mumbai"]["manual_correction_drive_url"])
+        mumbai_base = os.path.join(r"G:\.shortcut-targets-by-id", mumbai_mc_id)
+        if os.path.exists(mumbai_base):
+            sub_items = [
+                os.path.join(mumbai_base, d)
+                for d in os.listdir(mumbai_base)
+                if os.path.isdir(os.path.join(mumbai_base, d))
+            ]
+            for sub in sub_items:
+                if "manually corrected" in os.path.basename(sub).lower():
+                    manual_root = sub
+                    break
+            if not manual_root:
+                manual_root = sub_items[0] if sub_items else mumbai_base
+
     if not manual_root or not os.path.exists(manual_root):
         return None
 
     if location_name:
-        loc_dir = os.path.join(manual_root, location_name)
+        loc_str = str(location_name).strip()
+        loc_key = loc_str.lower()
+        # If the target folder is already the dedicated folder for this location (e.g. Bandra folder)
+        is_dedicated_loc_folder = False
+        if loc_key in LOCATION_DRIVE_CONFIG:
+            dedicated_id = extract_folder_id(LOCATION_DRIVE_CONFIG[loc_key].get("manual_correction_drive_url"))
+            if dedicated_id and dedicated_id.lower() == folder_id.lower():
+                is_dedicated_loc_folder = True
+
+        if is_dedicated_loc_folder or os.path.basename(manual_root).lower() == loc_key:
+            return manual_root
+
+        loc_dir = os.path.join(manual_root, loc_str)
         os.makedirs(loc_dir, exist_ok=True)
         return loc_dir
 
     return manual_root
 
 
-def scan_drive_locations(drive_target: str) -> list:
+def scan_drive_locations(drive_target: str, city_identifier: str | int = None) -> list:
     """
     Scans a Google Drive shortcut target or folder for location-wise subfolders and Excel/CSV files.
     Returns a list of dicts:
-    [{ "location": loc_name, "folder_path": path, "files": [ { "name": filename, "path": full_path } ] }]
+    [{ "location": loc_name, "folder_path": path, "drive_url": url, "files": [ { "name": filename, "path": full_path } ] }]
     """
     if not drive_target or not str(drive_target).strip():
         return []
@@ -170,9 +205,12 @@ def scan_drive_locations(drive_target: str) -> list:
             for d in os.listdir(base_shortcut_path)
             if os.path.isdir(os.path.join(base_shortcut_path, d))
         ]
-        if sub_dirs:
-            scan_root = sub_dirs[0]
-        else:
+        # Look for category subfolders like '3. Manually Corrected' or '2. LLM Processed Data'
+        for sub in sub_dirs:
+            if any(term in os.path.basename(sub).lower() for term in ["manually corrected", "llm processed", "final processed"]):
+                scan_root = sub
+                break
+        if not scan_root:
             scan_root = base_shortcut_path
     elif os.path.isdir(clean_target):
         scan_root = clean_target
@@ -180,9 +218,30 @@ def scan_drive_locations(drive_target: str) -> list:
     if not scan_root or not os.path.exists(scan_root):
         return []
 
+    # Check if folder itself is a dedicated location folder (e.g. Bandra)
+    dedicated_loc_name = None
+    for loc_k, loc_v in LOCATION_DRIVE_CONFIG.items():
+        if extract_folder_id(loc_v.get("manual_correction_drive_url")).lower() == folder_id.lower():
+            dedicated_loc_name = loc_v.get("display_name", loc_k.title())
+            break
+
     valid_exts = (".xlsx", ".xls", ".csv")
     location_dict = {}
 
+    if dedicated_loc_name:
+        excel_files = [
+            f for f in os.listdir(scan_root)
+            if f.lower().endswith(valid_exts) and not f.startswith("~$")
+        ]
+        if excel_files:
+            return [{
+                "location": dedicated_loc_name,
+                "folder_path": scan_root,
+                "drive_url": drive_target,
+                "files": [{"name": f, "path": os.path.join(scan_root, f)} for f in sorted(excel_files)],
+            }]
+
+    # 1. Walk through to find folders with Excel files
     for root, dirs, files in os.walk(scan_root):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         excel_files = [
@@ -192,25 +251,55 @@ def scan_drive_locations(drive_target: str) -> list:
         if excel_files:
             loc_name = os.path.basename(root)
             if loc_name.lower() != os.path.basename(scan_root).lower():
+                loc_drive_url = get_manual_correction_drive_url(city_identifier=city_identifier, location_name=loc_name)
                 location_dict[loc_name] = {
                     "location": loc_name,
                     "folder_path": root,
+                    "drive_url": loc_drive_url or drive_target,
                     "files": [{"name": f, "path": os.path.join(root, f)} for f in sorted(excel_files)],
                 }
 
-    if not location_dict:
+    # 2. Also register any direct subdirectories of scan_root that represent locations
+    try:
+        for d in os.listdir(scan_root):
+            d_path = os.path.join(scan_root, d)
+            if os.path.isdir(d_path) and not d.startswith(".") and not d.startswith("~$"):
+                d_lower = d.lower()
+                if d_lower not in ["system volume information", "$recycle.bin", "temp", "archive", "old"]:
+                    if d not in location_dict:
+                        sub_files = [
+                            f for f in os.listdir(d_path)
+                            if f.lower().endswith(valid_exts) and not f.startswith("~$")
+                        ] if os.path.exists(d_path) else []
+                        location_dict[d] = {
+                            "location": d,
+                            "folder_path": d_path,
+                            "drive_url": get_manual_correction_drive_url(city_identifier=city_identifier, location_name=d) or drive_target,
+                            "files": [{"name": f, "path": os.path.join(d_path, f)} for f in sorted(sub_files)],
+                        }
+    except Exception:
+        pass
+
+    # 3. Always register root-level files (e.g. 'final merge file.xlsx') if present in scan_root
+    try:
         root_files = [
             f for f in os.listdir(scan_root)
-            if f.lower().endswith(valid_exts) and not f.startswith("~$")
+            if os.path.isfile(os.path.join(scan_root, f))
+            and f.lower().endswith(valid_exts)
+            and not f.startswith("~$")
         ]
         if root_files:
-            location_dict["General"] = {
-                "location": "General",
+            loc_name = dedicated_loc_name or "★ Final Merged File (Root)"
+            location_dict[loc_name] = {
+                "location": loc_name,
                 "folder_path": scan_root,
+                "drive_url": drive_target,
                 "files": [{"name": f, "path": os.path.join(scan_root, f)} for f in sorted(root_files)],
             }
+    except Exception:
+        pass
 
-    return sorted(list(location_dict.values()), key=lambda x: x["location"])
+    return sorted(list(location_dict.values()), key=lambda x: (0 if "Merged" in x["location"] or "Root" in x["location"] else 1, x["location"]))
 
 
 def extract_pincode(text):
@@ -281,6 +370,94 @@ def format_deadline_text(deadline: str = None) -> tuple:
     return body_line, subject_tag, formatted
 
 
+def build_correction_email_content(
+    loc_intro: str,
+    file_name: str,
+    drive_url: str,
+    file_path: str,
+    deadline_body: str = "",
+    formatted_dl: str = None,
+    is_attachment: bool = False,
+    file_url: str = None,
+    drive_path: str = None,
+) -> tuple:
+    """Builds both plain-text and HTML versions of the manual correction email with bold formatting."""
+    delivery_note_plain = "Please find the file attached with this email." if is_attachment else "Please access the file directly from Google Drive using the link above."
+    delivery_note_html = "📎 <strong>Please find the file attached with this email.</strong>" if is_attachment else "🌐 <strong>Please access the file directly from Google Drive using the link above.</strong>"
+
+    deadline_banner_html = ""
+    if formatted_dl:
+        deadline_banner_html = f"""
+        <div style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 10px 14px; margin: 14px 0; border-radius: 4px; font-size: 13.5px;">
+            <strong style="color: #b45309;">⏰ Expected Deadline:</strong> <span style="color: #92400e; font-weight: 600;">{formatted_dl}</span>
+        </div>
+        """
+
+    if not file_url:
+        file_url = get_google_drive_file_url(file_path) or drive_url
+    if not drive_path:
+        drive_path = get_clean_drive_path(file_path)
+
+    plain_text = f"""Hello,
+
+{loc_intro} is ready for review.{deadline_body}
+📄 File: {file_name}
+🔗 Direct File Link: {file_url}
+📁 Drive Location: {drive_path}
+
+{delivery_note_plain}
+
+Please review and correct the following fields:
+
+Project Name :-
+• Keep the project name clean and consistent with the original Property Details.
+• Remove unnecessary suffixes such as CHS, Building, Phase, etc.
+• Do not use English-translated names generated by the LLM. For example, if the Property Details mention “Swapnapoorti”, retain “Swapnapoorti” instead of “Dream Fulfillment.”
+• Remove values such as Shop No., Room No., Gat No., Survey No., etc., if they have been incorrectly captured as the project name.
+
+Net Carpet Area :-
+• Review net_carpet_area only for Sale transactions.
+• Where multiple areas are mentioned, such as Total Land Area, Owner’s Share, or Sold Portion, select the actual transacted/sold area.
+• If multiple flats/shops are included in the same transaction, add their individual areas and use the total area.
+• Please manually verify records where:
+  - the area unit is not mentioned,
+  - the mentioned unit appears incorrect, or
+  - there is confusion in identifying the correct carpet/transacted area.
+  In such cases, refer carefully to the original Property Details before finalizing the area.
+
+Unit Number & Floor Number :-
+• Review unit_number and floor_number against the original Property Details.
+• unit_number should contain only the actual Flat No., Shop No., Room No., Unit No., etc.
+• floor_number should contain only the actual floor information, such as Ground Floor, 1st Floor, 2nd Floor, etc.
+• Do not consider project/building names, Gat No., Survey No., road names, or other location details as unit or floor numbers.
+
+Example:
+Shop No: Shop No - B 402, Floor No: Prisma L, Building Name: Gat No - 79, Block Sector: Moshi 412105, Road: Borhadewadi, City: Moshi, District: Pune
+In this case, B 402 should be captured as the unit_number. Prisma L should not be considered the floor_number if it represents a building/project name. If the actual floor is not mentioned, keep the floor_number blank.
+
+For better understanding and reference, please refer to the following sheet:
+https://docs.google.com/spreadsheets/d/1q_HORd89098vHCav494NeFej8zHVWyDHWkvkE-B6mmE/edit?gid=1073436546#gid=1073436546
+
+Please complete the review and corrections accordingly.
+
+Best regards,
+Nilesh K.
+"""
+
+    html_text = render_correction_email_html(
+        loc_intro=loc_intro,
+        file_name=file_name,
+        drive_url=drive_url,
+        file_path=file_path,
+        delivery_note_html=delivery_note_html,
+        deadline_banner_html=deadline_banner_html,
+        file_url=file_url,
+        drive_path=drive_path,
+    )
+
+    return plain_text, html_text
+
+
 def send_correction_email(
     file_path: str,
     recipient_emails: list,
@@ -288,6 +465,7 @@ def send_correction_email(
     deadline: str = None,
     drive_url: str = None,
     city_id: int = None,
+    cc_emails: list = None,
 ) -> dict:
     """Sends manual correction file via SMTP with attachment, falling back to link notification."""
     import smtplib
@@ -296,12 +474,40 @@ def send_correction_email(
     from email.mime.base import MIMEBase
     from email import encoders
 
+    if cc_emails is None:
+        cc_emails = [
+            "deeksha@sigmavalue.co.in",
+            #"paryushan@sigmavalue.co.in",
+            #"anurag@sigmavalue.co.in",
+            "nilesh@sigmavalue.co.in",
+        ]
+    # Clean up email lists
+    clean_recipients = [r.strip() for r in recipient_emails if r and r.strip()]
+    clean_cc = [c.strip() for c in (cc_emails or []) if c and c.strip()]
+    all_recipients = list(dict.fromkeys(clean_recipients + clean_cc))
+
     sender_email = "nilesh@sigmavalue.co.in"
     sender_password = "nvlf igcl tyxm nnwo"
     smtp_server = "smtp.gmail.com"
     smtp_port = 587
 
-    if not drive_url:
+    # Infer location_name if missing
+    if not location_name and file_path:
+        parent_candidate = os.path.basename(os.path.dirname(file_path))
+        if parent_candidate and parent_candidate.lower() not in ["3. manually corrected", "processing", "required_files", "data"]:
+            location_name = parent_candidate
+        else:
+            location_name = os.path.splitext(os.path.basename(file_path))[0].split("_")[0]
+
+    # Priority 1: Exact location-specific Google Drive link (e.g. Bandra)
+    exact_loc_url = get_manual_correction_drive_url(
+        city_identifier=city_id or pipeline_state.get("city_id"),
+        location_name=location_name,
+        file_path=file_path,
+    )
+    if exact_loc_url:
+        drive_url = exact_loc_url
+    elif not drive_url:
         cid = city_id or pipeline_state.get("city_id", 9)
         drive_url = get_city_config(cid).get("manual_correction_drive_url") or "Google Drive folder not configured for this city (Local File)"
 
@@ -310,53 +516,99 @@ def send_correction_email(
 
     file_name = os.path.basename(file_path)
     loc_str = f" for {location_name}" if location_name else ""
+    loc_intro = f"The {location_name} manual correction file" if location_name else "The manual correction file"
     deadline_body, deadline_subj, formatted_dl = format_deadline_text(deadline)
 
     try:
-        msg = MIMEMultipart()
+        # Top-level container for mixed content (alternative body parts + attachments)
+        msg = MIMEMultipart("mixed")
         msg["From"] = f"Nilesh <{sender_email}>"
-        msg["To"] = ", ".join(recipient_emails)
+        msg["To"] = ", ".join(clean_recipients)
+        if clean_cc:
+            msg["Cc"] = ", ".join(clean_cc)
         msg["Subject"] = f"[Manual Correction Required]{deadline_subj} {loc_str.strip()} - {file_name}"
 
-        body = f"""Hello,\n\nThe manual correction file{loc_str} is ready for review and manual correction.{deadline_body}\n📄 File: {file_name}\n🌐 Google Drive Folder: {drive_url}\n📂 Local / Drive Path: {file_path}\n\nPlease find the file attached with this email.\n\nBest regards,\nNilesh K\n"""
-        msg.attach(MIMEText(body, "plain"))
+        file_url = get_google_drive_file_url(file_path) or drive_url
+        drive_path = get_clean_drive_path(file_path)
 
-        with open(file_path, "rb") as attachment:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(attachment.read())
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename= {file_name}")
-        msg.attach(part)
+        plain_body, html_body = build_correction_email_content(
+            loc_intro=loc_intro,
+            file_name=file_name,
+            drive_url=drive_url,
+            file_path=file_path,
+            deadline_body=deadline_body,
+            formatted_dl=formatted_dl,
+            is_attachment=False,
+            file_url=file_url,
+            drive_path=drive_path,
+        )
 
-        server = smtplib.SMTP(smtp_server, smtp_port, timeout=300)
+        # Alternative container for plain text and HTML (with bold headers)
+        body_part = MIMEMultipart("alternative")
+        body_part.attach(MIMEText(plain_body, "plain", "utf-8"))
+        body_part.attach(MIMEText(html_body, "html", "utf-8"))
+        msg.attach(body_part)
+
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=60)
         server.ehlo()
         server.starttls()
         server.ehlo()
         server.login(sender_email, sender_password)
-        server.sendmail(sender_email, recipient_emails, msg.as_string())
+        server.sendmail(sender_email, all_recipients, msg.as_string())
         server.quit()
-        return {"status": "sent", "mode": "attachment", "recipients": recipient_emails, "deadline_formatted": formatted_dl}
+        return {
+            "status": "sent",
+            "mode": "link",
+            "recipients": clean_recipients,
+            "cc": clean_cc,
+            "deadline_formatted": formatted_dl,
+            "file_url": file_url,
+        }
     except Exception as err:
-        # Fallback to link-only
-        fallback_msg = MIMEMultipart()
+        # Fallback to link-only multipart/alternative email
+        fallback_msg = MIMEMultipart("alternative")
         fallback_msg["From"] = f"Nilesh <{sender_email}>"
-        fallback_msg["To"] = ", ".join(recipient_emails)
+        fallback_msg["To"] = ", ".join(clean_recipients)
+        if clean_cc:
+            fallback_msg["Cc"] = ", ".join(clean_cc)
         fallback_msg["Subject"] = f"[Manual Correction Required]{deadline_subj} {loc_str.strip()} - {file_name}"
-        fallback_body = f"""Hello,\n\nThe manual correction file{loc_str} is ready for review.{deadline_body}\n📄 File: {file_name}\n🌐 Google Drive Folder: {drive_url}\n📂 File Path: {file_path}\n\nPlease access the file directly from Google Drive using the link above.\n\nBest regards,\nNilesh K\n"""
-        fallback_msg.attach(MIMEText(fallback_body, "plain"))
+
+        file_url = get_google_drive_file_url(file_path) or drive_url
+        drive_path = get_clean_drive_path(file_path)
+        fallback_plain, fallback_html = build_correction_email_content(
+            loc_intro=loc_intro,
+            file_name=file_name,
+            drive_url=drive_url,
+            file_path=file_path,
+            deadline_body=deadline_body,
+            formatted_dl=formatted_dl,
+            is_attachment=False,
+            file_url=file_url,
+            drive_path=drive_path,
+        )
+        fallback_msg.attach(MIMEText(fallback_plain, "plain", "utf-8"))
+        fallback_msg.attach(MIMEText(fallback_html, "html", "utf-8"))
 
         server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
         server.ehlo()
         server.starttls()
         server.ehlo()
         server.login(sender_email, sender_password)
-        server.sendmail(sender_email, recipient_emails, fallback_msg.as_string())
+        server.sendmail(sender_email, all_recipients, fallback_msg.as_string())
         server.quit()
-        return {"status": "sent", "mode": "link_fallback", "recipients": recipient_emails, "deadline_formatted": formatted_dl, "note": f"Sent link notification (attachment failed: {err})"}
+        return {
+            "status": "sent",
+            "mode": "link_fallback",
+            "recipients": clean_recipients,
+            "cc": clean_cc,
+            "deadline_formatted": formatted_dl,
+            "note": f"Sent link notification (fallback: {err})",
+            "file_url": file_url,
+        }
 
 
 def resolve_upload_pipeline_paths():
-    """Resolves project_root and final_code_path for Step 20 and manual launch."""
+    """Resolves project_root and final_code_path for Step 19 and manual launch."""
     project_root = Path(CURR_DIR).resolve().parents[1]
     final_code_path = project_root / "final_code.py"
     if not final_code_path.exists():
@@ -381,27 +633,30 @@ def launch_upload_pipeline_terminal(final_code_path, cwd):
     )
 
 
-# Global Pipeline Runner State
+# Global thread-safe state container
 pipeline_state = {
-    "state": "idle",  # "idle" | "running" | "awaiting_manual_file" | "completed" | "failed" | "stopped"
-    "mode": "1",
-    "city_id": 9,
-    "city_name": "Pune",
-    "city_key": "pune",
+    "state": "idle",             # "idle" | "running" | "awaiting_manual_file" | "awaiting_parquet_confirmation" | "completed" | "failed" | "stopped"
     "current_step_id": 0,
-    "current_step_name": "Ready",
+    "current_step_name": "",
     "progress": 0,
+    "mode": "1",
+    "city_id": None,
+    "city_name": None,
+    "city_key": None,
+    "selected_db": "nilesh",
+    "divisor": None,
     "error": None,
     "output_file": None,
-    "proceed_parquet": True,
-    "parquet_file": None,
-    "final_code_path": None,
     "v1_file": None,
     "manual_file": None,
+    "step7_merge_report": None,
+    "parquet_file": None,
+    "final_code_path": None,
     "location_name": None,
     "metrics": {
         "total_rows": 0,
         "rera_matched": 0,
+        "reused_matched": 0,
         "nr_assigned": 0
     },
     "logs": [],
@@ -414,19 +669,16 @@ pipeline_state = {
         {"id": 5, "name": "Transaction Categorization", "status": "pending", "detail": "Waiting", "duration": "-"},
         {"id": 6, "name": "Standardization & Area Conversion", "status": "pending", "detail": "Waiting", "duration": "-"},
         {"id": 7, "name": "Manual Corrected File Load", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 8, "name": "Net Carpet Area Calculation", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 9, "name": "Column Renaming & Standardizing", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 10, "name": "Property Type Categorization", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 11, "name": "Buyer Location & Pincode Lookup", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 12, "name": "RERA Grand Reference Matching", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 13, "name": "PostgreSQL NR Index Assignment", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 14, "name": "Location Coordinates Lookup", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 15, "name": "Project Coordinates (Google Places API)", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 16, "name": "DB Schema Column Alignment", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 17, "name": "Title Casing", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 18, "name": "Final Output Save (Drive & Local)", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 19, "name": "Parquet Conversion", "status": "pending", "detail": "Waiting", "duration": "-"},
-        {"id": 20, "name": "Database Upload Pipeline", "status": "pending", "detail": "Waiting", "duration": "-"}
+        {"id": 8, "name": "Column Renaming & Standardizing", "status": "pending", "detail": "Waiting", "duration": "-"},
+        {"id": 9, "name": "Property Type Categorization", "status": "pending", "detail": "Waiting", "duration": "-"},
+        {"id": 10, "name": "Buyer Location & Pincode Lookup", "status": "pending", "detail": "Waiting", "duration": "-"},
+        {"id": 11, "name": "RERA Grand Reference Matching", "status": "pending", "detail": "Waiting", "duration": "-"},
+        {"id": 12, "name": "PostgreSQL NR Index Assignment", "status": "pending", "detail": "Waiting", "duration": "-"},
+        {"id": 13, "name": "Location Coordinates Lookup", "status": "pending", "detail": "Waiting", "duration": "-"},
+        {"id": 14, "name": "Project Coordinates (Google Places API)", "status": "pending", "detail": "Waiting", "duration": "-"},
+        {"id": 15, "name": "DB Schema Column Alignment", "status": "pending", "detail": "Waiting", "duration": "-"},
+        {"id": 16, "name": "Title Casing", "status": "pending", "detail": "Waiting", "duration": "-"},
+        {"id": 17, "name": "Final Output Save (Drive & Local)", "status": "pending", "detail": "Waiting", "duration": "-"}
     ]
 }
 
@@ -454,50 +706,754 @@ def update_step_status(step_id, status, detail=None, duration=None):
                 break
 
 
+def run_dubai_pipeline(params):
+    """
+    Dedicated 2-step workflow for Dubai (City ID: 15):
+    Step 1: Scraping via dubai_scraper.py
+    Step 2: Processing via dld_pipeline.py
+    Streams stdout in real-time to the web dashboard console via add_log().
+    """
+    global pipeline_state
+
+    city_cfg = get_city_config("dubai")
+    city_id = 15
+    city_name = "Dubai"
+
+    dubai_dir = os.path.join(CURR_DIR, "Dubai_processing")
+    scraper_path = os.path.join(dubai_dir, "dubai_scraper.py")
+    pipeline_path = os.path.join(dubai_dir, "dld_pipeline.py")
+
+    from_date = params.get("from_date")
+    to_date = params.get("to_date")
+    skip_scraping = params.get("skip_scraping", False)
+    skip_processing = params.get("skip_processing", False)
+
+    dubai_steps = [
+        {
+            "id": 1,
+            "name": "Dubai Portal Scraping (dubai_scraper.py)",
+            "desc": "Extracts latest real estate transactions from DLD portal and uploads raw CSV to Google Drive (1. Download Files(Row)).",
+            "status": "pending",
+            "detail": "Waiting",
+            "duration": "-"
+        },
+        {
+            "id": 2,
+            "name": "Dubai Pipeline Processing (dld_pipeline.py)",
+            "desc": "Loads raw CSV, deduplicates, assigns NR IDs, enriches coordinates via dim_location & Google Places API, and saves processed Excel to 2.Processed Files.",
+            "status": "pending",
+            "detail": "Waiting",
+            "duration": "-"
+        }
+    ]
+
+    selected_db = params.get("database") or pipeline_state.get("selected_db") or "nilesh"
+    core.set_active_db(selected_db)
+
+    with state_lock:
+        pipeline_state["state"] = "running"
+        pipeline_state["city_id"] = 15
+        pipeline_state["city_name"] = "Dubai"
+        pipeline_state["city_key"] = "dubai"
+        pipeline_state["selected_db"] = selected_db
+        pipeline_state["steps"] = [dict(s) for s in dubai_steps]
+        pipeline_state["progress"] = 5
+        pipeline_state["current_step_id"] = 1
+        pipeline_state["current_step_name"] = "Dubai Portal Scraping (dubai_scraper.py)"
+        pipeline_state["logs"] = []
+        pipeline_state["error"] = None
+        pipeline_state["stop_requested"] = False
+
+    add_log("=" * 60, "info")
+    add_log("🏙️  STARTING DUBAI WORKFLOW (2 STEPS: SCRAPING & PROCESSING)", "info")
+    add_log("=" * 60, "info")
+
+    # -----------------------------------------------------------------
+    # STEP 1: SCRAPING (dubai_scraper.py)
+    # -----------------------------------------------------------------
+    if not skip_scraping:
+        t0 = time.time()
+        update_step_status(1, "running", "Scraping Dubai portal data...")
+        add_log("[Dubai Step 1/2] 🌐 Launching Dubai Data Scraper (dubai_scraper.py)...", "info")
+        with state_lock:
+            pipeline_state["current_step_id"] = 1
+            pipeline_state["current_step_name"] = "Dubai Portal Scraping (dubai_scraper.py)"
+            pipeline_state["progress"] = 15
+
+        scraper_cmd = [sys.executable, scraper_path, "--non-interactive", "--db", selected_db]
+        if from_date:
+            scraper_cmd.extend(["--from-date", from_date])
+        if to_date:
+            scraper_cmd.extend(["--to-date", to_date])
+
+        add_log(f"Executing: {' '.join(scraper_cmd)}", "info")
+        proc = subprocess.Popen(
+            scraper_cmd,
+            cwd=dubai_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        for line in iter(proc.stdout.readline, ""):
+            if pipeline_state.get("stop_requested"):
+                proc.kill()
+                add_log("⚠️ Dubai scraping aborted due to user stop request.", "warning")
+                update_step_status(1, "failed", "Aborted by user")
+                return
+            line_str = line.strip()
+            if line_str:
+                lvl = "success" if any(k in line_str for k in ["✔", "🎉", "Successfully"]) else ("error" if "❌" in line_str else "info")
+                add_log(line_str, lvl)
+        proc.stdout.close()
+        rc = proc.wait()
+
+        if rc != 0:
+            err_msg = f"dubai_scraper.py exited with return code {rc}"
+            update_step_status(1, "failed", err_msg)
+            add_log(f"❌ [Dubai Step 1/2] {err_msg}", "error")
+            with state_lock:
+                pipeline_state["state"] = "failed"
+                pipeline_state["error"] = err_msg
+            return
+
+        dur = f"{time.time() - t0:.1f}s"
+        update_step_status(1, "completed", "Scraping complete & file uploaded to Google Drive", dur)
+        add_log(f"✔ [Dubai Step 1/2] Scraping complete & file synced ({dur})!", "success")
+    else:
+        update_step_status(1, "skipped", "Scraping skipped by request", "-")
+        add_log("↷ [Dubai Step 1/2] Scraping step skipped by request.", "warning")
+
+    # -----------------------------------------------------------------
+    # STEP 2: PROCESSING (dld_pipeline.py)
+    # -----------------------------------------------------------------
+    if not skip_processing:
+        t0 = time.time()
+        update_step_status(2, "running", "Processing raw CSV & enriching coordinates (Google Places API)...")
+        add_log("[Dubai Step 2/2] ⚙️ Launching Dubai Processing Pipeline (dld_pipeline.py)...", "info")
+        with state_lock:
+            pipeline_state["current_step_id"] = 2
+            pipeline_state["current_step_name"] = "Dubai Pipeline Processing (dld_pipeline.py)"
+            pipeline_state["progress"] = 55
+
+        pipe_cmd = [sys.executable, pipeline_path, "--auto-confirm", "--db", selected_db]
+        custom_input = params.get("input_file")
+        if custom_input:
+            pipe_cmd.extend(["--input-file", custom_input])
+        if params.get("include_geocoding") is False:
+            pipe_cmd.append("--skip-geocoding")
+
+        add_log(f"Executing: {' '.join(pipe_cmd)}", "info")
+        proc2 = subprocess.Popen(
+            pipe_cmd,
+            cwd=dubai_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        final_saved_file = None
+        for line in iter(proc2.stdout.readline, ""):
+            if pipeline_state.get("stop_requested"):
+                proc2.kill()
+                add_log("⚠️ Dubai processing aborted due to user stop request.", "warning")
+                update_step_status(2, "failed", "Aborted by user")
+                return
+            line_str = line.strip()
+            if line_str:
+                if any(k in line_str for k in ["✔", "🎉", "Saved:", "Final Excel", "Found ("]):
+                    lvl = "success"
+                elif any(k in line_str for k in ["❌", "FAILED", "Error:"]):
+                    lvl = "error"
+                elif any(k in line_str for k in ["⚠️", "NOT_FOUND", "SKIPPED", "skipped"]):
+                    lvl = "warning"
+                else:
+                    lvl = "info"
+                add_log(line_str, lvl)
+                if "Final Excel" in line_str and ":" in line_str:
+                    final_saved_file = line_str.split(":", 1)[1].strip()
+                elif "Saved:" in line_str:
+                    final_saved_file = line_str.split("Saved:", 1)[1].strip()
+        proc2.stdout.close()
+        rc2 = proc2.wait()
+
+        if rc2 != 0:
+            err_msg = f"dld_pipeline.py exited with return code {rc2}"
+            update_step_status(2, "failed", err_msg)
+            add_log(f"❌ [Dubai Step 2/2] {err_msg}", "error")
+            with state_lock:
+                pipeline_state["state"] = "failed"
+                pipeline_state["error"] = err_msg
+            return
+
+        dur = f"{time.time() - t0:.1f}s"
+        update_step_status(2, "completed", "Processing complete & saved to 2.Processed Files", dur)
+        add_log(f"✔ [Dubai Step 2/2] Processing finished successfully ({dur})!", "success")
+
+        with state_lock:
+            if final_saved_file:
+                pipeline_state["output_file"] = final_saved_file
+    else:
+        update_step_status(2, "skipped", "Processing skipped by request", "-")
+        add_log("↷ [Dubai Step 2/2] Processing step skipped by request.", "warning")
+
+    with state_lock:
+        pipeline_state["state"] = "completed"
+        pipeline_state["progress"] = 100
+        pipeline_state["current_step_name"] = "All Dubai Steps Finished"
+
+    add_log("🎉 Dubai 2-step workflow (Scraping & Processing) completed successfully!", "success")
+
+
+def normalize_date_to_iso(date_str: str) -> str:
+    """Normalizes any common date format (YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY) to YYYY-MM-DD."""
+    if not date_str or not str(date_str).strip():
+        return ""
+    s = str(date_str).strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return s
+    m = re.match(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$", s)
+    if m:
+        d, mo, y = m.groups()
+        return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+    m = re.match(r"^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})$", s)
+    if m:
+        y, mo, d = m.groups()
+        return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+    return s
+
+
+def get_abu_dhabi_drive_files() -> list:
+    """
+    Fetches the list of files stored in the Abu Dhabi Google Drive Raw Data folder (1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG).
+    Uses the authenticated service in adrec_downloader.py without saving or scanning any local directories.
+    """
+    files_list = []
+    try:
+        ad_dir = os.path.join(CURR_DIR, "Abu Dhabi")
+        if ad_dir not in sys.path:
+            sys.path.insert(0, ad_dir)
+        import adrec_downloader
+        service = adrec_downloader.get_google_drive_service()
+        if service:
+            raw_folder_id = "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG"
+            query = f"'{raw_folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+            results = service.files().list(
+                q=query,
+                fields="files(id, name, mimeType, modifiedTime, size, webViewLink)",
+                orderBy="modifiedTime desc",
+                pageSize=50
+            ).execute()
+            for f in results.get("files", []):
+                fname = f.get("name", "")
+                if fname.lower().endswith(".csv") and not any(ign in fname.lower() for ign in ["_processed", "cleaned", "coordinates", "master"]):
+                    files_list.append({
+                        "id": f.get("id"),
+                        "name": fname,
+                        "size": int(f.get("size", 0)) if f.get("size") else None,
+                        "modified": f.get("modifiedTime"),
+                        "link": f.get("webViewLink"),
+                        "source": "gdrive"
+                    })
+            # If Raw Data folder has no files yet, fall back to checking the parent folder (1h_cUque4NqERMGvE__LaJgLuanXu1Ov2)
+            if not files_list:
+                parent_folder_id = "1h_cUque4NqERMGvE__LaJgLuanXu1Ov2"
+                query_parent = f"'{parent_folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+                results_parent = service.files().list(
+                    q=query_parent,
+                    fields="files(id, name, mimeType, modifiedTime, size, webViewLink)",
+                    orderBy="modifiedTime desc",
+                    pageSize=50
+                ).execute()
+                for f in results_parent.get("files", []):
+                    fname = f.get("name", "")
+                    if fname.lower().endswith(".csv") and not any(ign in fname.lower() for ign in ["_processed", "cleaned", "coordinates", "master"]):
+                        files_list.append({
+                            "id": f.get("id"),
+                            "name": fname,
+                            "size": int(f.get("size", 0)) if f.get("size") else None,
+                            "modified": f.get("modifiedTime"),
+                            "link": f.get("webViewLink"),
+                            "source": "gdrive"
+                        })
+    except Exception as e:
+        print(f"[Abu Dhabi] Error querying Google Drive Raw Data files: {e}")
+
+    return files_list
+
+
+def run_abu_dhabi_pipeline(params):
+    """
+    Dedicated workflow for Abu Dhabi (City ID: 1):
+    Step 1: Downloading / Scraping via adrec_downloader.py
+    Step 2: Google Drive File Sync & Dataset Selection
+    Streams stdout in real-time to the web dashboard console via add_log().
+    """
+    global pipeline_state
+
+    city_id = 1
+    city_name = "Abu Dhabi"
+
+    adrec_dir = os.path.join(CURR_DIR, "Abu Dhabi")
+    downloader_path = os.path.join(adrec_dir, "adrec_downloader.py")
+
+    from_date = normalize_date_to_iso(params.get("from_date"))
+    to_date = normalize_date_to_iso(params.get("to_date"))
+
+    if not to_date:
+        to_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    if not from_date:
+        try:
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d")
+            from_date = (to_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+        except Exception:
+            from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    skip_scraping = params.get("skip_scraping", False)
+    headless = params.get("headless", True)
+    selected_file = params.get("input_file") or params.get("selected_file")
+
+    abu_dhabi_steps = [
+        {
+            "id": 1,
+            "name": "ADREC Portal Ingestion",
+            "desc": "Automated transaction scraping from ADREC portal with Google Drive sync (adrec_downloader.py). Skippable.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 2,
+            "name": "Raw CSV Loading & Validation",
+            "desc": "Loads raw ADREC transaction CSV (UTF-8-SIG) from Google Drive or local storage.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 3,
+            "name": "Duplicate Transaction Removal",
+            "desc": "Identifies and drops identical transaction records across all attributes.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 4,
+            "name": "Date Parsing & Quarter Normalization",
+            "desc": "Converts Sale Application Date to ISO YYYY-MM-DD, extracts year, quarter, and agreement date.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 5,
+            "name": "Property Type Categorization",
+            "desc": "Maps raw property types (Apartment, Villa, Duplex, Plot, etc.) into standardized taxonomy.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 6,
+            "name": "Project Type & Asset Class Mapping",
+            "desc": "Classifies asset classes into Residential, Commercial, Industrial, Agricultural, etc.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 7,
+            "name": "Unit Configuration Normalization",
+            "desc": "Normalizes bedroom count and property layouts into standardized BHK and unit types.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 8,
+            "name": "Location Coordinates & ID Lookup",
+            "desc": "Maps location_id, latitude, and longitude from master location reference with Jabal Hafeet fallback.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 9,
+            "name": "Project Master Reference Matching",
+            "desc": "Matches projects against Abudhabi_project_coordinates.csv using 3-key composite matching.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 10,
+            "name": "Google Places & Geocoding Enrichment",
+            "desc": "Enriches missing commercial project coordinates via Google Places API (unmatched project coordinates kept blank without copying location coordinates).",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 11,
+            "name": "PostgreSQL NR Index Assignment",
+            "desc": "Assigns Non-RERA index (internal_index_id) sequentially starting from nr468 for all projects [project_name + location_name].",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 12,
+            "name": "DB Schema Column Alignment",
+            "desc": "Filters and orders columns strictly to Abu Dhabi schema with internal_index_id, Title Case, and project_id purged.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 13,
+            "name": "Final Output Save & Google Drive Upload",
+            "desc": "Exports database-ready final processed files (.xlsx and .csv) directly to Google Drive Processed Data folder.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        }
+    ]
+
+    selected_db = params.get("database") or pipeline_state.get("selected_db") or "nilesh"
+    core.set_active_db(selected_db)
+
+    with state_lock:
+        pipeline_state["state"] = "running"
+        pipeline_state["city_id"] = 1
+        pipeline_state["city_name"] = "Abu Dhabi"
+        pipeline_state["city_key"] = "abu_dhabi"
+        pipeline_state["selected_db"] = selected_db
+        pipeline_state["steps"] = [dict(s) for s in abu_dhabi_steps]
+        pipeline_state["progress"] = 3
+        pipeline_state["current_step_id"] = 1 if not skip_scraping else 2
+        pipeline_state["current_step_name"] = abu_dhabi_steps[0]["name"] if not skip_scraping else abu_dhabi_steps[1]["name"]
+        pipeline_state["logs"] = []
+        pipeline_state["error"] = None
+        pipeline_state["stop_requested"] = False
+        pipeline_state["metrics"] = {
+            "total_rows": 0,
+            "rera_matched": 0,
+            "reused_matched": 0,
+            "nr_assigned": 0
+        }
+
+    add_log("=" * 60, "info")
+    add_log("🕌  STARTING ABU DHABI ADREC WORKFLOW", "info")
+    add_log("=" * 60, "info")
+
+    # -----------------------------------------------------------------
+    # STEP 1: SCRAPING / DOWNLOADING (adrec_downloader.py)
+    # -----------------------------------------------------------------
+    if not skip_scraping:
+        t0 = time.time()
+        update_step_status(1, "running", f"Downloading ADREC transactions from {from_date} to {to_date}...")
+        add_log(f"[Abu Dhabi Step 1/14] 🌐 Launching ADREC Downloader (adrec_downloader.py)...", "info")
+        with state_lock:
+            pipeline_state["current_step_id"] = 1
+            pipeline_state["current_step_name"] = "ADREC Portal Ingestion"
+            pipeline_state["progress"] = 7
+
+        cmd = [
+            sys.executable,
+            downloader_path,
+            "--from-date", from_date,
+            "--to-date", to_date,
+            "--folder-id", "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+            "--cleanup",
+        ]
+        if headless:
+            cmd.append("--headless")
+
+        add_log(f"Executing: {' '.join(cmd)}", "info")
+        proc = subprocess.Popen(
+            cmd,
+            cwd=adrec_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        for line in iter(proc.stdout.readline, ""):
+            if pipeline_state.get("stop_requested"):
+                proc.kill()
+                add_log("⚠️ Abu Dhabi downloading aborted due to user stop request.", "warning")
+                update_step_status(1, "failed", "Aborted by user")
+                return
+            line_str = line.strip()
+            if line_str:
+                if any(k in line_str for k in ["✔", "🎉", "successful", "completed successfully", "Google Drive upload successful"]):
+                    lvl = "success"
+                elif any(k in line_str for k in ["❌", "Error", "failed", "Could not find"]):
+                    lvl = "error"
+                elif any(k in line_str for k in ["⚠️", "warning", "Warning"]):
+                    lvl = "warning"
+                else:
+                    lvl = "info"
+                add_log(line_str, lvl)
+        proc.stdout.close()
+        rc = proc.wait()
+
+        if rc != 0:
+            err_msg = f"adrec_downloader.py exited with return code {rc}"
+            update_step_status(1, "failed", err_msg)
+            add_log(f"❌ [Abu Dhabi Step 1/14] {err_msg}", "error")
+            with state_lock:
+                pipeline_state["state"] = "failed"
+                pipeline_state["error"] = err_msg
+            return
+
+        dur = f"{time.time() - t0:.1f}s"
+        update_step_status(1, "completed", "Download complete & uploaded to Google Drive", dur)
+        add_log(f"✔ [Abu Dhabi Step 1/14] Downloading complete & file uploaded to Google Drive ({dur})!", "success")
+    else:
+        update_step_status(1, "skipped", "Downloader skipped - Direct processing started", "-")
+        add_log("↷ [Abu Dhabi Step 1/14] Downloading step skipped (Starting directly from Step 2).", "info")
+
+    # -----------------------------------------------------------------
+    # STEPS 2-14: PROCESSING PIPELINE (adrec_pipeline.py)
+    # -----------------------------------------------------------------
+    pipeline_script = os.path.join(adrec_dir, "adrec_pipeline.py")
+    t0_pipe = time.time()
+    add_log("[Abu Dhabi Steps 2-14] ⚙️ Launching Processing Pipeline (adrec_pipeline.py)...", "info")
+
+    pipe_cmd = [
+        sys.executable,
+        "-u",
+        pipeline_script,
+        "--auto-confirm",
+        "--db", selected_db,
+        "--raw-folder-id", "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+        "--processed-folder-id", "126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s",
+    ]
+    if selected_file:
+        pipe_cmd.extend(["--input-file", selected_file])
+    if params.get("include_geocoding") is False:
+        pipe_cmd.append("--skip-geocoding")
+
+    pipe_env = os.environ.copy()
+    pipe_env["PYTHONUNBUFFERED"] = "1"
+    pipe_env["PYTHONIOENCODING"] = "utf-8"
+
+    add_log(f"Executing: {' '.join(pipe_cmd)}", "info")
+    proc2 = subprocess.Popen(
+        pipe_cmd,
+        cwd=adrec_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+        encoding="utf-8",
+        errors="replace",
+        env=pipe_env
+    )
+
+    step_start_times = {}
+    current_active_step = 2
+    final_saved_file = None
+
+    for line in iter(proc2.stdout.readline, ""):
+        if pipeline_state.get("stop_requested"):
+            proc2.kill()
+            add_log("⚠️ Abu Dhabi processing aborted due to user stop request.", "warning")
+            if current_active_step <= 13:
+                update_step_status(current_active_step, "failed", "Aborted by user")
+            return
+
+        line_str = line.strip()
+        if not line_str:
+            continue
+
+        # Check for structured step start marker [STEP:X:START]
+        m_start = re.match(r"^\[STEP:(\d+):START\]\s*(.*)", line_str)
+        if m_start:
+            s_id = int(m_start.group(1))
+            s_msg = m_start.group(2)
+            current_active_step = s_id
+            step_start_times[s_id] = time.time()
+            update_step_status(s_id, "running", s_msg)
+            with state_lock:
+                pipeline_state["current_step_id"] = s_id
+                if 1 <= s_id <= len(abu_dhabi_steps):
+                    pipeline_state["current_step_name"] = abu_dhabi_steps[s_id - 1]["name"]
+                pipeline_state["progress"] = min(98, max(5, int((s_id / 13) * 100)))
+
+        # Check for structured step done marker [STEP:X:DONE]
+        m_done = re.match(r"^\[STEP:(\d+):DONE\]\s*(.*)", line_str)
+        if m_done:
+            s_id = int(m_done.group(1))
+            s_msg = m_done.group(2)
+            s_dur = f"{time.time() - step_start_times.get(s_id, time.time()):.1f}s"
+            update_step_status(s_id, "completed", s_msg, s_dur)
+
+            # Update metrics live from done logs
+            if s_id == 2:
+                m_rows = re.search(r"Loaded\s+([\d,]+)\s+rows", s_msg)
+                if m_rows:
+                    pipeline_state["metrics"]["total_rows"] = int(m_rows.group(1).replace(",", ""))
+            elif s_id == 9:
+                m_match = re.search(r"matched\s+([\d,]+)/", s_msg)
+                if m_match:
+                    pipeline_state["metrics"]["rera_matched"] = int(m_match.group(1).replace(",", ""))
+            elif s_id == 11:
+                m_nr = re.search(r"all\s+([\d,]+)/", s_msg)
+                if m_nr:
+                    pipeline_state["metrics"]["nr_assigned"] = int(m_nr.group(1).replace(",", ""))
+
+        # Log line classification
+        if any(k in line_str for k in ["✔", "🎉", "Saved:", "Final Excel", "Found (", "[STEP:"]):
+            lvl = "success" if any(k in line_str for k in ["✔", "🎉", "DONE"]) else "info"
+        elif any(k in line_str for k in ["❌", "FAILED", "Error:"]):
+            lvl = "error"
+        elif any(k in line_str for k in ["⚠️", "NOT_FOUND", "SKIPPED", "skipped"]):
+            lvl = "warning"
+        else:
+            lvl = "info"
+
+        add_log(line_str, lvl)
+
+        if "Final Excel File" in line_str and ":" in line_str:
+            final_saved_file = line_str.split(":", 1)[1].strip()
+
+    proc2.stdout.close()
+    rc2 = proc2.wait()
+
+    if rc2 != 0:
+        err_msg = f"adrec_pipeline.py exited with return code {rc2}"
+        if current_active_step <= 13:
+            update_step_status(current_active_step, "failed", err_msg)
+        add_log(f"❌ [Abu Dhabi Processing] {err_msg}", "error")
+        with state_lock:
+            pipeline_state["state"] = "failed"
+            pipeline_state["error"] = err_msg
+        return
+
+    # Ensure all steps 2..13 are marked completed if finished with rc=0
+    for s in range(2, 14):
+        with state_lock:
+            cur_s = next((x for x in pipeline_state["steps"] if x["id"] == s), None)
+            if cur_s and cur_s["status"] != "completed":
+                cur_s["status"] = "completed"
+                if cur_s["duration"] == "-":
+                    cur_s["duration"] = "0.5s"
+
+    dur_total = f"{time.time() - t0_pipe:.1f}s"
+    add_log(f"✔ [Abu Dhabi Processing] All processing steps finished successfully ({dur_total})!", "success")
+    if final_saved_file:
+        pipeline_state["output_file"] = final_saved_file
+
+    with state_lock:
+        pipeline_state["state"] = "completed"
+        pipeline_state["progress"] = 100
+        pipeline_state["current_step_name"] = "All Abu Dhabi Steps Finished"
+
+    add_log("🎉 Abu Dhabi ADREC workflow completed successfully!", "success")
+
+
 def run_pipeline_worker(params):
+    import importlib
+    importlib.reload(core)
     global pipeline_state
 
     mode = params.get("mode", "1")
     input_file = params.get("input_file")
     manual_file = params.get("manual_file")
-    city_id_raw = params.get("city_id", 9)
-    city_cfg = get_city_config(city_id_raw)
-    city_id = int(city_cfg.get("city_id", 9))
-    city_key = city_cfg.get("key", "pune")
-    city_name = city_cfg.get("display_name", "Pune")
-    active_divisor = city_cfg.get("saleable_to_carpet_divisor", 1.35)
-    output_path = params.get("output_path")
-    include_geocoding = params.get("include_geocoding", False)
+    is_multi_file = bool(manual_file and ("," in str(manual_file) or "final merge" in str(manual_file).lower()))
 
-    # Determine or infer location name
+    # Determine or infer location name first
     location_name = params.get("location_name")
-    if not location_name and input_file:
+    if is_multi_file:
+        location_name = "FINAL MERGE"
+    elif not location_name and input_file:
         parent_dir = os.path.basename(os.path.dirname(input_file))
         if parent_dir and parent_dir.lower() not in ["2. llm processed data", "processing", "required_files", "data", "uploading_pipeline"]:
             location_name = parent_dir
         else:
             base = os.path.splitext(os.path.basename(input_file))[0]
             location_name = base.split("_")[0]
-    if not location_name and manual_file:
-        parent_dir = os.path.basename(os.path.dirname(manual_file))
-        if parent_dir and parent_dir.lower() not in ["3. manually corrected", "processing", "required_files", "data"]:
+    elif not location_name and manual_file:
+        first_file = manual_file.split(",")[0].strip()
+        parent_dir = os.path.basename(os.path.dirname(first_file))
+        if parent_dir and parent_dir.lower() not in ["3. manually corrected", "processing", "required_files", "data", "final merge"]:
             location_name = parent_dir
         else:
-            base = os.path.splitext(os.path.basename(manual_file))[0]
+            base = os.path.splitext(os.path.basename(first_file))[0]
             location_name = base.split("_")[0]
+
+    # Auto-detect city from location_name or file path so Mumbai/Bandra/Thane never default to Pune
+    city_id_raw = params.get("city_id")
+    loc_lower = (location_name or "").lower()
+    path_lower = (input_file or manual_file or "").lower()
+
+    if loc_lower == "bandra" or "bandra" in path_lower:
+        city_cfg = get_city_config("bandra")
+    elif any(pat in loc_lower or pat in path_lower for pat in ["mumbai", "borivali", "andheri", "kurla", "chembur", "dadar", "goregaon", "malad", "powai", "1ywb1-csrdxnv80yc8axym5bgze34txfa", "1rt8pvmus_s03yrsmvk93lumghbe-9rwd"]):
+        city_cfg = get_city_config("mumbai")
+    elif any(pat in loc_lower or pat in path_lower for pat in ["thane", "kalyan", "dombivli", "navi mumbai", "mira bhayandar"]):
+        city_cfg = get_city_config("thane")
+    elif any(pat in loc_lower or pat in path_lower for pat in ["abu dhabi", "abu_dhabi", "abudhabi", "adrec", "1h_cuque4nqermgve__lajgluanxu1ov2"]):
+        city_cfg = get_city_config("abu_dhabi")
+    elif city_id_raw:
+        city_cfg = get_city_config(city_id_raw)
+    else:
+        city_cfg = get_city_config("pune")
+
+    city_id = int(city_cfg.get("city_id", 9))
+    city_key = city_cfg.get("key", "pune")
+
+    mode_str = str(mode).strip()
+
+    # Route Dubai to dedicated 2-step pipeline (unless Mode 3 Parquet, Mode 4 Upload, or Mode 5 Outlier)
+    if (city_id == 15 or city_key == "dubai") and mode_str not in ["3", "4", "5"]:
+        run_dubai_pipeline(params)
+        return
+
+    # Route Abu Dhabi to dedicated workflow (unless Mode 3 Parquet, Mode 4 Upload, or Mode 5 Outlier)
+    if (city_id == 1 or city_key in ["abu_dhabi", "abudhabi", "abu dhabi"]) and mode_str not in ["3", "4", "5"]:
+        run_abu_dhabi_pipeline(params)
+        return
+
+    city_name = city_cfg.get("display_name", "Pune")
+    active_divisor = city_cfg.get("saleable_to_carpet_divisor", 1.35)
+    output_path = params.get("output_path")
+    include_geocoding = params.get("include_geocoding", True)
+
     if not location_name:
-        location_name = "Mohmadwadi"
+        location_name = "Bandra" if "bandra" in path_lower else ("Borivali" if "borivali" in path_lower else ("Mohmadwadi" if city_id == 9 else "General"))
 
     resume_step7_event.clear()
     resume_step18_event.clear()
 
+    selected_db = params.get("database") or pipeline_state.get("selected_db") or "nilesh"
+    core.set_active_db(selected_db)
+
     with state_lock:
         pipeline_state["state"] = "running"
-        pipeline_state["mode"] = mode
+        pipeline_state["mode"] = mode_str
         pipeline_state["city_id"] = city_id
         pipeline_state["city_name"] = city_name
         pipeline_state["city_key"] = city_key
+        pipeline_state["selected_db"] = selected_db
         pipeline_state["divisor"] = active_divisor
+        pipeline_state["final_drive_url"] = city_cfg.get("final_drive_url")
         pipeline_state["stop_requested"] = False
         pipeline_state["error"] = None
         pipeline_state["output_file"] = None
@@ -507,10 +1463,10 @@ def run_pipeline_worker(params):
         pipeline_state["progress"] = 0
         pipeline_state["logs"] = []
         for s in pipeline_state["steps"]:
-            if mode == "3" and s["id"] < 19:
+            if mode_str in ["3", "4", "5"]:
                 s["status"] = "skipped"
-                s["detail"] = "Skipped in Mode 3"
-            elif mode == "2" and s["id"] < 7:
+                s["detail"] = f"Stand-alone Mode {mode_str}"
+            elif mode_str == "2" and s["id"] < 7:
                 s["status"] = "skipped"
                 s["detail"] = "Skipped in Mode 2"
             else:
@@ -518,39 +1474,194 @@ def run_pipeline_worker(params):
                 s["detail"] = "Waiting"
                 s["duration"] = "-"
 
-    add_log(f"Starting pipeline in Mode {mode} for {city_name} (City ID: {city_id}, Divisor: {active_divisor}) - Location: '{location_name}'...", "info")
+    add_log(f"Starting pipeline in Mode {mode_str} for {city_name} (City ID: {city_id}, Divisor: {active_divisor}) - Location: '{location_name}'...", "info")
     df = None
 
     try:
-        if mode == "3":
-            # RESUME DIRECTLY FROM STEP 19 (PARQUET CONVERSION)
-            final_file = output_path or manual_file or input_file
+        if mode_str == "5":
+            # MODE 5: OUTLIER DETECTION & DATABASE UPDATE
+            t0 = time.time()
+            from outlier_update import main as run_outlier_main, normalize_locations
+            outlier_loc = params.get("outlier_location") or params.get("location_name")
+            norm_locs = normalize_locations(outlier_loc)
+
+            save_outlier_report = params.get("save_outlier_report", False)
+            save_path = None
+            if save_outlier_report:
+                if norm_locs:
+                    loc_slug = "_".join(re.sub(r"[^a-zA-Z0-9_-]+", "_", str(l)) for l in norm_locs[:3])
+                    if len(norm_locs) > 3:
+                        loc_slug += f"_and_{len(norm_locs)-3}_more"
+                else:
+                    loc_slug = "all_locations"
+                # Target Processing/Outlier_implementation first (visible in VS Code sidebar under Processing)
+                outlier_dir = os.path.join(CURR_DIR, "Outlier_implementation")
+                if not os.path.exists(outlier_dir):
+                    root_alt = os.path.join(os.path.dirname(CURR_DIR), "outlier_implementaion")
+                    outlier_dir = outlier_dir if not os.path.exists(root_alt) else root_alt
+                os.makedirs(outlier_dir, exist_ok=True)
+                save_path = os.path.join(outlier_dir, f"outliers_{city_name.lower()}_{loc_slug}.xlsx")
+
+            scope_desc = f"{len(norm_locs)} location(s): {', '.join(norm_locs)}" if norm_locs else f"ALL locations in {city_name}"
+            with state_lock:
+                pipeline_state["current_step_id"] = 0
+                pipeline_state["current_step_name"] = f"Outlier Detection ({scope_desc})"
+                pipeline_state["progress"] = 50
+
+            add_log(f"Mode 5: 📊 Starting Outlier Detection for {city_name} ({scope_desc}, City ID: {city_id})...", "info")
+
+            run_outlier_main(
+                city_id=city_id,
+                location_name=norm_locs,
+                db_params=core.get_db_params(selected_db),
+                save_merged_path=save_path,
+                log_fn=add_log,
+                is_stopped_fn=lambda: pipeline_state.get("stop_requested", False),
+            )
+
+            dur = f"{time.time() - t0:.2f}s"
+            add_log(f"Mode 5: ✓ Outlier detection & database update finished successfully ({dur})! ({scope_desc})", "success")
+            final_report_path = save_path
+            if save_path and os.path.exists(save_path):
+                add_log(f"Mode 5: 📄 Detailed outlier report saved to: {save_path}", "success")
+                # Also copy to Google Drive location folder if configured and available
+                try:
+                    final_drive_url = city_cfg.get("final_drive_url")
+                    drive_dir = resolve_drive_directory(final_drive_url)
+                    if drive_dir and norm_locs and len(norm_locs) == 1:
+                        target_drive_folder = os.path.join(drive_dir, norm_locs[0])
+                        if os.path.exists(target_drive_folder):
+                            import shutil
+                            drive_outlier_path = os.path.join(target_drive_folder, os.path.basename(save_path))
+                            shutil.copy2(save_path, drive_outlier_path)
+                            final_report_path = drive_outlier_path
+                            add_log(f"Mode 5: ☁️ Outlier report also saved to Google Drive: {drive_outlier_path}", "success")
+                except Exception as gde:
+                    add_log(f"Mode 5: ⚠️ Note copying outlier report to Google Drive: {gde}", "warning")
+
+            with state_lock:
+                pipeline_state["output_file"] = final_report_path or save_path or "Database Updated"
+                pipeline_state["state"] = "completed"
+                pipeline_state["progress"] = 100
+                pipeline_state["current_step_name"] = "Outlier Detection Completed!"
+            return
+
+        elif mode_str == "4":
+            # MODE 4: TRIGGER DATABASE UPLOAD PIPELINE (final_code.py)
+            t0 = time.time()
+            with state_lock:
+                pipeline_state["current_step_id"] = 0
+                pipeline_state["current_step_name"] = "Database Upload Pipeline (final_code.py)"
+                pipeline_state["progress"] = 50
+
+            project_root, final_code_path = resolve_upload_pipeline_paths()
+            add_log(f"Mode 4: Locating Database Upload Pipeline at: {final_code_path}", "info")
+
+            if not final_code_path.exists():
+                err_msg = f"final_code.py not found at: {final_code_path}"
+                add_log(f"Mode 4: ⚠️ {err_msg}", "warning")
+                with state_lock:
+                    pipeline_state["state"] = "failed"
+                    pipeline_state["error"] = err_msg
+                return
+
+            try:
+                add_log("Mode 4: 🚀 Launching final_code.py in interactive terminal window...", "info")
+                launch_upload_pipeline_terminal(final_code_path, project_root)
+                dur = f"{time.time() - t0:.2f}s"
+                with state_lock:
+                    pipeline_state["state"] = "completed"
+                    pipeline_state["progress"] = 100
+                    pipeline_state["current_step_name"] = "Database Upload Pipeline Launched"
+                    pipeline_state["final_code_path"] = str(final_code_path)
+                add_log(f"Mode 4: ✓ final_code.py launched successfully in separate terminal ({dur})! Proceed with upload in the terminal window.", "success")
+            except Exception as fe:
+                err_msg = f"Error launching final_code.py: {fe}"
+                add_log(f"Mode 4: ⚠️ {err_msg}", "error")
+                with state_lock:
+                    pipeline_state["state"] = "failed"
+                    pipeline_state["error"] = err_msg
+            return
+
+        elif mode_str == "3":
+            # MODE 3: DIRECT STAND-ALONE PARQUET CONVERSION
+            t0 = time.time()
+            final_file = output_path or manual_file or input_file or params.get("final_file")
             if not final_file or not os.path.exists(final_file):
                 raise FileNotFoundError(f"Final processed file does not exist: {final_file}")
-            add_log(f"Step 18: Loading final processed file for Parquet conversion: {final_file}", "info")
-            target_out = final_file
-            with state_lock:
-                pipeline_state["output_file"] = target_out
-                pipeline_state["progress"] = 95
-        elif mode == "2":
-            # RESUME DIRECTLY FROM STEP 7
-            if not manual_file or not os.path.exists(manual_file):
-                raise FileNotFoundError(f"Manual corrected file does not exist: {manual_file}")
 
-            add_log(f"Loading manual corrected file: {manual_file}", "info")
+            with state_lock:
+                pipeline_state["current_step_id"] = 0
+                pipeline_state["current_step_name"] = "Parquet Conversion"
+                pipeline_state["output_file"] = final_file
+                pipeline_state["progress"] = 50
+
+            from parquet_conersion import convert_csv_to_parquet
+
+            if city_id == 15 or city_key == "dubai":
+                p_city_name = "Dubai"
+            elif city_id == 1 or city_key in ["abu_dhabi", "abudhabi", "abu dhabi"]:
+                p_city_name = "Abu Dhabi"
+            else:
+                p_city_name = "Pune"
+                try:
+                    conn = psycopg2.connect(**core.DB_PARAMS)
+                    cur = conn.cursor()
+                    cur.execute("SELECT city_name FROM public.dim_city WHERE city_id = %s;", (city_id,))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        p_city_name = str(row[0]).strip().title()
+                    cur.close()
+                    conn.close()
+                except Exception:
+                    pass
+
+            parquet_base_dir = r"G:\.shortcut-targets-by-id\1oGd6xPdp686p0qW-tzZyy5quOpi82hLA\DB1+DB2\converted_feather_parquet"
+            if not os.path.exists(parquet_base_dir):
+                parquet_base_dir = os.path.join(CURR_DIR, "converted_feather_parquet")
+
+            city_parquet_dir = os.path.join(parquet_base_dir, p_city_name)
+            os.makedirs(city_parquet_dir, exist_ok=True)
+            parquet_target = os.path.join(city_parquet_dir, f"{p_city_name}_db1.parquet")
+
+            add_log(f"Mode 3: Converting {final_file} -> {parquet_target} ...", "info")
+            pq_res = convert_csv_to_parquet(
+                input_file=final_file,
+                output_file=parquet_target,
+                date_cols=["transaction_date", "date_of_agreement_execution"],
+            )
+            dur = f"{time.time() - t0:.2f}s"
+            row_count = pq_res.get('rows', 0)
+            add_log(f"Mode 3: ✓ Parquet conversion completed successfully ({row_count:,} rows in {dur}) -> {parquet_target}", "success")
+            with state_lock:
+                pipeline_state["state"] = "completed"
+                pipeline_state["progress"] = 100
+                pipeline_state["current_step_name"] = "Parquet Conversion Finished!"
+                pipeline_state["parquet_file"] = parquet_target
+            return
+
+        elif mode_str == "2":
+            # RESUME DIRECTLY FROM STEP 7
+            if not manual_file:
+                raise FileNotFoundError("Manual corrected file path or list is required for Step 7 resume.")
+
+            add_log("Loading and merging manual corrected file(s)...", "info")
             t0 = time.time()
-            update_step_status(7, "running", "Loading file...")
+            update_step_status(7, "running", "Merging manual file(s)...")
             with state_lock:
                 pipeline_state["current_step_id"] = 7
-                pipeline_state["current_step_name"] = "Loading Manual Corrected File"
+                pipeline_state["current_step_name"] = "Loading Manual Corrected File(s)"
                 pipeline_state["progress"] = 43
 
-            df = pd.read_excel(manual_file, engine="openpyxl")
+            df, merge_report = core.load_and_merge_step7_files(
+                manual_file,
+                log_callback=lambda msg, lvl="info": add_log(msg, lvl)
+            )
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(7, "completed", f"{len(df)} rows loaded", dur)
-            add_log(f"Step 7: Loaded {len(df)} rows from manual file.", "success")
+            update_step_status(7, "completed", f"{len(df):,} rows loaded ({merge_report['file_count']} file(s))", dur)
             with state_lock:
                 pipeline_state["metrics"]["total_rows"] = len(df)
+                pipeline_state["step7_merge_report"] = merge_report
 
         else:
             # MODE 1: RUN STEPS 1 TO 6
@@ -608,10 +1719,23 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_id"] = 4
                 pipeline_state["current_step_name"] = "Static Transaction Mapping"
                 pipeline_state["progress"] = 25
-            df["transaction_type"] = df["docname"].map(result_dict.get)
+            mapped_tx = df["docname"].map(result_dict.get) if "docname" in df.columns else pd.Series(index=df.index)
+            if "docname" in df.columns and mapped_tx.isna().any():
+                fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
+                mapped_tx = mapped_tx.fillna(fallback_map)
+
+            if "transaction_type" not in df.columns:
+                df["transaction_type"] = mapped_tx
+            else:
+                df["transaction_type"] = df["transaction_type"].fillna(mapped_tx)
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(4, "completed", "Types mapped", dur)
-            add_log("Step 4: Static dictionary mapping completed.", "success")
+            mapped_count = int(df["transaction_type"].notna().sum())
+            total_docnames = int(df["docname"].notna().sum()) if "docname" in df.columns else 0
+            update_step_status(4, "completed", f"{mapped_count:,}/{total_docnames:,} mapped", dur)
+            if mapped_count < total_docnames:
+                add_log(f"Step 4: Mapped {mapped_count:,}/{total_docnames:,} docnames ({total_docnames - mapped_count:,} unmapped).", "warning")
+            else:
+                add_log(f"Step 4: Mapped all {mapped_count:,}/{total_docnames:,} docnames to transaction_type.", "success")
 
             # STEP 5 - Transaction Categorisation
             t0 = time.time()
@@ -641,7 +1765,12 @@ def run_pipeline_worker(params):
                 pipeline_state["progress"] = 37
 
             # Resolve manual correction Google Drive folder for location
-            manual_drive_url = city_cfg.get("manual_correction_drive_url")
+            loc_manual_drive_url = get_manual_correction_drive_url(
+                city_identifier=city_id,
+                location_name=location_name,
+                file_path=input_file,
+            )
+            manual_drive_url = loc_manual_drive_url or city_cfg.get("manual_correction_drive_url")
             manual_dir = resolve_manual_correction_directory(
                 manual_drive_url,
                 location_name=location_name,
@@ -657,10 +1786,15 @@ def run_pipeline_worker(params):
                 v1_output_path = os.path.join(input_dir, out_file_name)
                 add_log(f"Step 6: Saving locally: {v1_output_path}", "warning")
 
-            df = process_dataframe(df, output_path=v1_output_path)
+            def on_step6_progress(stage_msg):
+                update_step_status(6, "running", stage_msg)
+                add_log(f"Step 6: {stage_msg}", "info")
+
+            df = process_dataframe(df, output_path=v1_output_path, city=city_key, progress_callback=on_step6_progress)
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(6, "completed", f"Saved manual file ({len(df)} rows)", dur)
-            add_log(f"Step 6: Standardization completed -> Saved: {v1_output_path}", "success")
+            save_time_str = datetime.now().strftime("%I:%M:%S %p")
+            update_step_status(6, "completed", f"Saved to Drive: {out_file_name} ({len(df)} rows)", dur)
+            add_log(f"✅ Step 6 Complete! File saved to Google Drive at {save_time_str}: {v1_output_path}", "success")
 
             # ============================================================
             # STEP 7: PAUSE AND WAIT FOR USER MANUAL CORRECTED FILE
@@ -670,12 +1804,15 @@ def run_pipeline_worker(params):
                 pipeline_state["current_step_id"] = 7
                 pipeline_state["current_step_name"] = "Waiting for Manual Corrected File"
                 pipeline_state["v1_file"] = v1_output_path
+                pipeline_state["v1_filename"] = out_file_name
+                pipeline_state["v1_saved_at"] = save_time_str
                 pipeline_state["location_name"] = location_name
+                pipeline_state["manual_drive_url"] = manual_drive_url
 
-            update_step_status(7, "running", "Waiting for manual review/correction...")
+            update_step_status(7, "running", f"Paused — File saved to Drive at {save_time_str}. Waiting for manual review...")
             add_log("=" * 60, "warning")
-            add_log(f"⏸️ Step 6 finished! Standardized file saved to: {v1_output_path}", "warning")
-            add_log("⏸️ Pipeline PAUSED at Step 7. You can share this file or select a location file to resume.", "warning")
+            add_log(f"⏸️ Step 6 finished! Standardized file saved to Google Drive at {save_time_str}: {v1_output_path}", "success")
+            add_log("⏸️ Pipeline PAUSED at Step 7. Review the file in Google Drive, then select or enter the file below to resume.", "warning")
             add_log("=" * 60, "warning")
 
             # Wait for resume signal from client via /api/resume
@@ -687,18 +1824,19 @@ def run_pipeline_worker(params):
                     return
                 time.sleep(0.5)
 
-            # Once resumed, load the manual corrected file!
+            # Once resumed, load the manual corrected file(s)!
             resolved_manual_file = pipeline_state.get("manual_file") or v1_output_path
-            if not os.path.exists(resolved_manual_file):
-                raise FileNotFoundError(f"Manual corrected file does not exist: {resolved_manual_file}")
-            add_log(f"Step 7: Resumed! Loading manual corrected file: {resolved_manual_file}", "info")
+            add_log("Step 7: Resumed! Loading and merging manual file(s)...", "info")
             t0 = time.time()
-            df = pd.read_excel(resolved_manual_file, engine="openpyxl")
+            df, merge_report = core.load_and_merge_step7_files(
+                resolved_manual_file,
+                log_callback=lambda msg, lvl="info": add_log(msg, lvl)
+            )
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(7, "completed", f"{len(df)} rows loaded", dur)
-            add_log(f"Step 7: Loaded {len(df)} rows from manual file.", "success")
+            update_step_status(7, "completed", f"{len(df):,} rows loaded ({merge_report['file_count']} file(s))", dur)
             with state_lock:
                 pipeline_state["metrics"]["total_rows"] = len(df)
+                pipeline_state["step7_merge_report"] = merge_report
                 pipeline_state["state"] = "running"
 
         if mode != "3":
@@ -706,83 +1844,80 @@ def run_pipeline_worker(params):
             # STEPS 8 TO 16
             # ============================================================
 
-            # STEP 8 - Net Carpet Area Calculation
+            # STEP 8 - Rename Columns
             t0 = time.time()
-            update_step_status(8, "running", "Calculating net carpet...")
+            update_step_status(8, "running", "Renaming columns...")
             with state_lock:
                 pipeline_state["current_step_id"] = 8
-                pipeline_state["current_step_name"] = "Net Carpet Area Calculation"
-                pipeline_state["progress"] = 50
-            df = core.derive_net_carpet_area(df, city=city_key)
-            dur = f"{time.time() - t0:.2f}s"
-            update_step_status(8, "completed", "Calculated", dur)
-            add_log("Step 8: Net Carpet Area calculation completed.", "success")
+                pipeline_state["current_step_name"] = "Column Renaming & Standardizing"
+                pipeline_state["progress"] = 52
+            df = core.rename_columns(df)
 
-            # STEP 9 - Rename Columns
+            if "docname" in df.columns:
+                mapped_tx = df["docname"].map(result_dict.get)
+                fallback_map = df["docname"].astype(str).str.strip().map(result_dict.get)
+                mapped_tx = mapped_tx.fillna(fallback_map)
+                if "transaction_type" in df.columns:
+                    df["transaction_type"] = mapped_tx.fillna(df["transaction_type"])
+                else:
+                    df["transaction_type"] = mapped_tx
+
+            df = categorise(df)
+
+            dur = f"{time.time() - t0:.2f}s"
+            update_step_status(8, "completed", "Renamed & transaction_type populated", dur)
+            add_log("Step 8: Column renaming & transaction_type mapping completed.", "success")
+
+            # STEP 9 - Property Type Categorization
             t0 = time.time()
-            update_step_status(9, "running", "Renaming columns...")
+            update_step_status(9, "running", "Categorising property type...")
             with state_lock:
                 pipeline_state["current_step_id"] = 9
-                pipeline_state["current_step_name"] = "Column Renaming & Standardizing"
-                pipeline_state["progress"] = 56
-            df = core.rename_columns(df)
-            dur = f"{time.time() - t0:.2f}s"
-            update_step_status(9, "completed", "Renamed", dur)
-            add_log("Step 9: Column renaming completed.", "success")
-
-            # STEP 10 - Property Type Categorization
-            t0 = time.time()
-            update_step_status(10, "running", "Categorising property type...")
-            with state_lock:
-                pipeline_state["current_step_id"] = 10
                 pipeline_state["current_step_name"] = "Property Type Categorization"
-                pipeline_state["progress"] = 62
+                pipeline_state["progress"] = 58
+            df = df.loc[:, ~df.columns.duplicated()].copy()
             df["property_type"] = df["property_type_raw"].apply(core._map_property_type)
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(10, "completed", "Categorised", dur)
-            add_log("Step 10: Property type categorization completed.", "success")
+            update_step_status(9, "completed", "Categorised", dur)
+            add_log("Step 9: Property type categorization completed.", "success")
 
-            # Village Mapping from Transactions DB (Step 5.5 / 11)
-            if "location_name" not in df.columns or "registered_document_village_name" not in df.columns or df["registered_document_village_name"].isna().all():
-                try:
-                    df = core.populate_village_mapping(df, city_id, core.DB_PARAMS)
-                    add_log("Step 11: Populated registered_document_village_name and location_name from DB.", "info")
-                except Exception as ve:
-                    add_log(f"Step 11: Village mapping note: {ve}", "warning")
+            # Village Mapping from Transactions DB (Step 5.5 / 10)
+            try:
+                df = core.populate_village_mapping(df, city_id, core.DB_PARAMS)
+                add_log("Step 10: Populated registered_document_village_name and location_name from DB.", "info")
+            except Exception as ve:
+                add_log(f"Step 10: Village mapping note: {ve}", "warning")
 
-            # STEP 11 - Adding Buyer Location and Pincode (matching main.py Step 11)
+            # STEP 10 - Adding Buyer Location and Pincode (matching main.py Step 10)
             t0 = time.time()
-            update_step_status(11, "running", "Adding buyer location & pincode...")
+            update_step_status(10, "running", "Adding buyer location & pincode...")
             with state_lock:
-                pipeline_state["current_step_id"] = 11
+                pipeline_state["current_step_id"] = 10
                 pipeline_state["current_step_name"] = "Buyer Location & Pincode Lookup"
                 pipeline_state["progress"] = 65
             df = add_buyer_location(df)
             matched_pincodes = int(df["buyer_pincode"].notna().sum()) if "buyer_pincode" in df.columns else 0
             matched_locations = int(df["buyer_locality"].notna().sum()) if "buyer_locality" in df.columns else 0
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(11, "completed", f"{matched_pincodes} pincodes, {matched_locations} locs", dur)
-            add_log(f"Step 11: Buyer location and pincode added ({matched_pincodes} pincodes, {matched_locations} locations).", "success")
+            update_step_status(10, "completed", f"{matched_pincodes} pincodes, {matched_locations} locs", dur)
+            add_log(f"Step 10: Buyer location and pincode added ({matched_pincodes} pincodes, {matched_locations} locations).", "success")
 
-            # Village Mapping from Transactions DB (Step 5.5 / 11)
-            if "location_name" not in df.columns or "registered_document_village_name" not in df.columns or df["registered_document_village_name"].isna().all():
-                try:
-                    df = core.populate_village_mapping(df, city_id, core.DB_PARAMS)
-                    add_log("Step 11: Populated registered_document_village_name and location_name from DB.", "info")
-                except Exception as ve:
-                    add_log(f"Step 11: Village mapping note: {ve}", "warning")
-
-            # STEP 12 - Matching with RERA
+            # STEP 11 - Matching with RERA
             t0 = time.time()
-            update_step_status(12, "running", "Matching RERA reference...")
+            update_step_status(11, "running", "Matching RERA reference...")
             with state_lock:
-                pipeline_state["current_step_id"] = 12
+                pipeline_state["current_step_id"] = 11
                 pipeline_state["current_step_name"] = "RERA Grand Reference Matching"
                 pipeline_state["progress"] = 70
 
-            rera_file = city_cfg.get("rera_grand_file")
-            rera_path = os.path.join(CURR_DIR, rera_file) if rera_file else None
+            import importlib
+            import city_config
+            importlib.reload(city_config)
+            from city_config import resolve_rera_grand_path
+
+            rera_path = resolve_rera_grand_path(city_key or city_name)
             if rera_path and os.path.exists(rera_path):
+                add_log(f"Step 11: Using RERA dataset {os.path.basename(rera_path)} for {city_name}", "info")
                 df = process_rera_matching(df, city=city_name, rera_grand_path=rera_path)
             elif city_key == "pune":
                 df = process_rera_matching(df, city="Pune")
@@ -793,30 +1928,83 @@ def run_pipeline_worker(params):
                         df[c] = pd.NA
                 if "BHK" in df.columns and "property_type" in df.columns:
                     df["BHK"] = df["BHK"].fillna(df["property_type"])
-                add_log(f"Step 12: No RERA dataset configured for {city_name}; skipped safely.", "warning")
+                add_log(f"Step 11: No RERA dataset configured for {city_name}; skipped safely.", "warning")
 
             # Alignment defaults
             for col in ["transaction_date", "date_of_agreement_execution"]:
-                df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
-            df["quarter"] = "Q" + df["transaction_date"].dt.quarter.astype(str) + "-" + df["transaction_date"].dt.year.astype(str)
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+
+            if "transaction_date" in df.columns:
+                dt_year = df["transaction_date"].dt.year
+                if "year" not in df.columns:
+                    df["year"] = dt_year
+                else:
+                    df["year"] = df["year"].fillna(dt_year)
+
+                df["quarter"] = (
+                    "Q"
+                    + df["transaction_date"].dt.quarter.astype(str)
+                    + "-"
+                    + dt_year.astype(str)
+                )
+
             for col in ["transaction_date", "date_of_agreement_execution"]:
-                df[col] = df[col].dt.strftime("%d/%m/%Y")
+                if col in df.columns:
+                    df[col] = df[col].dt.strftime("%d/%m/%Y")
+
+            # ------------------------------------------------------------
+            # Ensure Rate Column is Populated & Mapped to DB Schema ("rate")
+            # Rate represents agreement_price per net_carpet_area_sqft.
+            # ------------------------------------------------------------
+            # 1. Derive net_carpet_area_sqft if missing
+            if "net_carpet_area_sqft" not in df.columns:
+                area_m_col = "net_carpet_area_sq_m" if "net_carpet_area_sq_m" in df.columns else ("net_carpet_area_sqmt" if "net_carpet_area_sqmt" in df.columns else None)
+                if area_m_col and area_m_col in df.columns:
+                    df["net_carpet_area_sqft"] = (pd.to_numeric(df[area_m_col], errors="coerce") * 10.7639).round(2)
+
+            # 2. Compute rate if not already present as 'rate' or 'rate_in_sqft'
+            if "rate" not in df.columns and "rate_in_sqft" not in df.columns:
+                price_col = "agreement_price" if "agreement_price" in df.columns else ("consideration_amt" if "consideration_amt" in df.columns else None)
+                if price_col and "net_carpet_area_sqft" in df.columns:
+                    price_clean = pd.to_numeric(df[price_col].astype(str).str.replace(",", "").str.strip(), errors="coerce")
+                    area_clean = pd.to_numeric(df["net_carpet_area_sqft"], errors="coerce")
+                    df["rate"] = (price_clean / area_clean).round(2)
+
+            if "location_name" in df.columns and "location" in df.columns:
+                df = df.drop(columns=["location"])
 
             rename_map = {
                 "location": "location_name",
                 "igr_village": "registered_document_village_name",
                 "city": "city_name",
-                "net_carpet_area_sqmt": "net_carpet_area_sq_m",
                 "balcony_area_sqmt": "balcony_sq_m",
                 "terrace_area_sqmt": "terrace_sq_m",
                 "project_lat": "project_latitude",
                 "project_lng": "project_longitude",
                 "BHK": "unit_configuration",
+                "bhk": "unit_configuration",
+                "Bhk": "unit_configuration",
+                "unit_config": "unit_configuration",
                 "manual_processed": "is_manual_processed",
                 "locality_en": "sub_locality",
                 "wing_no": "tower_name",
+                "rate_in_sqft": "rate",  # Standardize 'rate_in_sqft' to DB schema column 'rate'
             }
+            if "net_carpet_area_sqmt" in df.columns and "net_carpet_area_sq_m" not in df.columns:
+                df["net_carpet_area_sq_m"] = df["net_carpet_area_sqmt"]
             df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+            df = df.loc[:, ~df.columns.duplicated()].copy()
+            if "registered_document_village_name" in df.columns:
+                df["location_name"] = df["registered_document_village_name"]
+
+            # Standardize unit_configuration and map normalized_unit_configuration
+            if "unit_configuration" not in df.columns:
+                df["unit_configuration"] = df.get("property_type", pd.NA)
+            else:
+                if "property_type" in df.columns:
+                    df["unit_configuration"] = df["unit_configuration"].fillna(df["property_type"])
+            df["normalized_unit_configuration"] = df["unit_configuration"].apply(core.map_unit)
 
             defaults = {
                 "location_latitude": np.nan,
@@ -837,11 +2025,9 @@ def run_pipeline_worker(params):
                 "sourcing_cost": np.nan,
                 "sourcing_time": np.nan,
                 "data_type": "Registered Document",
-                "normalized_unit_configuration": df.get("unit_configuration", pd.NA),
-                "city_name": city_name,
+                "city_name": city_name.title() if isinstance(city_name, str) else city_name,
                 "project_stage": pd.NA,
-                "is_llm_processed": "No",
-                "is_manual_processed": "No",
+                "is_llm_processed": "Yes"
             }
             for col, val in defaults.items():
                 if col not in df.columns:
@@ -849,77 +2035,81 @@ def run_pipeline_worker(params):
 
             rera_matched_count = int(df["index"].notna().sum()) if "index" in df.columns else 0
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(12, "completed", f"{rera_matched_count} matched", dur)
-            add_log(f"Step 12: RERA matching completed - {rera_matched_count} matches found.", "success")
+            update_step_status(11, "completed", f"{rera_matched_count} matched", dur)
+            add_log(f"Step 11: RERA matching completed - {rera_matched_count} matches found.", "success")
             with state_lock:
                 pipeline_state["metrics"]["rera_matched"] = rera_matched_count
 
-            # STEP 13 - Assign NR Indexes
+            # STEP 12 - Assign NR Indexes
             t0 = time.time()
-            update_step_status(13, "running", "Querying PostgreSQL...")
+            update_step_status(12, "running", "Querying PostgreSQL...")
             with state_lock:
-                pipeline_state["current_step_id"] = 13
+                pipeline_state["current_step_id"] = 12
                 pipeline_state["current_step_name"] = "PostgreSQL NR Index Assignment"
                 pipeline_state["progress"] = 75
-            df, nr_stats = core.assign_nr_indexes(df, target_city_id=city_id, db_params=core.DB_PARAMS)
+            df, nr_stats = core.assign_nr_indexes(df, target_city_id=city_id, db_params=core.get_db_params(selected_db))
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(13, "completed", f"{nr_stats['assigned_count']} new NRs", dur)
-            add_log(f"Step 13: Assigned {nr_stats['assigned_count']} new NRs. Highest NR: {nr_stats['highest_new_nr']}.", "success")
+            new_nr = nr_stats.get("new_nr_assigned", nr_stats.get("assigned_count", 0))
+            reused_nr = nr_stats.get("reused_count", 0)
+            update_step_status(12, "completed", f"{reused_nr} reused, {new_nr} new NRs", dur)
+            coords_count = nr_stats.get("coords_reused", 0)
+            add_log(f"Step 12: Reused {reused_nr} indexes ({coords_count} project coordinates enriched). Assigned {new_nr} new NRs. Highest NR: {nr_stats['highest_new_nr']}.", "success")
             with state_lock:
-                pipeline_state["metrics"]["nr_assigned"] = nr_stats["assigned_count"]
+                pipeline_state["metrics"]["reused_matched"] = reused_nr
+                pipeline_state["metrics"]["nr_assigned"] = new_nr
 
-            # STEP 14 - Populate Location Coordinates
+            # STEP 13 - Populate Location Coordinates
             t0 = time.time()
-            update_step_status(14, "running", "Looking up location coords...")
+            update_step_status(13, "running", "Looking up location coords...")
             with state_lock:
-                pipeline_state["current_step_id"] = 14
+                pipeline_state["current_step_id"] = 13
                 pipeline_state["current_step_name"] = "Location Coordinates Lookup"
                 pipeline_state["progress"] = 80
-            df = core.populate_location_coords(df, city_id, core.DB_PARAMS)
+            df = core.populate_location_coords(df, city_id, core.get_db_params(selected_db))
             dur = f"{time.time() - t0:.2f}s"
             loc_coords_found = int(df["location_latitude"].notna().sum()) if "location_latitude" in df.columns else 0
-            update_step_status(14, "completed", f"{loc_coords_found} populated", dur)
-            add_log(f"Step 14: Location LatLong populated ({loc_coords_found} found).", "success")
+            update_step_status(13, "completed", f"{loc_coords_found} populated", dur)
+            add_log(f"Step 13: Location LatLong populated ({loc_coords_found} found).", "success")
 
-            # STEP 15 - Fill remaining project coordinates using Google Places API (Temporarily commented in main.py)
+            # STEP 14 - Fill remaining project coordinates using Google Places API (Temporarily commented in main.py)
             if include_geocoding:
                 t0 = time.time()
-                update_step_status(15, "running", "Querying Places API...")
+                update_step_status(14, "running", "Querying Places API...")
                 with state_lock:
-                    pipeline_state["current_step_id"] = 15
+                    pipeline_state["current_step_id"] = 14
                     pipeline_state["current_step_name"] = "Project Coordinates (Google Places API)"
                     pipeline_state["progress"] = 84
                 try:
                     from project_coordinates import populate_project_coordinates
                     df = populate_project_coordinates(df)
                     dur = f"{time.time() - t0:.2f}s"
-                    update_step_status(15, "completed", "Populated", dur)
-                    add_log("Step 15: Project coordinates enriched via Google Places API.", "success")
+                    update_step_status(14, "completed", "Populated", dur)
+                    add_log("Step 14: Project coordinates enriched via Google Places API.", "success")
                 except Exception as pe:
                     dur = f"{time.time() - t0:.2f}s"
-                    update_step_status(15, "failed", str(pe), dur)
-                    add_log(f"Step 15: Google Places geocoding note: {pe}", "warning")
+                    update_step_status(14, "failed", str(pe), dur)
+                    add_log(f"Step 14: Google Places geocoding note: {pe}", "warning")
             else:
-                update_step_status(15, "skipped", "Temporarily Commented / Skipped", "-")
-                add_log("Step 15: Project Coordinates skipped (temporarily commented in main.py).", "info")
+                update_step_status(14, "skipped", "Temporarily Commented / Skipped", "-")
+                add_log("Step 14: Project Coordinates skipped (temporarily commented in main.py).", "info")
 
-            # STEP 16 - Keep Selective DB Columns
+            # STEP 15 - Keep Selective DB Columns
             t0 = time.time()
-            update_step_status(16, "running", "Filtering columns...")
+            update_step_status(15, "running", "Filtering columns...")
             with state_lock:
-                pipeline_state["current_step_id"] = 16
+                pipeline_state["current_step_id"] = 15
                 pipeline_state["current_step_name"] = "DB Schema Column Alignment"
                 pipeline_state["progress"] = 88
             df = core.keep_db_columns(df, DB_SEQUENCE)
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(16, "completed", f"{len(df.columns)} columns", dur)
-            add_log(f"Step 16: Retained {len(df.columns)} columns matching DB schema.", "success")
+            update_step_status(15, "completed", f"{len(df.columns)} columns", dur)
+            add_log(f"Step 15: Retained {len(df.columns)} columns matching DB schema.", "success")
 
-            # STEP 17 - Title Casing
+            # STEP 16 - Title Casing
             t0 = time.time()
-            update_step_status(17, "running", "Applying title case...")
+            update_step_status(16, "running", "Applying title case...")
             with state_lock:
-                pipeline_state["current_step_id"] = 17
+                pipeline_state["current_step_id"] = 16
                 pipeline_state["current_step_name"] = "Title Casing"
                 pipeline_state["progress"] = 90
 
@@ -927,24 +2117,27 @@ def run_pipeline_worker(params):
                 df[col] = df[col].apply(lambda x: x.title() if isinstance(x, str) else x)
 
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(17, "completed", f"{len(df)} rows formatted", dur)
-            add_log("Step 17: Title casing applied to text columns.", "success")
+            update_step_status(16, "completed", f"{len(df)} rows formatted", dur)
+            add_log("Step 16: Title casing applied to text columns.", "success")
 
-            # STEP 18 - Final Output Save (Google Drive Primary & Local Backup)
+            # STEP 17 - Final Output Save (Google Drive Primary & Local Backup)
             t0 = time.time()
-            update_step_status(18, "running", "Saving output to Drive & local...")
+            update_step_status(17, "running", "Saving output to Drive & local...")
             with state_lock:
-                pipeline_state["current_step_id"] = 18
+                pipeline_state["current_step_id"] = 17
                 pipeline_state["current_step_name"] = "Final Output Save (Drive & Local)"
                 pipeline_state["progress"] = 95
 
-            src = manual_file or input_file
-            base_name = "output"
-            if src:
-                base_name = os.path.splitext(os.path.basename(src))[0]
-                for suffix in ["_for_manual", "_processed_v1", "_processed", "_llm_output"]:
-                    base_name = base_name.replace(suffix, "")
-            default_filename = f"{base_name}_final_processed.xlsx"
+            if is_multi_file:
+                default_filename = f"{city_name}_Final_Merged_Output_final_processed.xlsx"
+            else:
+                src = (manual_file.split(",")[0].strip() if (manual_file and "," in manual_file) else manual_file) or input_file
+                base_name = "output"
+                if src:
+                    base_name = os.path.splitext(os.path.basename(src))[0]
+                    for suffix in ["_final_processed", "_for_manual", "_processed_v1", "_processed", "_llm_output", "_Merged_File", "_merged_file", "_merged"]:
+                        base_name = base_name.replace(suffix, "")
+                default_filename = f"{base_name}_final_processed.xlsx"
 
             final_drive_url = city_cfg.get("final_drive_url")
             drive_dir = resolve_drive_directory(final_drive_url)
@@ -952,16 +2145,18 @@ def run_pipeline_worker(params):
 
             raw_out = (output_path or "").strip()
             if raw_out.lower().startswith("g:\\"):
-                drive_out = raw_out
-                local_out = os.path.join(CURR_DIR, os.path.basename(raw_out))
+                drive_out = raw_out if raw_out.lower().endswith((".xlsx", ".xls")) else f"{raw_out}.xlsx"
+                local_out = os.path.join(CURR_DIR, os.path.basename(drive_out))
             elif raw_out and os.path.dirname(raw_out):
                 # User provided a local path like D:\Nilesh\...\file.xlsx
                 filename = os.path.basename(raw_out)
+                if not filename.lower().endswith((".xlsx", ".xls")):
+                    filename = f"{filename}.xlsx"
                 drive_out = os.path.join(location_drive_path, filename) if location_drive_path else None
-                local_out = raw_out
+                local_out = raw_out if raw_out.lower().endswith((".xlsx", ".xls")) else f"{raw_out}.xlsx"
             else:
                 filename = raw_out if raw_out else default_filename
-                if not filename.lower().endswith(".xlsx"):
+                if not filename.lower().endswith((".xlsx", ".xls")):
                     filename = f"{filename}.xlsx"
                 drive_out = os.path.join(location_drive_path, filename) if location_drive_path else None
                 local_out = os.path.join(CURR_DIR, filename)
@@ -972,156 +2167,59 @@ def run_pipeline_worker(params):
                 try:
                     os.makedirs(os.path.dirname(drive_out), exist_ok=True)
                     df.to_excel(drive_out, index=False)
-                    add_log(f"Step 18: ☁️ Saved final output to Google Drive ({city_name}): {drive_out}", "success")
+                    add_log(f"Step 17: ☁️ Saved final output to Google Drive ({city_name}): {drive_out}", "success")
                     drive_saved = True
                 except Exception as de:
-                    add_log(f"Step 18: ⚠️ Note saving to Google Drive ({drive_out}): {de}", "warning")
+                    add_log(f"Step 17: ⚠️ Note saving to Google Drive ({drive_out}): {de}", "warning")
 
             # 2. Save local copy (Fallback if drive save failed or Drive not configured)
             if not drive_saved and local_out:
                 try:
                     os.makedirs(os.path.dirname(local_out), exist_ok=True)
                     df.to_excel(local_out, index=False)
-                    add_log(f"Step 18: 📁 Local copy saved ({city_name}): {local_out}", "info")
+                    add_log(f"Step 17: 📁 Local copy saved ({city_name}): {local_out}", "info")
                 except Exception as le:
-                    add_log(f"Step 18: ⚠️ Note saving local copy ({local_out}): {le}", "warning")
+                    add_log(f"Step 17: ⚠️ Note saving local copy ({local_out}): {le}", "warning")
 
             # Target file for parquet input and display (prefer Drive path if saved)
             target_out = drive_out if (drive_saved and drive_out) else (local_out or drive_out)
 
             dur = f"{time.time() - t0:.2f}s"
-            update_step_status(18, "completed", f"Saved {len(df)} rows", dur)
+            update_step_status(17, "completed", f"Saved {len(df)} rows", dur)
             with state_lock:
                 pipeline_state["output_file"] = target_out
 
-        # ============================================================
-        # STEP 19 VERIFICATION: PAUSE AND WAIT FOR USER CONFIRMATION
-        # ============================================================
-        candidate_parquet_file = (drive_out if (locals().get("drive_saved") and locals().get("drive_out") and os.path.exists(drive_out)) else target_out)
-        resume_step18_event.clear()
-        with state_lock:
-            pipeline_state["state"] = "awaiting_parquet_confirmation"
-            pipeline_state["current_step_id"] = 19
-            pipeline_state["current_step_name"] = "Waiting for Parquet Confirmation"
-            pipeline_state["output_file"] = candidate_parquet_file
-            pipeline_state["proceed_parquet"] = True
-
-        update_step_status(19, "running", "Waiting for user confirmation...")
-        add_log("=" * 60, "warning")
-        add_log(f"⏸️ Step 18 finished! Final dataset: {candidate_parquet_file}", "warning")
-        add_log("⏸️ Pipeline PAUSED: Please verify if final processed file is correct before Parquet conversion.", "warning")
-        add_log("=" * 60, "warning")
-
-        while not resume_step18_event.is_set():
-            if pipeline_state.get("stop_requested"):
-                add_log("Pipeline cancelled while waiting for Parquet confirmation.", "error")
-                with state_lock:
-                    pipeline_state["state"] = "stopped"
-                return
-            time.sleep(0.5)
-
-        with state_lock:
-            pipeline_state["state"] = "running"
-            proceed_parquet = pipeline_state.get("proceed_parquet", True)
-            target_out = pipeline_state.get("output_file") or candidate_parquet_file
-
-        if proceed_parquet:
-            # STEP 19 - Parquet Conversion
-            t0 = time.time()
-            update_step_status(19, "running", "Converting to Parquet...")
-            with state_lock:
-                pipeline_state["current_step_id"] = 19
-                pipeline_state["current_step_name"] = "Parquet Conversion"
-                pipeline_state["progress"] = 96
-
-            from parquet_conersion import convert_csv_to_parquet
-
-            # Resolve city name dynamically from city_id or dataframe
-            city_name = "Pune"
-            try:
-                conn = psycopg2.connect(**core.DB_PARAMS)
-                cur = conn.cursor()
-                cur.execute("SELECT city_name FROM public.dim_city WHERE city_id = %s;", (city_id,))
-                row = cur.fetchone()
-                if row and row[0]:
-                    city_name = str(row[0]).strip().title()
-                cur.close()
-                conn.close()
-            except Exception:
-                pass
-
-            if df is not None and "city_name" in df.columns:
-                first_val = df["city_name"].dropna().iloc[0] if len(df["city_name"].dropna()) > 0 else ""
-                if first_val:
-                    city_name = str(first_val).strip().title()
-
-            parquet_base_dir = r"G:\.shortcut-targets-by-id\1oGd6xPdp686p0qW-tzZyy5quOpi82hLA\DB1+DB2\converted_feather_parquet"
-            if not os.path.exists(parquet_base_dir):
-                parquet_base_dir = os.path.join(CURR_DIR, "converted_feather_parquet")
-
-            city_parquet_dir = os.path.join(parquet_base_dir, city_name)
-            os.makedirs(city_parquet_dir, exist_ok=True)
-            parquet_target = os.path.join(city_parquet_dir, f"{city_name}_db1.parquet")
-
-            parquet_input = target_out
-            add_log(f"Step 19: Converting {parquet_input} -> {parquet_target} ...", "info")
-            pq_res = convert_csv_to_parquet(
-                input_file=parquet_input,
-                output_file=parquet_target,
-                date_cols=["transaction_date", "date_of_agreement_execution"],
-            )
-
-            dur = f"{time.time() - t0:.2f}s"
-            row_count = pq_res.get('rows', len(df) if df is not None else 0)
-            update_step_status(19, "completed", f"Converted {row_count:,} rows", dur)
-            add_log(f"Step 19: Parquet conversion completed successfully -> {parquet_target}", "success")
-            with state_lock:
-                pipeline_state["parquet_file"] = parquet_target
-        else:
-            update_step_status(19, "skipped", "Skipped by user", "-")
-            add_log("Step 19: Parquet conversion skipped by user.", "warning")
-
-        # STEP 20 - Trigger Database Upload Pipeline (final_code.py)
-        t0 = time.time()
-        update_step_status(20, "running", "Triggering Database Upload Pipeline...")
-        with state_lock:
-            pipeline_state["current_step_id"] = 20
-            pipeline_state["current_step_name"] = "Database Upload Pipeline"
-            pipeline_state["progress"] = 99
-
-        project_root, final_code_path = resolve_upload_pipeline_paths()
-
-        add_log(f"Step 20: Locating upload pipeline at: {final_code_path}", "info")
-        auto_upload = params.get("auto_upload", True)
-
-        if not final_code_path.exists():
-            add_log(f"Step 20: ⚠️ Could not locate final_code.py at: {final_code_path}", "warning")
-            dur = f"{time.time() - t0:.2f}s"
-            update_step_status(20, "completed", "final_code.py not found", dur)
-        else:
-            if auto_upload:
+            # Automatically share final processed file with checker (Deeksha) in background
+            def _send_checker_bg(fpath, cname, lname, rcount, durl):
                 try:
-                    add_log("Step 20: 🚀 Launching final_code.py in interactive terminal window...", "info")
-                    launch_upload_pipeline_terminal(final_code_path, project_root)
-                    dur = f"{time.time() - t0:.2f}s"
-                    update_step_status(20, "completed", "Launched in Terminal", dur)
-                    add_log(f"Step 20: ✓ final_code.py launched successfully ({final_code_path})! Proceed with database upload in the terminal window.", "success")
-                except Exception as fe:
-                    add_log(f"Step 20: ⚠️ Error launching final_code.py: {fe}", "warning")
-                    dur = f"{time.time() - t0:.2f}s"
-                    update_step_status(20, "completed", "Launch Error", dur)
-            else:
-                dur = f"{time.time() - t0:.2f}s"
-                update_step_status(20, "completed", "Ready to Launch", dur)
-                add_log("Step 20: Auto-upload skipped. You can trigger final_code.py anytime from the dashboard.", "info")
+                    res = send_final_checker_email(
+                        file_path=fpath,
+                        city_name=cname,
+                        location_name=lname,
+                        row_count=rcount,
+                        drive_url=durl,
+                        checker_email="deeksha@sigmavalue.co.in",
+                    )
+                    att_note = " (with Excel attached)" if res.get("attached") else " (with Google Drive link)"
+                    add_log(f"Step 17: 📧 [Auto-Share] Email successfully sent to checker deeksha@sigmavalue.co.in{att_note}!", "success")
+                except Exception as mail_err:
+                    add_log(f"Step 17: ⚠️ [Auto-Share] Note: Unable to email checker ({mail_err})", "warning")
+
+            drive_share_url = final_drive_url or city_cfg.get("final_drive_url") or core.DEFAULT_DRIVE_FOLDER_URL
+            threading.Thread(
+                target=_send_checker_bg,
+                args=(target_out, city_name, location_name, len(df), drive_share_url),
+                daemon=False,
+            ).start()
 
         with state_lock:
             pipeline_state["state"] = "completed"
             pipeline_state["progress"] = 100
-            pipeline_state["current_step_name"] = "Pipeline Finished Successfully!"
+            pipeline_state["current_step_name"] = "Pipeline Finished Successfully (17/17 Steps)!"
             pipeline_state["output_file"] = target_out
-            pipeline_state["parquet_file"] = parquet_target
-            pipeline_state["final_code_path"] = str(final_code_path) if final_code_path.exists() else None
+
+        add_log(f"🎉 Pipeline finished successfully (Steps 1 to 17)! Final output ready at: {target_out}", "success")
+        return
 
     except Exception as e:
         err_msg = str(e)
@@ -1136,6 +2234,10 @@ def run_pipeline_worker(params):
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
+    def address_string(self):
+        # Avoid Windows reverse DNS lookup timeout (2.0s delay per request)
+        return str(self.client_address[0])
+
     def log_message(self, format, *args):
         pass  # Suppress default server access noise in stdout
 
@@ -1160,39 +2262,150 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(pipeline_state)
         elif url_path == "/api/cities":
             self.send_json(CITY_CONFIG)
-        elif url_path == "/api/drive/input-locations":
-            city_param = self.get_query_param("city") or self.get_query_param("city_id") or "pune"
-            cfg = get_city_config(city_param)
-            drive_url = cfg.get("input_drive_url")
-            locations = scan_drive_locations(drive_url) if drive_url else []
+        elif url_path == "/api/dubai/config":
+            last_d = None
+            yesterday_d = (datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y")
+            target_db = self.get_query_param("db") or pipeline_state.get("selected_db") or "nilesh"
+            try:
+                import importlib
+                import Dubai_processing.dubai_scraper as dubai_scraper
+                importlib.reload(dubai_scraper)
+                last_d = dubai_scraper.get_last_transaction_date_from_db("Dubai", db_params=core.get_db_params(target_db))
+                yesterday_d = dubai_scraper.TO_DATE or yesterday_d
+            except Exception:
+                pass
             self.send_json({
-                "city": cfg.get("display_name"),
+                "city_id": 15,
+                "city_name": "Dubai",
+                "city_key": "dubai",
+                "selected_db": target_db,
+                "from_date": last_d or "12/08/2026",
+                "to_date": yesterday_d,
+                "parent_drive_url": "https://drive.google.com/drive/folders/1q-rgFMUS5gyZq9ngoIozgzDwb-cSguim?usp=drive_link",
+                "input_folder_name": "1. Download Files(Row)",
+                "output_folder_name": "2.Processed Files"
+            })
+        elif url_path == "/api/abu-dhabi/config":
+            yesterday_d = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            from_d = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            self.send_json({
+                "city_id": 1,
+                "city_name": "Abu Dhabi",
+                "city_key": "abu_dhabi",
+                "from_date": from_d,
+                "to_date": yesterday_d,
+                "parent_drive_url": "https://drive.google.com/drive/folders/1h_cUque4NqERMGvE__LaJgLuanXu1Ov2?usp=drive_link",
+                "parent_folder_id": "1h_cUque4NqERMGvE__LaJgLuanXu1Ov2",
+                "raw_folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+                "raw_drive_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
+                "processed_folder_id": "126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s",
+                "processed_drive_url": "https://drive.google.com/drive/folders/126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s?usp=drive_link",
+                "drive_folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+                "drive_folder_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
+                "folder_name": "Raw Data"
+            })
+        elif url_path == "/api/abu-dhabi/files":
+            files = get_abu_dhabi_drive_files()
+            self.send_json({
+                "city_id": 1,
+                "city_name": "Abu Dhabi",
+                "parent_folder_id": "1h_cUque4NqERMGvE__LaJgLuanXu1Ov2",
+                "raw_folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+                "processed_folder_id": "126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s",
+                "folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+                "drive_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
+                "raw_drive_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
+                "processed_drive_url": "https://drive.google.com/drive/folders/126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s?usp=drive_link",
+                "files": files
+            })
+        elif url_path == "/api/city-config":
+            city_param = self.get_query_param("city") or self.get_query_param("city_id") or "9"
+            cfg = get_city_config(city_param)
+            self.send_json({
+                "city_id": cfg.get("city_id"),
+                "city_name": cfg.get("display_name"),
+                "city_key": cfg.get("key"),
+                "input_drive_url": cfg.get("input_drive_url"),
+                "manual_correction_drive_url": cfg.get("manual_correction_drive_url"),
+                "final_drive_url": cfg.get("final_drive_url"),
+            })
+        elif url_path == "/api/drive/input-locations":
+            city_param = self.get_query_param("city") or self.get_query_param("city_id")
+            cfg = get_city_config(city_param) if city_param else {}
+            drive_url = cfg.get("input_drive_url") if cfg else None
+            locations = scan_drive_locations(drive_url, city_param) if drive_url else []
+            self.send_json({
+                "city": cfg.get("display_name", ""),
                 "city_id": cfg.get("city_id"),
                 "drive_url": drive_url,
                 "locations": locations
             })
         elif url_path == "/api/drive/manual-locations":
-            city_param = self.get_query_param("city") or self.get_query_param("city_id") or "pune"
-            cfg = get_city_config(city_param)
-            drive_url = cfg.get("manual_correction_drive_url")
-            locations = scan_drive_locations(drive_url) if drive_url else []
+            city_param = self.get_query_param("city") or self.get_query_param("city_id")
+            cfg = get_city_config(city_param) if city_param else {}
+            drive_url = cfg.get("manual_correction_drive_url") if cfg else None
+            locations = scan_drive_locations(drive_url, city_param) if drive_url else []
+            for loc in locations:
+                loc_name = loc.get("location", "")
+                loc_drive = get_manual_correction_drive_url(cfg.get("city_id"), loc_name)
+                if loc_drive:
+                    loc["drive_url"] = loc_drive
             self.send_json({
-                "city": cfg.get("display_name"),
+                "city": cfg.get("display_name", ""),
                 "city_id": cfg.get("city_id"),
                 "drive_url": drive_url,
                 "locations": locations
             })
         elif url_path == "/api/drive/final-locations":
-            city_param = self.get_query_param("city") or self.get_query_param("city_id") or "pune"
-            cfg = get_city_config(city_param)
-            drive_url = cfg.get("final_drive_url")
-            locations = scan_drive_locations(drive_url) if drive_url else []
+            city_param = self.get_query_param("city") or self.get_query_param("city_id")
+            cfg = get_city_config(city_param) if city_param else {}
+            drive_url = cfg.get("final_drive_url") if cfg else None
+            locations = scan_drive_locations(drive_url, city_param) if drive_url else []
             self.send_json({
-                "city": cfg.get("display_name"),
+                "city": cfg.get("display_name", ""),
                 "city_id": cfg.get("city_id"),
                 "drive_url": drive_url,
                 "locations": locations
             })
+        elif url_path == "/api/outlier/locations":
+            city_param = self.get_query_param("city") or self.get_query_param("city_id") or "9"
+            cfg = get_city_config(city_param) if city_param else {}
+            city_id = int(cfg.get("city_id", 9))
+            city_name = cfg.get("display_name", "Selected City")
+
+            # Collect locations strictly from Google Drive folders (DO NOT query database):
+            final_drive_url = cfg.get("final_drive_url")
+            final_locs = scan_drive_locations(final_drive_url) if final_drive_url else []
+
+            manual_drive_url = cfg.get("manual_correction_drive_url")
+            manual_locs = scan_drive_locations(manual_drive_url) if manual_drive_url else []
+
+            input_drive_url = cfg.get("input_drive_url")
+            input_locs = scan_drive_locations(input_drive_url) if input_drive_url else []
+
+            loc_names = set()
+            for loc in final_locs + manual_locs + input_locs:
+                if loc.get("location"):
+                    l_clean = loc["location"].strip()
+                    if l_clean.lower() not in ["general", "none", "null", "all_locations", "all locations"]:
+                        # Normalize folder spelling differences to match database naming
+                        if "goan" in l_clean.lower():
+                            l_clean = l_clean.replace("goan", "gaon").replace("Goan", "Gaon")
+                        loc_names.add(l_clean)
+
+            # Also check dedicated location drive configs for this city (e.g. Bandra in Mumbai)
+            for loc_k, loc_v in LOCATION_DRIVE_CONFIG.items():
+                if loc_v.get("city_id") == city_id:
+                    loc_names.add(loc_v.get("display_name", loc_k.title()))
+
+            sorted_locs = sorted(list(loc_names), key=lambda x: x.lower())
+            self.send_json({
+                "city": city_name,
+                "city_id": city_id,
+                "locations": sorted_locs
+            })
+        elif url_path == "/email_template.html":
+            self.serve_file(os.path.join(WEB_DIR, "email_template.html"), "text/html")
         else:
             self.send_error(404, "File Not Found")
 
@@ -1219,17 +2432,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(length).decode("utf-8")
             try:
                 data = json.loads(body)
-                manual_file = data.get("manual_file")
+                manual_file = data.get("manual_files") or data.get("manual_file")
                 output_path = data.get("output_path")
                 city_id = data.get("city_id") or pipeline_state.get("city_id", 9)
-                include_geocoding = data.get("include_geocoding", False)
+                include_geocoding = data.get("include_geocoding", True)
                 auto_upload = data.get("auto_upload", True)
             except Exception:
                 data = {}
                 manual_file = None
                 output_path = None
                 city_id = pipeline_state.get("city_id", 9)
-                include_geocoding = False
+                include_geocoding = True
                 auto_upload = True
 
             with state_lock:
@@ -1238,14 +2451,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     pipeline_state["manual_file"] = manual_file
 
             if current_state == "awaiting_manual_file":
-                add_log(f"Resuming pipeline at Step 7 with: {manual_file}", "info")
+                add_log(f"Resuming pipeline at Step 7 with manual file(s): {manual_file}", "info")
                 resume_step7_event.set()
                 self.send_json({"status": "resumed", "state": "running"})
             else:
                 if not manual_file:
                     self.send_json({"error": "Manual file path is required to resume."}, status=400)
                     return
-                add_log(f"Launching pipeline in Mode 2 (Step 7 -> 20) with: {manual_file}", "info")
+                add_log(f"Launching pipeline in Mode 2 (Step 7 -> 20) with manual file(s): {manual_file}", "info")
                 params = {
                     "mode": "2",
                     "manual_file": manual_file,
@@ -1275,6 +2488,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not file_path or not recipients:
                     self.send_json({"error": "file_path and recipients are required"}, status=400)
                     return
+
+                # If location_name is missing, try inferring from file_path
+                if not location_name and file_path:
+                    parent_c = os.path.basename(os.path.dirname(file_path))
+                    if parent_c and parent_c.lower() not in ["3. manually corrected", "processing", "required_files", "data"]:
+                        location_name = parent_c
+                    else:
+                        location_name = os.path.splitext(os.path.basename(file_path))[0].split("_")[0]
+
+                # Priority: enforce accurate location drive url (Bandra, etc.)
+                resolved_url = get_manual_correction_drive_url(
+                    city_identifier=city_id,
+                    location_name=location_name,
+                    file_path=file_path,
+                )
+                if resolved_url:
+                    drive_url = resolved_url
+
+                cc_param = data.get("cc_emails") or data.get("cc")
+                if isinstance(cc_param, str):
+                    cc_emails = [c.strip() for c in cc_param.split(",") if c.strip()]
+                elif isinstance(cc_param, list):
+                    cc_emails = cc_param
+                else:
+                    cc_emails = None
+
                 result = send_correction_email(
                     file_path,
                     recipients,
@@ -1282,9 +2521,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     deadline=deadline,
                     city_id=city_id,
                     drive_url=drive_url,
+                    cc_emails=cc_emails,
                 )
+                cc_sent = result.get("cc", [])
+                cc_log = f" (CC: {', '.join(cc_sent)})" if cc_sent else ""
                 log_dl = f" (Deadline: {result.get('deadline_formatted') or deadline})" if deadline else ""
-                add_log(f"📧 Manual correction file shared with: {', '.join(recipients)}{log_dl}", "success")
+                add_log(f"📧 Manual correction file shared with: {', '.join(recipients)}{cc_log}{log_dl}", "success")
                 self.send_json(result)
             except Exception as e:
                 add_log(f"⚠️ Email sharing error: {e}", "warning")
@@ -1323,14 +2565,73 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             if current_state == "awaiting_parquet_confirmation":
                 if action == "skip":
-                    add_log("User choice: Skip Parquet conversion (Step 19).", "warning")
+                    add_log("User choice: Skip Parquet conversion (Step 18).", "warning")
                 else:
                     chosen = file_path or pipeline_state.get("output_file")
-                    add_log(f"User confirmed final processed file: {chosen}. Proceeding to Step 19 Parquet conversion...", "success")
+                    add_log(f"User confirmed final processed file: {chosen}. Proceeding to Step 18 Parquet conversion...", "success")
                 resume_step18_event.set()
                 self.send_json({"status": "resumed", "state": "running"})
             else:
-                self.send_json({"error": "Pipeline is not currently awaiting Parquet confirmation."}, status=400)
+                chosen = (file_path or pipeline_state.get("output_file") or "").strip()
+                if chosen and os.path.exists(chosen) and action != "skip":
+                    city_id = data.get("city_id")
+                    path_lower = chosen.lower()
+                    if "dubai" in path_lower or "1tvdeggw5dahnxro4jfxj8tuink3dkxo8" in path_lower:
+                        city_id = 15
+
+                    add_log(f"Launching direct Parquet conversion (Step 18) for: {chosen}", "info")
+                    params = {
+                        "mode": "3",
+                        "input_file": chosen,
+                        "output_path": chosen,
+                        "city_id": city_id or 15,
+                    }
+                    thread = threading.Thread(target=run_pipeline_worker, args=(params,), daemon=True)
+                    thread.start()
+                    self.send_json({"status": "started", "state": "running"})
+                else:
+                    self.send_json({"error": "Pipeline is not currently awaiting Parquet confirmation, and no valid final processed file was found to convert."}, status=400)
+
+        elif self.path == "/api/run-outlier":
+            length = int(self.headers.get("content-length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+
+            if pipeline_state["state"] == "running":
+                self.send_json({"error": "A pipeline run is already in progress."}, status=409)
+                return
+
+            city_id = data.get("city_id") or pipeline_state.get("city_id", 9)
+            location_name = data.get("location_name")
+            save_report = data.get("save_outlier_report", False)
+
+            params = {
+                "mode": "5",
+                "city_id": city_id,
+                "outlier_location": location_name,
+                "save_outlier_report": save_report,
+                "database": data.get("database") or pipeline_state.get("selected_db") or "nilesh",
+            }
+            thread = threading.Thread(target=run_pipeline_worker, args=(params,), daemon=True)
+            thread.start()
+            self.send_json({"status": "started", "state": "running"})
+
+        elif self.path == "/api/set-db":
+            length = int(self.headers.get("content-length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            try:
+                data = json.loads(body) if body else {}
+                new_db = str(data.get("database", "")).strip() or "nilesh"
+            except Exception:
+                new_db = "nilesh"
+            with state_lock:
+                pipeline_state["selected_db"] = new_db
+            core.set_active_db(new_db)
+            add_log(f"🗄️ Active database switched to: '{new_db}'", "info")
+            self.send_json({"status": "updated", "selected_db": new_db})
 
         elif self.path == "/api/stop":
             with state_lock:
@@ -1356,25 +2657,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def send_json(self, data, status=200):
-        content = json.dumps(data).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
+        try:
+            content = json.dumps(data).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass
+
+
+class DualStackServer(HTTPServerClass):
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        try:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except (AttributeError, OSError):
+            pass
+        super().server_bind()
 
 
 def find_available_port(start_port=8000, max_tries=10):
     for port in range(start_port, start_port + max_tries):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("localhost", port)) != 0:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
                 return port
     return start_port
 
 
 def start_server():
     port = find_available_port(8000)
-    server = HTTPServerClass(("localhost", port), DashboardHandler)
+    try:
+        server = DualStackServer(("::", port), DashboardHandler)
+    except Exception:
+        server = HTTPServerClass(("0.0.0.0", port), DashboardHandler)
     url = f"http://localhost:{port}"
     print("\n" + "=" * 60)
     print(f"🚀 Sogaon Pipeline Web Dashboard Running!")
