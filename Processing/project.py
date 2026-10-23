@@ -2180,7 +2180,10 @@ if not skip_outlier:
     save_path = None
     if save_prompt in ["y", "yes"]:
         loc_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(loc_to_process)).strip("_")[:50] if loc_to_process else "all_locations"
-        outlier_dir = Path(__file__).resolve().parents[1] / "outlier_implementaion"
+        outlier_dir = Path(__file__).resolve().parent / "Outlier_implementation"
+        if not outlier_dir.exists():
+            root_alt = Path(__file__).resolve().parents[1] / "outlier_implementaion"
+            outlier_dir = outlier_dir if not root_alt.exists() else root_alt
         outlier_dir.mkdir(parents=True, exist_ok=True)
         save_path = str(outlier_dir / f"outliers_{city_name_to_process.lower()}_{loc_slug}.xlsx")
         print(f"  {CYAN}📄 Merged report will be saved to:{RESET} {save_path}")
@@ -2211,5 +2214,6 @@ if not skip_outlier:
         print(f"\n{RED}❌ [STEP 20/20] Error executing outlier update: {oe}{RESET}")
 else:
     print(f"{BLUE}ℹ Outlier update skipped.{RESET}")
+
 
 
