@@ -16,7 +16,9 @@ For a given city_id:
 
 Install deps:  pip install psycopg2-binary pandas numpy
 """
-
+import os
+import sys
+import re
 import numpy as np
 import pandas as pd
 import psycopg2
@@ -454,7 +456,11 @@ if __name__ == "__main__":
         target_location = None if target_location.lower() in ["none", "all", ""] else target_location
 
     save_excel_path = args.save_excel
-    outlier_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outlier_implementaion")
+    curr_dir = os.path.dirname(os.path.abspath(__file__))
+    outlier_dir = os.path.join(curr_dir, "Outlier_implementation")
+    if not os.path.exists(outlier_dir):
+        root_alt = os.path.join(os.path.dirname(curr_dir), "outlier_implementaion")
+        outlier_dir = outlier_dir if not os.path.exists(root_alt) else root_alt
     if save_excel_path is None and sys.stdin.isatty():
         save_prompt = input("\nDo you want to save the detailed merged outlier Excel report? (y/n) [default: n]: ").strip().lower()
         if save_prompt in ["y", "yes"]:

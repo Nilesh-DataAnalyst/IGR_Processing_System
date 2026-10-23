@@ -449,7 +449,7 @@ def tfidf_pair_similarity(name_1, name_2, name_to_index, matrix):
 # ============================================================
 def cluster_names_complete_linkage(unique_names, name_frequencies):
     if not unique_names:
-        return {}, {}, [], {}
+        return {}, {}, [], pd.DataFrame(columns=["name_1", "name_2", "accepted", "confidence_score", "reason"])
 
     ordered_names = sorted(
         unique_names,
@@ -743,8 +743,10 @@ def run_project_clustering(input_path_val=None, input_df=None):
     ].copy()
     manual_review_df.sort_values(by=["project_match_confidence_score", "project_cluster_id"], inplace=True)
 
-    if not pair_review_df.empty:
+    if isinstance(pair_review_df, pd.DataFrame) and not pair_review_df.empty:
         pair_review_df.sort_values(by=["accepted", "confidence_score"], ascending=[False, False], inplace=True)
+    elif not isinstance(pair_review_df, pd.DataFrame):
+        pair_review_df = pd.DataFrame(columns=["name_1", "name_2", "accepted", "confidence_score", "reason"])
 
     unique_cleaned_count = df[COL_CLEANED_PROJECT].nunique(dropna=True)
 
@@ -1214,6 +1216,8 @@ def export_combined_workbook(
 ):
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not isinstance(pair_review_df, pd.DataFrame):
+        pair_review_df = pd.DataFrame(columns=["name_1", "name_2", "accepted", "confidence_score", "reason"])
 
     def _write(save_path):
         if not KEEP_INTERMEDIATE_PROJECT_COLUMNS:

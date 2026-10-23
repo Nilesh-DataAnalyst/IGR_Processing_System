@@ -27,8 +27,7 @@
         </div>
         <div>
           <h1 class="brand-title">Data Processing Pipeline</h1>
-          <p class="brand-subtitle">20-Step Automated Ingestion, Standardization, RERA Matching, Parquet, Database
-            Upload & Outlier Detection</p>
+          <p class="brand-subtitle">17-Step Automated Ingestion, Standardization, RERA Matching & Database Preparation</p>
         </div>
       </div>
       <div class="header-status">
@@ -51,10 +50,52 @@
       </div>
     </header>
 
+    <!-- TOP APPLICATION NAVIGATION TABS (PAGINATED VIEWS & TOGGLE) -->
+    <nav class="app-nav-tabs-bar" id="app-nav-bar" aria-label="Dashboard View Navigation">
+      <div class="nav-tabs-group">
+        <button type="button" class="nav-tab-btn active" id="tab-btn-config" data-tab="config" title="Step 1: Configure city, mode and input paths (Hotkey: 1)">
+          <span class="tab-icon">⚙️</span>
+          <span class="tab-text">1. Setup &amp; Config</span>
+          <span class="tab-badge" id="tab-badge-city">Pune (ID: 9)</span>
+        </button>
+        <button type="button" class="nav-tab-btn" id="tab-btn-progress" data-tab="progress" title="Step 2: Live Progress &amp; 17-Step Visualizer (Hotkey: 2)">
+          <span class="tab-icon">📊</span>
+          <span class="tab-text">2. Progress &amp; 17 Steps</span>
+          <span class="tab-badge" id="tab-badge-progress">0%</span>
+        </button>
+        <button type="button" class="nav-tab-btn" id="tab-btn-console" data-tab="console" title="Step 3: Live Terminal Console &amp; Paginated Logs (Hotkey: 3)">
+          <span class="tab-icon">💻</span>
+          <span class="tab-text">3. Console &amp; Logs</span>
+          <span class="tab-badge" id="tab-badge-logs">0 Logs</span>
+        </button>
+        <button type="button" class="nav-tab-btn" id="tab-btn-reports" data-tab="reports" title="Step 4: Step 7 Merge Report &amp; Audits (Hotkey: 4)">
+          <span class="tab-icon">📑</span>
+          <span class="tab-text">4. Merge &amp; Reports</span>
+          <span class="tab-badge" id="tab-badge-reports">Audits</span>
+        </button>
+      </div>
+
+      <div class="nav-actions-group">
+        <!-- Layout View Mode Switcher: Tabbed Pages vs Continuous Scroll -->
+        <div class="view-mode-toggle" title="Switch between Tabbed Pages and Continuous Scroll">
+          <button type="button" class="view-mode-btn active" id="btn-mode-tabbed" data-mode="tabbed" title="Paginated tabbed page view">
+            <span>📑 Tabbed Pages</span>
+          </button>
+          <button type="button" class="view-mode-btn" id="btn-mode-scroll" data-mode="scroll" title="Show all sections vertically on one page">
+            <span>📜 All-in-One View</span>
+          </button>
+        </div>
+      </div>
+    </nav>
+
     <!-- MAIN DASHBOARD CONTENT -->
     <main class="dashboard-main">
-      <!-- CONFIGURATION SECTION -->
-      <section class="card config-card">
+      <!-- =========================================================
+           TAB PANE 1: PIPELINE SETUP & CONFIGURATION
+           ========================================================= -->
+      <div class="dashboard-tab-pane active" id="pane-config">
+        <!-- CONFIGURATION SECTION -->
+        <section class="card config-card">
         <div class="card-header" style="margin-bottom: 14px;">
           <div class="card-title-group">
             <span class="card-icon">⚙️</span>
@@ -101,21 +142,25 @@
           <div class="form-group full-width" id="mode-selection-group">
             <label style="font-weight: 600; color: #e2e8f0; font-size: 0.92rem; margin-bottom: 2px;">⚡ Select Execution Mode:</label>
             <div class="mode-switch-group" style="width: 100%; display: flex; flex-wrap: wrap;">
-              <label class="mode-pill active" id="mode1-label" style="flex: 1 1 200px; text-align: center; justify-content: center;">
+              <label class="mode-pill active" id="mode1-label" style="flex: 1 1 180px; text-align: center; justify-content: center;">
                 <input type="radio" name="pipeline-mode" value="1" checked id="mode1-radio">
-                <span>Mode 1: Start (Steps 1 → 20)</span>
+                <span>Mode 1: Start (Steps 1 → 17)</span>
               </label>
-              <label class="mode-pill" id="mode2-label" style="flex: 1 1 200px; text-align: center; justify-content: center;">
+              <label class="mode-pill" id="mode2-label" style="flex: 1 1 180px; text-align: center; justify-content: center;">
                 <input type="radio" name="pipeline-mode" value="2" id="mode2-radio">
-                <span>Mode 2: Resume (Step 7 → 20)</span>
+                <span>Mode 2: Resume (Step 7 → 17)</span>
               </label>
-              <label class="mode-pill" id="mode3-label" style="flex: 1 1 200px; text-align: center; justify-content: center;">
+              <label class="mode-pill" id="mode3-label" style="flex: 1 1 180px; text-align: center; justify-content: center;">
                 <input type="radio" name="pipeline-mode" value="3" id="mode3-radio">
-                <span>Mode 3: Parquet (Step 18 → 20)</span>
+                <span>Mode 3: Parquet Conversion</span>
               </label>
-              <label class="mode-pill" id="mode4-label" style="flex: 1 1 200px; text-align: center; justify-content: center;">
+              <label class="mode-pill" id="mode4-label" style="flex: 1 1 180px; text-align: center; justify-content: center;">
                 <input type="radio" name="pipeline-mode" value="4" id="mode4-radio">
-                <span>Mode 4: Outlier (Step 20 Only)</span>
+                <span>Mode 4: Database Upload</span>
+              </label>
+              <label class="mode-pill" id="mode5-label" style="flex: 1 1 180px; text-align: center; justify-content: center;">
+                <input type="radio" name="pipeline-mode" value="5" id="mode5-radio">
+                <span>Mode 5: Outlier Detection</span>
               </label>
             </div>
           </div>
@@ -125,7 +170,7 @@
             <div class="label-with-badge">
               <label for="input-file-path">Input File from Google Drive (.xlsx) <span class="req">*</span></label>
               <a href="https://drive.google.com/drive/folders/1i-dPwAQce86kR552YF03XcvLHsOoDjb-?usp=drive_link"
-                target="_blank" class="drive-external-link" title="Open Google Drive Folder">🌐 Open Drive Folder ↗</a>
+                target="_blank" class="drive-external-link" id="input-drive-link" title="Open Google Drive Folder">🌐 Open Drive Folder ↗</a>
             </div>
 
             <!-- Quick pick location from Drive -->
@@ -256,17 +301,25 @@
           <div class="form-group full-width hidden" id="manual-file-group">
             <div class="label-with-badge">
               <label for="manual-file-path">Manual Corrected Excel File (.xlsx) <span class="req">*</span></label>
-              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (3. Manually
-                Corrected)</span>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (3. Manually Corrected)</span>
+                <a href="https://drive.google.com/drive/folders/1oQ3JQ_v9shWZQlW4JYDpLPXKFOEdAqRW?usp=drive_link" target="_blank" class="drive-external-link" id="manual-drive-link" title="Open Google Drive Folder">🌐 Open Drive Folder ↗</a>
+              </div>
             </div>
 
             <!-- Quick pick location from Drive for Mode 2 -->
             <div class="drive-picker-container" id="manual-drive-picker-container">
               <div class="drive-picker-header">
-                <span class="picker-label">📁 Pick Location from Google Drive (3. Manually Corrected):</span>
+                <span class="picker-label">📁 Pick Location Folder from Google Drive (3. Manually Corrected):</span>
                 <button type="button" class="picker-refresh-btn" id="btn-refresh-manual-locs"
                   title="Refresh Drive Folders">🔄 Refresh</button>
               </div>
+
+              <!-- Location Folder Quick Chips in Mode 2 -->
+              <div class="pause-location-chips" id="mode2-location-chips" style="margin-top: 6px; margin-bottom: 6px;">
+                <!-- Populated dynamically with location folders: Bandra, Mohmadwadi, etc. -->
+              </div>
+
               <div class="input-with-icon">
                 <span class="input-icon">📍</span>
                 <select id="drive-manual-location-select">
@@ -275,20 +328,43 @@
               </div>
             </div>
 
+            <!-- Multi-File Selection Box for Mode 2 (Step 7 Resume) -->
+            <div id="mode2-selected-files-container" class="selected-files-box" style="margin-top: 12px; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(251, 191, 36, 0.35); border-radius: var(--radius-sm); padding: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+                <span style="font-size: 0.84rem; font-weight: 600; color: #fbbf24; display: flex; align-items: center; gap: 6px;">
+                  📚 Selected Files for Step 7 Merge &amp; Processing:
+                  <span id="mode2-files-count-badge" class="badge-count" style="background: rgba(251, 191, 36, 0.2); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4); padding: 2px 8px; border-radius: 12px; font-size: 0.75rem;">0 Files</span>
+                </span>
+                <div style="display: flex; gap: 8px;">
+                  <button type="button" id="btn-mode2-select-all" class="btn-xs" style="background: rgba(99, 102, 241, 0.2); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.4); font-size: 0.72rem; padding: 3px 8px; border-radius: 4px; cursor: pointer;" title="Select files from all scanned location folders">
+                    + Select All Folders
+                  </button>
+                  <button type="button" id="btn-mode2-clear-all" class="btn-xs" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); font-size: 0.72rem; padding: 3px 8px; border-radius: 4px; cursor: pointer;">
+                    ✕ Clear All
+                  </button>
+                </div>
+              </div>
+              <div id="mode2-selected-files-list" style="display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow-y: auto; padding: 4px 0;">
+                <!-- Dynamic File Tags -->
+              </div>
+            </div>
+
             <div class="input-with-icon" style="margin-top: 8px;">
               <span class="input-icon">📑</span>
               <input type="text" id="manual-file-path"
-                placeholder="Select a location above or enter manual corrected file path">
+                placeholder="Select location folder(s) above or enter manual file path(s) - comma separated if multiple">
             </div>
-            <small class="form-hint">Resume processing after manual project name verification.</small>
+            <small class="form-hint">Resume processing after manual project name verification. Supports multiple location files for auto-merging.</small>
           </div>
 
           <!-- Mode 3 Input (Hidden initially) -->
           <div class="form-group full-width hidden" id="final-file-group">
             <div class="label-with-badge">
               <label for="final-file-path">Final Processed Excel File (.xlsx) <span class="req">*</span></label>
-              <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (4. Final
-                processed file)</span>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="badge-drive" title="Connected to Google Drive Desktop Sync">☁️ Drive Synced (4. Final processed file)</span>
+                <a href="https://drive.google.com/drive/folders/1l-HFh36Yk8pSs-NmoSK60if6cP2cjztM" target="_blank" class="drive-external-link" id="final-drive-link" title="Open Google Drive Folder">🌐 Open Drive Folder ↗</a>
+              </div>
             </div>
 
             <!-- Quick pick location from Drive for Mode 3 -->
@@ -314,14 +390,51 @@
             <small class="form-hint">Direct Parquet conversion on a final processed file from Google Drive.</small>
           </div>
 
-          <!-- MODE 4 OUTLIER-ONLY DEDICATED SECTION (Visible in Mode 4) -->
-          <div class="form-group full-width hidden" id="mode4-location-container"
+          <!-- MODE 4 DATABASE UPLOAD PIPELINE DEDICATED SECTION (Visible in Mode 4) -->
+          <div class="form-group full-width hidden" id="mode4-upload-container"
+            style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.28); border-radius: var(--radius-md); padding: 18px 20px;">
+            <div style="margin-bottom: 14px; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px;">
+              <div>
+                <h3 style="font-size: 1.05rem; font-weight: 700; color: #34d399; display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                  <span>🚀</span> Mode 4: Database Upload Pipeline (final_code.py)
+                </h3>
+                <p style="font-size: 0.84rem; color: #94a3b8; line-height: 1.45;">
+                  Verifies converted parquet records, creates automatic PostgreSQL table backups, and uploads batch transactions to the active database.
+                </p>
+              </div>
+              <div class="badge-drive" style="font-size: 0.78rem; padding: 4px 12px; background: rgba(16, 185, 129, 0.18); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35);">
+                🗄️ Target DB: <strong id="mode4-active-db-name">nilesh (Production)</strong>
+              </div>
+            </div>
+
+            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-size: 0.8rem; font-weight: 600; color: #cbd5e1;">📄 Pipeline Script Location:</span>
+                <span style="font-size: 0.75rem; color: #10b981;">Ready to Trigger</span>
+              </div>
+              <code style="display: block; font-size: 0.78rem; color: #38bdf8; background: rgba(0, 0, 0, 0.35); padding: 8px 12px; border-radius: 4px; word-break: break-all;">
+                E:\Nilesh\Database\DB1_DB2_Uploading_Pipeline\final_code.py
+              </code>
+              <small style="display: block; margin-top: 8px; font-size: 0.76rem; color: #94a3b8;">
+                Clicking <strong>Start Pipeline Execution</strong> or the button below will trigger <code>final_code.py</code> in an interactive console window to perform verification and uploading.
+              </small>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+              <button type="button" id="btn-mode4-launch-terminal" class="btn btn-secondary" style="background: linear-gradient(135deg, #059669, #047857); border: 1px solid #10b981; color: #fff; font-weight: 600; padding: 9px 18px;">
+                <span>🚀 Launch final_code.py in Terminal</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- MODE 5 OUTLIER-ONLY DEDICATED SECTION (Visible in Mode 5) -->
+          <div class="form-group full-width hidden" id="mode5-location-container"
             style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: var(--radius-md); padding: 16px 18px;">
             <div
               style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px;">
               <div>
                 <h3 style="font-size: 0.96rem; font-weight: 600; color: #a5b4fc; margin-bottom: 4px;">
-                  📊 Outlier Detection & Database Update (Step 20)
+                  📊 Mode 5: Outlier Detection &amp; Database Update
                 </h3>
                 <p style="font-size: 0.8rem; color: #94a3b8; line-height: 1.4;">
                   Calculates price percentiles and updates <code>rate</code>, <code>is_outlier</code>, and
@@ -342,7 +455,7 @@
                   <span style="font-size: 0.72rem; color: #38bdf8; background: rgba(56, 189, 248, 0.12); padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(56, 189, 248, 0.25);">✨ Multi-Select Enabled</span>
                 </div>
                 <label class="checkbox-pill">
-                  <input type="checkbox" id="mode4-all-locations" checked>
+                  <input type="checkbox" id="mode5-all-locations" checked>
                   <span>Run for ALL locations in city (Recommended)</span>
                 </label>
               </div>
@@ -370,7 +483,7 @@
 
               <!-- Specific Location Text Input -->
               <div style="margin-top: 4px;">
-                <input type="text" id="mode4-location-input"
+                <input type="text" id="mode5-location-input"
                   placeholder="e.g. Borivali, Kandivali, Malad (click chips to multi-select or type comma-separated)" disabled
                   style="padding: 9px 14px;">
               </div>
@@ -465,17 +578,30 @@
             <div class="quick-tools-btns">
               <button type="button" id="btn-launch-upload-manual" class="btn-tool-pill"
                 title="Launch database uploader interactive console directly">
-                ⚡ Database Uploader (final_code.py)
+                ⚡ Database Uploader (Mode 4)
               </button>
               <button type="button" id="btn-run-outlier-manual" class="btn-tool-pill"
                 title="Run outlier detection on database directly">
-                📊 Outlier Detector (Step 20)
+                📊 Outlier Detector (Mode 5)
               </button>
             </div>
           </div>
         </form>
       </section>
 
+      <!-- Pane 1 Footer Navigation -->
+      <div class="tab-pane-footer">
+        <span class="pane-hint">💡 Hotkey: Press <kbd>2</kbd> or click button to review live pipeline execution</span>
+        <button type="button" class="btn btn-secondary btn-nav-pane" data-target="progress">
+          <span>Proceed to Progress &amp; 17 Steps ➔</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- =========================================================
+         TAB PANE 2: LIVE PROGRESS & 17 EXECUTION STEPS
+         ========================================================= -->
+    <div class="dashboard-tab-pane" id="pane-progress">
       <!-- STEP 7 PAUSE CARD (Appears when Step 6 finishes in Mode 1, or when Mode 2 is selected) -->
       <section class="card pause-card hidden" id="pause-card">
         <div class="pause-content">
@@ -624,7 +750,7 @@
             <input type="text" id="resume-file-path" placeholder="Path(s) to manual corrected file(s) - comma separated if multiple">
             <button type="button" id="btn-resume" class="btn btn-primary">
               <span class="btn-icon">▶</span>
-              <span class="btn-text">Resume (Steps 7 → 20)</span>
+              <span class="btn-text">Resume (Steps 7 → 17)</span>
             </button>
           </div>
 
@@ -753,11 +879,21 @@
         </div>
       </section>
 
-      <!-- 20-STEP PIPELINE VISUALIZATION GRID -->
+      <!-- 17-STEP PIPELINE VISUALIZATION GRID -->
       <section class="steps-section">
         <div class="section-title-bar">
-          <h2 class="section-title" id="steps-section-title">Pipeline Execution Steps (1 to 20)</h2>
-          <span class="steps-count-badge" id="steps-status-summary">0 / 20 Completed</span>
+          <h2 class="section-title" id="steps-section-title">Pipeline Execution Steps (1 to 17)</h2>
+          <span class="steps-count-badge" id="steps-status-summary">0 / 17 Completed</span>
+        </div>
+
+        <!-- Step Filters Toolbar -->
+        <div class="step-filters-bar">
+          <div class="step-filter-pills" id="step-filter-pills">
+            <button type="button" class="step-filter-pill active" data-filter="all">All Steps (<span id="count-step-all">17</span>)</button>
+            <button type="button" class="step-filter-pill" data-filter="running">Running (<span id="count-step-running">0</span>)</button>
+            <button type="button" class="step-filter-pill" data-filter="completed">Completed (<span id="count-step-completed">0</span>)</button>
+            <button type="button" class="step-filter-pill" data-filter="pending">Pending (<span id="count-step-pending">17</span>)</button>
+          </div>
         </div>
 
         <div class="steps-grid" id="steps-grid">
@@ -765,7 +901,36 @@
         </div>
       </section>
 
-      <!-- LIVE TERMINAL CONSOLE -->
+      <!-- Pane 2 Footer Navigation -->
+      <div class="tab-pane-footer">
+        <button type="button" class="btn btn-secondary btn-nav-pane" data-target="config">
+          <span>⬅ Back to Configuration</span>
+        </button>
+        <button type="button" class="btn btn-secondary btn-nav-pane" data-target="console">
+          <span>Proceed to Console &amp; Logs ➔</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- =========================================================
+         TAB PANE 3: LIVE TERMINAL CONSOLE & LOGS (WITH PAGINATION)
+         ========================================================= -->
+    <div class="dashboard-tab-pane" id="pane-console">
+      <!-- Compact Progress Bar for Real-time Visibility in Console -->
+      <div class="compact-progress-strip">
+        <div class="compact-progress-left">
+          <span style="font-size: 0.82rem; font-weight: 600; color: #38bdf8;" id="compact-step-label">Current Step: Ready to Start</span>
+          <div class="compact-progress-track">
+            <div class="compact-progress-fill" id="compact-progress-bar" style="width: 0%;"></div>
+          </div>
+          <span style="font-size: 0.8rem; font-weight: 700; color: #e2e8f0;" id="compact-progress-percent">0%</span>
+        </div>
+        <button type="button" class="btn-xs btn-nav-pane" data-target="progress" style="background: rgba(99, 102, 241, 0.18); border: 1px solid rgba(99, 102, 241, 0.4); color: #818cf8; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-weight: 600;">
+          📊 View 17 Steps Grid
+        </button>
+      </div>
+
+      <!-- LIVE TERMINAL CONSOLE CARD WITH PAGINATION & SEARCH -->
       <section class="card console-card">
         <div class="console-header">
           <div class="console-dots">
@@ -773,21 +938,149 @@
             <span class="dot yellow"></span>
             <span class="dot green"></span>
             <span class="console-title">Live Execution Console</span>
+            <span class="tab-badge" id="console-total-badge" style="margin-left: 8px;">0 Logs</span>
           </div>
           <div class="console-tools">
-            <label class="autoscroll-toggle">
-              <input type="checkbox" id="autoscroll-cb" checked>
-              <span>Auto-scroll</span>
-            </label>
-            <button class="btn-clear" id="btn-clear-console">Clear</button>
+            <button type="button" class="btn-clear" id="btn-export-logs" title="Export console logs to text file">💾 Export Logs</button>
+            <button type="button" class="btn-clear" id="btn-clear-console">Clear Console</button>
           </div>
         </div>
+
+        <!-- Console Search & Log Level Filter Bar -->
+        <div class="console-controls-bar">
+          <div class="console-search-box">
+            <span>🔍</span>
+            <input type="text" id="console-search-input" class="console-search-input" placeholder="Search logs (e.g. error, outlier, step)...">
+            <button type="button" id="btn-clear-search" style="background: none; border: none; color: #94a3b8; cursor: pointer; display: none;">✕</button>
+          </div>
+          <div class="console-level-filters">
+            <button type="button" class="log-filter-btn active" data-level="all">All (<span id="count-log-all">0</span>)</button>
+            <button type="button" class="log-filter-btn" data-level="info">Info (<span id="count-log-info">0</span>)</button>
+            <button type="button" class="log-filter-btn" data-level="success">Success (<span id="count-log-success">0</span>)</button>
+            <button type="button" class="log-filter-btn" data-level="warning">Warning (<span id="count-log-warning">0</span>)</button>
+            <button type="button" class="log-filter-btn" data-level="error">Error (<span id="count-log-error">0</span>)</button>
+          </div>
+        </div>
+
+        <!-- Terminal Log Body -->
         <div class="console-body" id="console-output">
           <div class="console-line info">[System] Dashboard initialized. Waiting for pipeline execution to start...
           </div>
         </div>
+
+        <!-- Console Pagination Footer Toolbar -->
+        <div class="console-pagination-footer">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="color: var(--text-dim); font-size: 0.76rem;">Rows per page:</span>
+            <select id="log-page-size-select" style="background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 4px; color: #fff; font-size: 0.76rem; padding: 2px 6px;">
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+              <option value="250">250</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+          <div class="console-page-controls">
+            <button type="button" id="log-page-first" class="log-page-btn" title="First Page">⏮ First</button>
+            <button type="button" id="log-page-prev" class="log-page-btn" title="Previous Page">◀ Prev</button>
+            <span class="log-page-info" id="log-page-info">Page 1 of 1 (0 logs)</span>
+            <button type="button" id="log-page-next" class="log-page-btn" title="Next Page">Next ▶</button>
+            <button type="button" id="log-page-last" class="log-page-btn" title="Last Page">Last ⏭</button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <button type="button" id="btn-jump-latest-logs" class="jump-latest-badge hidden">⬇ New logs (Jump to latest)</button>
+            <label class="live-follow-pill" title="Automatically keep latest logs in view">
+              <input type="checkbox" id="live-follow-cb" checked>
+              <span class="live-dot"></span>
+              <span>Live Follow</span>
+            </label>
+            <label class="autoscroll-toggle">
+              <input type="checkbox" id="autoscroll-cb" checked>
+              <span>Auto-scroll</span>
+            </label>
+          </div>
+        </div>
       </section>
-    </main>
+
+      <!-- Pane 3 Footer Navigation -->
+      <div class="tab-pane-footer">
+        <button type="button" class="btn btn-secondary btn-nav-pane" data-target="progress">
+          <span>⬅ Back to Progress &amp; Steps</span>
+        </button>
+        <button type="button" class="btn btn-secondary btn-nav-pane" data-target="reports">
+          <span>View Merge Reports &amp; Audits ➔</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- =========================================================
+         TAB PANE 4: MERGE REPORTS & OUTPUT FILE AUDITS
+         ========================================================= -->
+    <div class="dashboard-tab-pane" id="pane-reports">
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="card-icon">📑</span>
+            <div>
+              <h2 class="card-title">Pipeline Output Reports &amp; File Audits</h2>
+              <p class="card-desc">Audit generated datasets, manual verification files, and outlier Excel reports</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="reports-hub-grid">
+          <div class="report-hub-card">
+            <div>
+              <span style="font-size: 0.85rem; font-weight: 600; color: #38bdf8;" id="hub-title-input">📁 2. LLM Processed Data</span>
+              <p style="font-size: 0.78rem; color: #94a3b8; margin-top: 4px;" id="hub-desc-input">Incoming extracted files from LLM and portal scraping.</p>
+            </div>
+            <a href="https://drive.google.com/drive/folders/1i-dPwAQce86kR552YF03XcvLHsOoDjb-?usp=drive_link" target="_blank" class="drive-external-link" id="hub-link-input">Open Drive Folder ↗</a>
+          </div>
+
+          <div class="report-hub-card">
+            <div>
+              <span style="font-size: 0.85rem; font-weight: 600; color: #fbbf24;" id="hub-title-manual">📁 3. Manually Corrected</span>
+              <p style="font-size: 0.78rem; color: #94a3b8; margin-top: 4px;" id="hub-desc-manual">Step 6 outputs saved for team verification and project name standardization.</p>
+            </div>
+            <a href="https://drive.google.com/drive/folders/1oQ3JQ_v9shWZQlW4JYDpLPXKFOEdAqRW?usp=drive_link" target="_blank" class="drive-external-link" id="hub-link-manual">Open Drive Folder ↗</a>
+          </div>
+
+          <div class="report-hub-card">
+            <div>
+              <span style="font-size: 0.85rem; font-weight: 600; color: #34d399;" id="hub-title-final">📁 4. Final Processed Files</span>
+              <p style="font-size: 0.78rem; color: #94a3b8; margin-top: 4px;" id="hub-desc-final">66-field database-ready Excel files and converted Parquet files.</p>
+            </div>
+            <a href="https://drive.google.com/drive/folders/1l-HFh36Yk8pSs-NmoSK60if6cP2cjztM" target="_blank" class="drive-external-link" id="hub-link-final">Open Drive Folder ↗</a>
+          </div>
+
+          <div class="report-hub-card">
+            <div>
+              <span style="font-size: 0.85rem; font-weight: 600; color: #a78bfa;">📊 Outlier Reports Folder</span>
+              <p style="font-size: 0.78rem; color: #94a3b8; margin-top: 4px;">Detailed merged outlier spreadsheets stored in <code>outlier_implementaion/</code>.</p>
+            </div>
+            <span style="font-size: 0.74rem; color: #cbd5e1; font-family: var(--font-mono);">e:\Nilesh\IGR_processing_System\outlier_implementaion</span>
+          </div>
+        </div>
+
+        <!-- Step 7 Merge Report Status in Tab 4 -->
+        <div id="step7-report-pane-container" style="margin-top: 20px;">
+          <div style="padding: 14px; background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255,255,255,0.08); border-radius: var(--radius-sm);">
+            <h3 style="font-size: 0.92rem; font-weight: 600; color: #e2e8f0; margin-bottom: 6px;">📊 Step 7 File Merge Status</h3>
+            <p style="font-size: 0.8rem; color: #94a3b8;" id="reports-tab-merge-hint">No multi-file merge executed in this session yet. Run Mode 2 or resume Step 7 to see column union verification details.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Pane 4 Footer Navigation -->
+      <div class="tab-pane-footer">
+        <button type="button" class="btn btn-secondary btn-nav-pane" data-target="console">
+          <span>⬅ Back to Console &amp; Logs</span>
+        </button>
+        <button type="button" class="btn btn-secondary btn-nav-pane" data-target="config">
+          <span>Return to Configuration ⚙️</span>
+        </button>
+      </div>
+    </div>
+  </main>
 
     <!-- FOOTER -->
     <footer class="app-footer">

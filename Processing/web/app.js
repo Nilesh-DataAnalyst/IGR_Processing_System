@@ -140,30 +140,6 @@ const PIPELINE_STEPS = [
     status: "pending",
     detail: "Waiting...",
     duration: "-"
-  },
-  {
-    id: 18,
-    name: "Parquet Conversion",
-    desc: "Converts Drive final processed file to Parquet format (converted_feather_parquet) with date normalization.",
-    status: "pending",
-    detail: "Waiting...",
-    duration: "-"
-  },
-  {
-    id: 19,
-    name: "Database Upload Pipeline",
-    desc: "Launches final_code.py in interactive terminal to verify, backup, and upload parquet records to PostgreSQL.",
-    status: "pending",
-    detail: "Waiting...",
-    duration: "-"
-  },
-  {
-    id: 20,
-    name: "Outlier Detection & Update",
-    desc: "Computes rate percentiles & bounds, flags price outliers, and updates rate/is_outlier in public.transactions.",
-    status: "pending",
-    detail: "Waiting...",
-    duration: "-"
   }
 ];
 
@@ -198,7 +174,18 @@ let appState = {
   lastLogIndex: 0,
   logs: [],
   step7SelectedFiles: [],
-  scannedLocationsData: []
+  scannedLocationsData: [],
+  // Production Navigation & Pagination Additions
+  activeTab: "config",
+  layoutMode: "tabbed",
+  stepFilter: "all",
+  allLogs: [],
+  consolePage: 1,
+  consolePageSize: 50,
+  consoleFilterLevel: "all",
+  consoleSearchQuery: "",
+  consoleLiveFollow: true,
+  unreadNewLogsCount: 0
 };
 
 // DOM Elements
@@ -206,10 +193,12 @@ const mode1Radio = document.getElementById("mode1-radio");
 const mode2Radio = document.getElementById("mode2-radio");
 const mode3Radio = document.getElementById("mode3-radio");
 const mode4Radio = document.getElementById("mode4-radio");
+const mode5Radio = document.getElementById("mode5-radio");
 const mode1Label = document.getElementById("mode1-label");
 const mode2Label = document.getElementById("mode2-label");
 const mode3Label = document.getElementById("mode3-label");
 const mode4Label = document.getElementById("mode4-label");
+const mode5Label = document.getElementById("mode5-label");
 
 const inputFileGroup = document.getElementById("input-file-group");
 const manualFileGroup = document.getElementById("manual-file-group");
@@ -224,10 +213,15 @@ const pipelineForm = document.getElementById("pipeline-form");
 const btnRun = document.getElementById("btn-run");
 const btnStop = document.getElementById("btn-stop");
 
-// Mode 4 Outlier Detection DOM Elements
-const mode4LocationContainer = document.getElementById("mode4-location-container");
-const mode4AllLocations = document.getElementById("mode4-all-locations");
-const mode4LocationInput = document.getElementById("mode4-location-input");
+// Mode 4 Database Upload Pipeline DOM Elements
+const mode4UploadContainer = document.getElementById("mode4-upload-container");
+const mode4ActiveDbName = document.getElementById("mode4-active-db-name");
+const btnMode4LaunchTerminal = document.getElementById("btn-mode4-launch-terminal");
+
+// Mode 5 Outlier Detection DOM Elements
+const mode5LocationContainer = document.getElementById("mode5-location-container");
+const mode5AllLocations = document.getElementById("mode5-all-locations");
+const mode5LocationInput = document.getElementById("mode5-location-input");
 const outlierLocationSelect = document.getElementById("outlier-location-select");
 const outlierChipsRow = document.getElementById("outlier-chips-row");
 const outlierCityBadgeText = document.getElementById("outlier-city-badge-text");
@@ -242,6 +236,7 @@ const autoOutlierCb = document.getElementById("auto-outlier");
 const saveOutlierReportCb = document.getElementById("save-outlier-report");
 const includeGeocodingCb = document.getElementById("include-geocoding");
 const btnRunOutlierManual = document.getElementById("btn-run-outlier-manual");
+const btnLaunchUploadManual = document.getElementById("btn-launch-upload-manual");
 
 const progressBar = document.getElementById("progress-bar");
 const progressPercent = document.getElementById("progress-percent");
@@ -275,6 +270,25 @@ const step7MergeReportCard = document.getElementById("step7-merge-report-card");
 const step7MergeStatusBadge = document.getElementById("step7-merge-status-badge");
 const step7MergeStatusMessage = document.getElementById("step7-merge-status-message");
 const step7MergeReportTbody = document.getElementById("step7-merge-report-tbody");
+
+// Mode 2 Multi-File Selection Elements (Tab 1)
+const mode2SelectedFilesContainer = document.getElementById("mode2-selected-files-container");
+const mode2SelectedFilesList = document.getElementById("mode2-selected-files-list");
+const mode2FilesCountBadge = document.getElementById("mode2-files-count-badge");
+const btnMode2SelectAll = document.getElementById("btn-mode2-select-all");
+const btnMode2ClearAll = document.getElementById("btn-mode2-clear-all");
+const mode2LocationChips = document.getElementById("mode2-location-chips");
+const manualDriveLink = document.getElementById("manual-drive-link");
+const inputDriveLink = document.getElementById("input-drive-link");
+const finalDriveLink = document.getElementById("final-drive-link");
+
+// Tab 4 Report Hub Dynamic Drive Elements
+const hubTitleInput = document.getElementById("hub-title-input");
+const hubLinkInput = document.getElementById("hub-link-input");
+const hubTitleManual = document.getElementById("hub-title-manual");
+const hubLinkManual = document.getElementById("hub-link-manual");
+const hubTitleFinal = document.getElementById("hub-title-final");
+const hubLinkFinal = document.getElementById("hub-link-final");
 
 // Step 19 Parquet Pause & Confirmation elements
 const parquetPauseCard = document.getElementById("parquet-pause-card");
@@ -319,6 +333,53 @@ const advancedSettingsWrapper = document.getElementById("advanced-settings-wrapp
 const dbSelect = document.getElementById("db-select");
 const dbDot = document.getElementById("db-dot");
 
+// Navigation & Pagination DOM Elements
+const appNavTabsBar = document.getElementById("app-nav-bar");
+const tabBtnConfig = document.getElementById("tab-btn-config");
+const tabBtnProgress = document.getElementById("tab-btn-progress");
+const tabBtnConsole = document.getElementById("tab-btn-console");
+const tabBtnReports = document.getElementById("tab-btn-reports");
+const btnModeTabbed = document.getElementById("btn-mode-tabbed");
+const btnModeScroll = document.getElementById("btn-mode-scroll");
+
+const paneConfig = document.getElementById("pane-config");
+const paneProgress = document.getElementById("pane-progress");
+const paneConsole = document.getElementById("pane-console");
+const paneReports = document.getElementById("pane-reports");
+
+const tabBadgeCity = document.getElementById("tab-badge-city");
+const tabBadgeProgress = document.getElementById("tab-badge-progress");
+const tabBadgeLogs = document.getElementById("tab-badge-logs");
+const tabBadgeReports = document.getElementById("tab-badge-reports");
+
+const compactStepLabel = document.getElementById("compact-step-label");
+const compactProgressBar = document.getElementById("compact-progress-bar");
+const compactProgressPercent = document.getElementById("compact-progress-percent");
+
+const consoleTotalBadge = document.getElementById("console-total-badge");
+const btnExportLogs = document.getElementById("btn-export-logs");
+const consoleSearchInput = document.getElementById("console-search-input");
+const btnClearSearch = document.getElementById("btn-clear-search");
+const logPageSizeSelect = document.getElementById("log-page-size-select");
+const logPageFirst = document.getElementById("log-page-first");
+const logPagePrev = document.getElementById("log-page-prev");
+const logPageNext = document.getElementById("log-page-next");
+const logPageLast = document.getElementById("log-page-last");
+const logPageInfo = document.getElementById("log-page-info");
+const liveFollowCb = document.getElementById("live-follow-cb");
+const btnJumpLatestLogs = document.getElementById("btn-jump-latest-logs");
+
+const countLogAll = document.getElementById("count-log-all");
+const countLogInfo = document.getElementById("count-log-info");
+const countLogSuccess = document.getElementById("count-log-success");
+const countLogWarning = document.getElementById("count-log-warning");
+const countLogError = document.getElementById("count-log-error");
+
+const countStepAll = document.getElementById("count-step-all");
+const countStepRunning = document.getElementById("count-step-running");
+const countStepCompleted = document.getElementById("count-step-completed");
+const countStepPending = document.getElementById("count-step-pending");
+
 // =========================================================
 // DATABASE SELECTION & MANAGEMENT
 // =========================================================
@@ -327,14 +388,18 @@ function getSelectedDb() {
 }
 
 function updateDbBadge(dbName) {
-  if (!dbDot) return;
-  dbDot.className = "db-status-dot";
-  if (dbName === "nilesh") {
-    dbDot.classList.add("prod");
-  } else if (dbName === "test") {
-    dbDot.classList.add("staging");
-  } else {
-    dbDot.classList.add("custom");
+  if (dbDot) {
+    dbDot.className = "db-status-dot";
+    if (dbName === "nilesh") {
+      dbDot.classList.add("prod");
+    } else if (dbName === "test") {
+      dbDot.classList.add("staging");
+    } else {
+      dbDot.classList.add("custom");
+    }
+  }
+  if (mode4ActiveDbName) {
+    mode4ActiveDbName.textContent = dbName === "nilesh" ? "nilesh (Production)" : (dbName === "test" ? "test (Staging)" : `${dbName} (Custom)`);
   }
 }
 
@@ -403,7 +468,10 @@ function initDatabaseSelector() {
 // Auto-detect city from input path or filename
 function detectCityFromPath(filepath) {
   if (!filepath || !cityIdInput) return;
-  const lower = filepath.toLowerCase();
+  // If the user has explicitly selected a target city from the dropdown, do not let typing/path override it
+  if (appState.userManuallySelectedCity) return;
+  const lower = filepath.toLowerCase().trim();
+  if (lower.length < 5) return;
 
   const cityMap = [
     { id: "9", patterns: ["pune", "chikhali", "sogaon", "haveli", "pcmc", "mohmadwadi"] },
@@ -443,6 +511,10 @@ function detectCityFromPath(filepath) {
 // =========================================================
 document.addEventListener("DOMContentLoaded", () => {
   initDatabaseSelector();
+  initLayoutMode();
+  initNavTabs();
+  initConsoleControls();
+  initStepFilters();
   renderStepCards();
   initDefaultPaths();
   attachEventListeners();
@@ -450,7 +522,7 @@ document.addEventListener("DOMContentLoaded", () => {
   checkServerHealth();
 });
 
-// Render the step cards in the grid (20 steps for India, 2 steps for Dubai)
+// Render the step cards in the grid (17 steps for India, 2 steps for Dubai)
 function renderStepCards(isDubai = false) {
   stepsGrid.innerHTML = "";
   const steps = isDubai ? DUBAI_STEPS : PIPELINE_STEPS;
@@ -459,23 +531,6 @@ function renderStepCards(isDubai = false) {
     const card = document.createElement("div");
     card.className = `step-card ${step.status}`;
     card.id = `step-card-${step.id}`;
-
-    let actionsHtml = "";
-    if (!isDubai && step.id === 19) {
-      actionsHtml = `
-        <div class="step-actions-row">
-          <button type="button" class="btn-step-action" onclick="launchUploadPipeline()" title="Launch final_code.py in interactive console">
-            🚀 Launch final_code.py
-          </button>
-        </div>`;
-    } else if (!isDubai && step.id === 20) {
-      actionsHtml = `
-        <div class="step-actions-row">
-          <button type="button" class="btn-step-action" onclick="runOutlierDetection()" title="Run Outlier Detection on Database">
-            📊 Run Outlier Update
-          </button>
-        </div>`;
-    }
 
     card.innerHTML = `
       <div class="step-top">
@@ -488,7 +543,6 @@ function renderStepCards(isDubai = false) {
         </span>
       </div>
       <p class="step-desc">${step.desc}</p>
-      ${actionsHtml}
       <div class="step-bottom">
         <span class="step-detail" id="step-detail-${step.id}">${step.detail}</span>
         <span class="step-duration" id="step-duration-${step.id}">${step.duration}</span>
@@ -501,6 +555,7 @@ function renderStepCards(isDubai = false) {
   if (stepsStatusSummary) {
     stepsStatusSummary.textContent = `0 / ${steps.length} Completed`;
   }
+  updateStepCounts();
 }
 
 // Dubai 2-Step Workflow Controller Functions
@@ -533,10 +588,8 @@ function enableDubaiView() {
     const s = mode3Label.querySelector("span");
     if (s) s.textContent = "Mode 3: Parquet (2.Processed Files)";
   }
-  if (mode4Label) {
-    const s = mode4Label.querySelector("span");
-    if (s) s.textContent = "Mode 4: Outlier (Step 20 Only)";
-  }
+  if (mode4Label) mode4Label.classList.add("hidden");
+  if (mode5Label) mode5Label.classList.add("hidden");
 
   if (outputPathGroup) outputPathGroup.classList.add("hidden");
   if (advancedSettingsWrapper) advancedSettingsWrapper.classList.add("hidden");
@@ -549,13 +602,9 @@ function enableDubaiView() {
 
   fetchDubaiConfig();
 
-  // If user is already in Mode 3 or Mode 4, preserve that mode!
+  // If user is already in Mode 3, preserve that mode!
   if (appState.mode === "3") {
     setMode("3");
-    return;
-  }
-  if (appState.mode === "4") {
-    setMode("4");
     return;
   }
 
@@ -566,20 +615,27 @@ function enableDubaiView() {
 function disableDubaiView() {
   if (mode1Label) {
     const s = mode1Label.querySelector("span");
-    if (s) s.textContent = "Mode 1: Start (Steps 1 → 20)";
+    if (s) s.textContent = "Mode 1: Start (Steps 1 → 17)";
   }
   if (mode2Label) {
     mode2Label.classList.remove("hidden");
     const s = mode2Label.querySelector("span");
-    if (s) s.textContent = "Mode 2: Resume (Step 7 → 20)";
+    if (s) s.textContent = "Mode 2: Resume (Step 7 → 17)";
   }
   if (mode3Label) {
+    mode3Label.classList.remove("hidden");
     const s = mode3Label.querySelector("span");
-    if (s) s.textContent = "Mode 3: Parquet (Step 18 → 20)";
+    if (s) s.textContent = "Mode 3: Parquet Conversion";
   }
   if (mode4Label) {
+    mode4Label.classList.remove("hidden");
     const s = mode4Label.querySelector("span");
-    if (s) s.textContent = "Mode 4: Outlier (Step 20 Only)";
+    if (s) s.textContent = "Mode 4: Database Upload";
+  }
+  if (mode5Label) {
+    mode5Label.classList.remove("hidden");
+    const s = mode5Label.querySelector("span");
+    if (s) s.textContent = "Mode 5: Outlier Detection";
   }
 
   if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
@@ -588,15 +644,140 @@ function disableDubaiView() {
   if (advancedSettingsWrapper) advancedSettingsWrapper.classList.remove("hidden");
   const quickToolsStrip = document.querySelector(".quick-tools-strip");
   if (quickToolsStrip) quickToolsStrip.classList.remove("hidden");
-  if (stepsSectionTitle) stepsSectionTitle.textContent = "Pipeline Execution Steps (1 to 20)";
+  if (stepsSectionTitle) stepsSectionTitle.textContent = "Pipeline Execution Steps (1 to 17)";
 
   renderStepCards(false);
   if (appState.mode === "dubai") appState.mode = "1";
   setMode(appState.mode);
 }
 
-function handleCityChange(cid) {
+function updateCityDriveLinks(cityId) {
+  const cid = String(cityId || (cityIdInput ? cityIdInput.value : "9"));
+  const driveConfigs = {
+    "9": {
+      name: "Pune",
+      input: "https://drive.google.com/drive/folders/1i-dPwAQce86kR552YF03XcvLHsOoDjb-?usp=drive_link",
+      manual: "https://drive.google.com/drive/folders/1oQ3JQ_v9shWZQlW4JYDpLPXKFOEdAqRW?usp=drive_link",
+      final: "https://drive.google.com/drive/folders/1l-HFh36Yk8pSs-NmoSK60if6cP2cjztM"
+    },
+    "8": {
+      name: "Mumbai",
+      input: "https://drive.google.com/drive/folders/1rT8PvmuS_s03yrsMvK93luMghbE-9rwD?usp=drive_link",
+      manual: "https://drive.google.com/drive/folders/1ywb1-CSRDXNV80Yc8AXYm5Bgze34TXFA?usp=drive_link",
+      final: "https://drive.google.com/drive/folders/1Fxf1yTUo4FZWRHjm_XrpA7jq93kG7diO?usp=drive_link"
+    },
+    "12": {
+      name: "Thane",
+      input: null,
+      manual: null,
+      final: null
+    },
+    "15": {
+      name: "Dubai",
+      input: "https://drive.google.com/drive/folders/1CyL3ecimjHLcpUv2AfP8d6fJXNbOcVVE?usp=drive_link",
+      manual: null,
+      final: "https://drive.google.com/drive/folders/1TvDEGGW5dahnxRO4JfxJ8TUinK3DKXO8?usp=drive_link"
+    }
+  };
+
+  const cfg = driveConfigs[cid] || { name: `City ${cid}`, input: null, manual: null, final: null };
+
+  // Tab 4: Pipeline Output Reports & File Audits Cards
+  if (hubTitleInput) hubTitleInput.textContent = `📁 2. LLM Processed Data (${cfg.name})`;
+  if (hubLinkInput) {
+    if (cfg.input) {
+      hubLinkInput.href = cfg.input;
+      hubLinkInput.textContent = `Open ${cfg.name} Drive ↗`;
+      hubLinkInput.style.display = "inline-flex";
+    } else {
+      hubLinkInput.style.display = "none";
+    }
+  }
+
+  if (hubTitleManual) hubTitleManual.textContent = `📁 3. Manually Corrected (${cfg.name})`;
+  if (hubLinkManual) {
+    if (cfg.manual) {
+      hubLinkManual.href = cfg.manual;
+      hubLinkManual.textContent = `Open ${cfg.name} Drive ↗`;
+      hubLinkManual.style.display = "inline-flex";
+    } else {
+      hubLinkManual.style.display = "none";
+    }
+  }
+
+  if (hubTitleFinal) hubTitleFinal.textContent = `📁 4. Final Processed Files (${cfg.name})`;
+  if (hubLinkFinal) {
+    if (cfg.final) {
+      hubLinkFinal.href = cfg.final;
+      hubLinkFinal.textContent = `Open ${cfg.name} Drive ↗`;
+      hubLinkFinal.style.display = "inline-flex";
+    } else {
+      hubLinkFinal.style.display = "none";
+    }
+  }
+
+  // Tab 1 & Tab 2 Links
+  if (inputDriveLink && cfg.input) {
+    inputDriveLink.href = cfg.input;
+    inputDriveLink.textContent = `🌐 Open ${cfg.name} Drive Folder ↗`;
+    inputDriveLink.style.display = "inline-flex";
+  }
+
+  if (manualDriveLink) {
+    if (cfg.manual) {
+      manualDriveLink.href = cfg.manual;
+      manualDriveLink.textContent = `🌐 Open ${cfg.name} Drive Folder ↗`;
+      manualDriveLink.style.display = "inline-flex";
+    } else {
+      manualDriveLink.style.display = "none";
+    }
+  }
+
+  const pauseDriveLink = document.getElementById("pause-drive-link") || document.querySelector(".pause-desc .drive-external-link");
+  if (pauseDriveLink && cfg.manual) {
+    pauseDriveLink.href = cfg.manual;
+    pauseDriveLink.textContent = `🌐 Open ${cfg.name} Drive Folder ↗`;
+  }
+
+  const parquetLink = document.getElementById("parquet-verify-drive-link");
+  if (parquetLink && cfg.final) {
+    parquetLink.href = cfg.final;
+    parquetLink.textContent = `🌐 Open ${cfg.name} 4. Final processed file ↗`;
+  }
+
+  if (finalDriveLink) {
+    if (cfg.final) {
+      finalDriveLink.href = cfg.final;
+      finalDriveLink.textContent = `🌐 Open ${cfg.name} Drive Folder ↗`;
+      finalDriveLink.style.display = "inline-flex";
+    } else {
+      finalDriveLink.style.display = "none";
+    }
+  }
+}
+
+function handleCityChange(cid, isManualSelection = false) {
   cid = String(cid || (cityIdInput ? cityIdInput.value : "9"));
+  if (tabBadgeCity && cityIdInput) {
+    const selOpt = cityIdInput.options[cityIdInput.selectedIndex];
+    const cityName = selOpt ? selOpt.text.split(" (")[0] : `City ${cid}`;
+    tabBadgeCity.textContent = `${cityName} (ID: ${cid})`;
+  }
+
+  // Update all external Google Drive links across all tabs immediately
+  updateCityDriveLinks(cid);
+
+  // If user changed city explicitly, reset input paths and previous selected files
+  if (isManualSelection) {
+    appState.userManuallySelectedCity = true;
+    if (inputFilePath) inputFilePath.value = "";
+    if (manualFilePath) manualFilePath.value = "";
+    if (finalFilePath) finalFilePath.value = "";
+    if (resumeFilePath) resumeFilePath.value = "";
+    clearStep7Files();
+    appState.selectedLocation = null;
+  }
+
   if (cid === "15") {
     enableDubaiView();
   } else {
@@ -634,6 +815,7 @@ function attachEventListeners() {
   mode2Radio.addEventListener("change", () => setMode("2"));
   if (mode3Radio) mode3Radio.addEventListener("change", () => setMode("3"));
   if (mode4Radio) mode4Radio.addEventListener("change", () => setMode("4"));
+  if (mode5Radio) mode5Radio.addEventListener("change", () => setMode("5"));
 
   const btnDubaiQuickParquet = document.getElementById("btn-dubai-quick-parquet");
   if (btnDubaiQuickParquet) {
@@ -649,7 +831,7 @@ function attachEventListeners() {
   cityIdInput.addEventListener("change", () => {
     if (cityDetectBadge) cityDetectBadge.classList.add("hidden");
     const cid = cityIdInput.value;
-    handleCityChange(cid);
+    handleCityChange(cid, true);
   });
 
   // Google Drive Location Dropdowns
@@ -881,6 +1063,7 @@ function attachEventListeners() {
       btnStop.disabled = false;
       btnStop.classList.remove("hidden");
       startTimer();
+      switchDashboardTab("progress");
       startPolling();
     } catch (err) {
       alert(`Error resuming pipeline: ${err.message}`);
@@ -1054,6 +1237,34 @@ function attachEventListeners() {
     });
   }
 
+  if (btnMode2SelectAll) {
+    btnMode2SelectAll.addEventListener("click", () => {
+      if (Array.isArray(appState.scannedLocationsData)) {
+        appState.scannedLocationsData.forEach(loc => {
+          if (Array.isArray(loc.files)) {
+            loc.files.forEach(f => addStep7File(f.path, f.name, loc.location));
+          }
+        });
+        document.querySelectorAll(".loc-folder-chip").forEach(c => c.classList.add("active"));
+        logToConsole(`[Mode 2] Selected all scanned location folders for multi-file merge.`, "info");
+      }
+    });
+  }
+  if (btnMode2ClearAll) {
+    btnMode2ClearAll.addEventListener("click", () => {
+      clearStep7Files();
+      document.querySelectorAll(".loc-folder-chip").forEach(c => c.classList.remove("active"));
+      logToConsole(`[Mode 2] Cleared selected files.`, "info");
+    });
+  }
+
+  // Mode 4 Database Upload Terminal Launcher
+  if (btnMode4LaunchTerminal) {
+    btnMode4LaunchTerminal.addEventListener("click", () => {
+      launchUploadPipeline();
+    });
+  }
+
   // Sync Mode 3 final file inputs between top form & Step 18 card
   if (parquetConfirmFilePath && finalFilePath) {
     parquetConfirmFilePath.addEventListener("input", () => {
@@ -1069,19 +1280,19 @@ function attachEventListeners() {
     });
   }
 
-  // Outlier Mode 4 UI Listeners
-  if (mode4AllLocations) {
-    mode4AllLocations.addEventListener("change", () => {
-      if (mode4LocationInput) {
-        mode4LocationInput.disabled = mode4AllLocations.checked;
-        if (mode4AllLocations.checked) {
-          mode4LocationInput.value = "";
+  // Outlier Mode 5 UI Listeners
+  if (mode5AllLocations) {
+    mode5AllLocations.addEventListener("change", () => {
+      if (mode5LocationInput) {
+        mode5LocationInput.disabled = mode5AllLocations.checked;
+        if (mode5AllLocations.checked) {
+          mode5LocationInput.value = "";
           if (outlierLocationSelect) outlierLocationSelect.value = "";
           document.querySelectorAll(".outlier-chip").forEach(c => c.classList.remove("active"));
           const allChip = document.querySelector(".outlier-chip.chip-all");
           if (allChip) allChip.classList.add("active");
         } else {
-          mode4LocationInput.focus();
+          mode5LocationInput.focus();
         }
       }
     });
@@ -1091,19 +1302,19 @@ function attachEventListeners() {
     outlierLocationSelect.addEventListener("change", (e) => {
       const val = e.target.value;
       if (!val) {
-        if (mode4AllLocations) mode4AllLocations.checked = true;
-        if (mode4LocationInput) {
-          mode4LocationInput.value = "";
-          mode4LocationInput.disabled = true;
+        if (mode5AllLocations) mode5AllLocations.checked = true;
+        if (mode5LocationInput) {
+          mode5LocationInput.value = "";
+          mode5LocationInput.disabled = true;
         }
         document.querySelectorAll(".outlier-chip").forEach(c => c.classList.remove("active"));
         const allChip = document.querySelector(".outlier-chip.chip-all");
         if (allChip) allChip.classList.add("active");
       } else {
-        if (mode4AllLocations) mode4AllLocations.checked = false;
-        if (mode4LocationInput) {
-          mode4LocationInput.value = val;
-          mode4LocationInput.disabled = false;
+        if (mode5AllLocations) mode5AllLocations.checked = false;
+        if (mode5LocationInput) {
+          mode5LocationInput.value = val;
+          mode5LocationInput.disabled = false;
         }
         document.querySelectorAll(".outlier-chip").forEach(c => {
           if (c.dataset.loc === val) {
@@ -1116,13 +1327,13 @@ function attachEventListeners() {
     });
   }
 
-  if (mode4LocationInput) {
-    mode4LocationInput.addEventListener("input", (e) => {
+  if (mode5LocationInput) {
+    mode5LocationInput.addEventListener("input", (e) => {
       const val = e.target.value.trim();
       const enteredLocs = val.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
       const isAll = (enteredLocs.length === 0);
-      if (mode4AllLocations) {
-        mode4AllLocations.checked = isAll;
+      if (mode5AllLocations) {
+        mode5AllLocations.checked = isAll;
       }
       document.querySelectorAll(".outlier-chip").forEach(c => {
         if (c.classList.contains("chip-all")) {
@@ -1185,13 +1396,15 @@ function setMode(mode) {
     mode2Label.classList.remove("active");
     if (mode3Label) mode3Label.classList.remove("active");
     if (mode4Label) mode4Label.classList.remove("active");
+    if (mode5Label) mode5Label.classList.remove("active");
 
     if (isDubai) {
       if (dubaiWorkflowCard) dubaiWorkflowCard.classList.remove("hidden");
       inputFileGroup.classList.add("hidden");
       manualFileGroup.classList.add("hidden");
       if (finalFileGroup) finalFileGroup.classList.add("hidden");
-      if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
+      if (mode4UploadContainer) mode4UploadContainer.classList.add("hidden");
+      if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
 
       if (!appState.isRunning) {
         if (pauseCard) pauseCard.classList.add("hidden");
@@ -1212,7 +1425,8 @@ function setMode(mode) {
     inputFileGroup.classList.remove("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
-    if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
+    if (mode4UploadContainer) mode4UploadContainer.classList.add("hidden");
+    if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
 
     if (!appState.isRunning) {
       if (pauseCard) pauseCard.classList.add("hidden");
@@ -1223,14 +1437,14 @@ function setMode(mode) {
     manualFilePath.required = false;
     if (finalFilePath) finalFilePath.required = false;
     btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Pipeline Execution</span>';
-    if (stepsSectionTitle) stepsSectionTitle.textContent = "Pipeline Execution Steps (1 to 20)";
+    if (stepsSectionTitle) stepsSectionTitle.textContent = "Pipeline Execution Steps (1 to 17)";
     renderStepCards(false);
 
-    // Reset marks on steps 1 to 20
-    for (let i = 1; i <= 20; i++) {
+    // Reset marks on steps 1 to 17
+    for (let i = 1; i <= 17; i++) {
       updateStepUI(i, "pending", "Waiting...", "-");
     }
-    logToConsole("[Mode] Selected Mode 1: Run from START (Step 1 to Step 20)");
+    logToConsole("[Mode] Selected Mode 1: Run from START (Step 1 to Step 17)");
 
     // Smooth redirect/scroll to Mode 1 Input section
     setTimeout(() => {
@@ -1244,28 +1458,30 @@ function setMode(mode) {
     mode1Label.classList.remove("active");
     if (mode3Label) mode3Label.classList.remove("active");
     if (mode4Label) mode4Label.classList.remove("active");
+    if (mode5Label) mode5Label.classList.remove("active");
 
     inputFileGroup.classList.add("hidden");
     manualFileGroup.classList.remove("hidden");
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
-    if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
+    if (mode4UploadContainer) mode4UploadContainer.classList.add("hidden");
+    if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
 
     if (!appState.isRunning) {
       if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
     }
 
-    // Reveal and prepare the Step 7 Resume Card (Image 2)
+    // Reveal and prepare the Step 7 Resume Card
     if (pauseCard) {
       pauseCard.classList.remove("hidden");
       const pBadge = document.getElementById("pause-card-badge");
       if (pBadge) pBadge.textContent = "⚡ Mode 2: Resume Pipeline from Step 7";
       const pTitle = document.getElementById("pause-card-title");
-      if (pTitle) pTitle.textContent = "Manual Verification & Resume (Steps 7 → 20)";
+      if (pTitle) pTitle.textContent = "Manual Verification & Resume (Steps 7 → 17)";
       const pSaveStatus = document.getElementById("pause-save-status");
       if (pSaveStatus && (!appState.isRunning || !appState.v1_saved_at)) pSaveStatus.style.display = "none";
       const pInstructions = document.getElementById("pause-card-instructions");
       if (pInstructions) {
-        pInstructions.textContent = "Pick or enter a manual corrected file from Google Drive (3. Manually Corrected) below, then click Resume to continue pipeline execution from Step 7 to 20.";
+        pInstructions.textContent = "Pick or enter manual corrected file(s) from Google Drive (3. Manually Corrected) below, then click Resume to continue pipeline execution from Step 7 to 17.";
       }
     }
 
@@ -1273,21 +1489,21 @@ function setMode(mode) {
     manualFilePath.required = true;
     if (finalFilePath) finalFilePath.required = false;
     btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Pipeline Execution</span>';
-    if (stepsSectionTitle) stepsSectionTitle.textContent = "Pipeline Execution Steps (1 to 20)";
+    if (stepsSectionTitle) stepsSectionTitle.textContent = "Pipeline Execution Steps (1 to 17)";
     renderStepCards(false);
 
-    // Visually mark steps 1-6 as skipped
+    // Visually mark steps 1-6 as skipped, 7-17 as pending
     for (let i = 1; i <= 6; i++) {
       updateStepUI(i, "skipped", "Skipped in Mode 2", "-");
     }
-    for (let i = 7; i <= 20; i++) {
+    for (let i = 7; i <= 17; i++) {
       updateStepUI(i, "pending", "Waiting...", "-");
     }
-    logToConsole("[Mode] Selected Mode 2: Resume from Step 7 (Steps 7 to 20)");
+    logToConsole("[Mode] Selected Mode 2: Resume from Step 7 (Steps 7 to 17)");
 
     loadManualDriveLocations(currentCityId);
 
-    // Smooth redirect/scroll right down to the Step 7 Resume Card
+    // Smooth redirect/scroll right down to Mode 2 / Step 7 Resume Card
     setTimeout(() => {
       if (pauseCard) {
         pauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1302,12 +1518,14 @@ function setMode(mode) {
     mode1Label.classList.remove("active");
     mode2Label.classList.remove("active");
     if (mode4Label) mode4Label.classList.remove("active");
+    if (mode5Label) mode5Label.classList.remove("active");
 
     if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
     inputFileGroup.classList.add("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.remove("hidden");
-    if (mode4LocationContainer) mode4LocationContainer.classList.add("hidden");
+    if (mode4UploadContainer) mode4UploadContainer.classList.add("hidden");
+    if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
 
     if (!appState.isRunning) {
       if (pauseCard) pauseCard.classList.add("hidden");
@@ -1317,14 +1535,14 @@ function setMode(mode) {
     if (parquetPauseCard) {
       parquetPauseCard.classList.remove("hidden");
       const pqBadge = document.getElementById("parquet-card-badge");
-      if (pqBadge) pqBadge.textContent = isDubai ? "⚡ Mode 3: Direct Dubai Parquet Conversion" : "⚡ Mode 3: Direct Parquet Conversion (Step 18 → 20)";
+      if (pqBadge) pqBadge.textContent = isDubai ? "⚡ Mode 3: Direct Dubai Parquet Conversion" : "⚡ Mode 3: Parquet Conversion";
       const pqTitle = document.getElementById("parquet-card-title");
       if (pqTitle) pqTitle.textContent = isDubai ? "Select Dubai Processed File for Parquet Conversion" : "Select Final Processed File for Parquet Conversion";
       const pqInstructions = document.getElementById("parquet-card-instructions");
       if (pqInstructions) {
         pqInstructions.textContent = isDubai
           ? "Pick or enter a Dubai processed file from Google Drive (2.Processed Files) below, then click 'Yes, Convert to Parquet' or Start Pipeline."
-          : "Pick or enter a final processed file from Google Drive (4. Final processed file) below, then click 'Yes, Convert to Parquet' to proceed directly to Step 18.";
+          : "Pick or enter a final processed file from Google Drive (4. Final processed file) below, then click 'Yes, Convert to Parquet' to proceed with Parquet conversion.";
       }
     }
 
@@ -1332,19 +1550,16 @@ function setMode(mode) {
     manualFilePath.required = false;
     if (finalFilePath) finalFilePath.required = true;
     btnRun.innerHTML = isDubai
-      ? '<span class="btn-icon">🚀</span> <span class="btn-text">Convert Dubai File to Parquet</span>'
-      : '<span class="btn-icon">🚀</span> <span class="btn-text">Start Pipeline Execution</span>';
+      ? '<span class="btn-icon">⚡</span> <span class="btn-text">Convert Dubai File to Parquet</span>'
+      : '<span class="btn-icon">⚡</span> <span class="btn-text">Convert to Parquet</span>';
 
-    if (stepsSectionTitle) stepsSectionTitle.textContent = isDubai ? "🏙️ Dubai Pipeline Steps (Parquet Conversion)" : "Pipeline Execution Steps (1 to 20)";
+    if (stepsSectionTitle) stepsSectionTitle.textContent = isDubai ? "🏙️ Dubai Pipeline Steps (Parquet Conversion)" : "⚡ Mode 3: Parquet Conversion";
     renderStepCards(false);
 
     // Visually mark steps 1-17 as skipped
     for (let i = 1; i <= 17; i++) {
-      updateStepUI(i, "skipped", "Skipped in Mode 3", "-");
+      updateStepUI(i, "skipped", "Stand-alone Parquet Mode", "-");
     }
-    updateStepUI(18, "pending", "Waiting for Parquet conversion...", "-");
-    updateStepUI(19, "pending", "Waiting...", "-");
-    updateStepUI(20, "pending", "Waiting...", "-");
     logToConsole(`[Mode] Selected Mode 3: Parquet Conversion Directly (${isDubai ? "Dubai" : "City ID " + currentCityId})`);
 
     loadFinalDriveLocations(currentCityId);
@@ -1365,11 +1580,53 @@ function setMode(mode) {
     mode1Label.classList.remove("active");
     mode2Label.classList.remove("active");
     if (mode3Label) mode3Label.classList.remove("active");
+    if (mode5Label) mode5Label.classList.remove("active");
 
     inputFileGroup.classList.add("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
-    if (mode4LocationContainer) mode4LocationContainer.classList.remove("hidden");
+    if (mode4UploadContainer) mode4UploadContainer.classList.remove("hidden");
+    if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
+
+    if (!appState.isRunning) {
+      if (pauseCard) pauseCard.classList.add("hidden");
+      if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
+    }
+
+    inputFilePath.required = false;
+    manualFilePath.required = false;
+    if (finalFilePath) finalFilePath.required = false;
+    btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Launch Database Upload (final_code.py)</span>';
+
+    if (stepsSectionTitle) stepsSectionTitle.textContent = "🚀 Mode 4: Database Upload Pipeline (final_code.py)";
+    renderStepCards(false);
+
+    // Visually mark steps 1-17 as skipped
+    for (let i = 1; i <= 17; i++) {
+      updateStepUI(i, "skipped", "Stand-alone Upload Pipeline", "-");
+    }
+    logToConsole("[Mode] Selected Mode 4: Database Upload Pipeline (triggers final_code.py)");
+
+    // Smooth redirect/scroll right to Mode 4 upload container
+    setTimeout(() => {
+      if (mode4UploadContainer) {
+        mode4UploadContainer.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 120);
+
+  } else if (mode === "5") {
+    if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
+    if (mode5Label) mode5Label.classList.add("active");
+    mode1Label.classList.remove("active");
+    mode2Label.classList.remove("active");
+    if (mode3Label) mode3Label.classList.remove("active");
+    if (mode4Label) mode4Label.classList.remove("active");
+
+    inputFileGroup.classList.add("hidden");
+    manualFileGroup.classList.add("hidden");
+    if (finalFileGroup) finalFileGroup.classList.add("hidden");
+    if (mode4UploadContainer) mode4UploadContainer.classList.add("hidden");
+    if (mode5LocationContainer) mode5LocationContainer.classList.remove("hidden");
 
     if (!appState.isRunning) {
       if (pauseCard) pauseCard.classList.add("hidden");
@@ -1381,18 +1638,20 @@ function setMode(mode) {
     if (finalFilePath) finalFilePath.required = false;
     btnRun.innerHTML = '<span class="btn-icon">📊</span> <span class="btn-text">Run Outlier Detection</span>';
 
-    // Visually mark steps 1-19 as skipped
-    for (let i = 1; i <= 19; i++) {
-      updateStepUI(i, "skipped", "Skipped in Mode 4", "-");
+    if (stepsSectionTitle) stepsSectionTitle.textContent = "📊 Mode 5: Outlier Detection & Database Update";
+    renderStepCards(false);
+
+    // Visually mark steps 1-17 as skipped
+    for (let i = 1; i <= 17; i++) {
+      updateStepUI(i, "skipped", "Stand-alone Outlier Mode", "-");
     }
-    updateStepUI(20, "pending", "Ready for Outlier Detection...", "-");
     loadOutlierLocations(currentCityId);
-    logToConsole("[Mode] Selected Mode 4: Outlier Detection & Database Update (Step 20 Only)");
+    logToConsole("[Mode] Selected Mode 5: Outlier Detection & Database Update");
 
     // Smooth redirect/scroll right to Outlier section
     setTimeout(() => {
-      if (mode4LocationContainer) {
-        mode4LocationContainer.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (mode5LocationContainer) {
+        mode5LocationContainer.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }, 120);
   }
@@ -1404,9 +1663,20 @@ function setMode(mode) {
 async function startPipeline() {
   const isDubai = cityIdInput && cityIdInput.value === "15";
 
+  // Standalone triggers for Mode 4 and Mode 5
+  if (appState.mode === "4") {
+    launchUploadPipeline();
+    return;
+  }
+
+  if (appState.mode === "5") {
+    runOutlierDetection();
+    return;
+  }
+
   // Dubai scraping & processing is ONLY run for Mode 1 (or default Dubai mode).
-  // If Mode 3 (Parquet conversion) or Mode 4 (Outlier) is selected, DO NOT run scraping!
-  if (isDubai && appState.mode !== "3" && appState.mode !== "4") {
+  // If Mode 3 (Parquet conversion) is selected, DO NOT run scraping!
+  if (isDubai && appState.mode !== "3") {
     const runScraping = dubaiRunScraping ? dubaiRunScraping.checked : true;
     const runProcessing = dubaiRunProcessing ? dubaiRunProcessing.checked : true;
 
@@ -1442,6 +1712,7 @@ async function startPipeline() {
     btnStop.disabled = false;
     btnStop.classList.remove("hidden");
     startTimer();
+    switchDashboardTab("progress");
 
     logToConsole(`\n[Execution] Triggering Dubai Land Department (DLD) 2-Step Pipeline...`);
     if (runScraping) logToConsole(`  - Step 1 (Scraping): Date range ${fromDate || "Auto DB"} to ${toDate || "Yesterday"}`);
@@ -1469,7 +1740,6 @@ async function startPipeline() {
     return;
   }
 
-  const isMode4 = appState.mode === "4";
   const isMode3 = appState.mode === "3";
 
   let chosenFinalFile = "";
@@ -1482,7 +1752,7 @@ async function startPipeline() {
   }
 
   const targetOutput = isMode3 ? chosenFinalFile : outputPath.value.trim();
-  if (!isMode3 && !isMode4 && targetOutput && !targetOutput.toLowerCase().endsWith(".xlsx")) {
+  if (!isMode3 && targetOutput && !targetOutput.toLowerCase().endsWith(".xlsx")) {
     alert("Output file path must end with '.xlsx'. Please correct it.");
     return;
   }
@@ -1492,19 +1762,12 @@ async function startPipeline() {
   const saveOutlierCb = document.getElementById("save-outlier-report");
   const geocodingCb = document.getElementById("include-geocoding");
 
-  let effectiveOutlierLoc = null;
-  if (appState.mode === "4") {
-    const isAll = mode4AllLocations ? mode4AllLocations.checked : false;
-    effectiveOutlierLoc = isAll ? null : ((mode4LocationInput ? mode4LocationInput.value.trim() : "") || (outlierLocationSelect ? outlierLocationSelect.value.trim() : ""));
-  }
-
   const payload = {
     mode: appState.mode,
-    input_file: isMode4 ? "" : (isMode3 ? chosenFinalFile : inputFilePath.value.trim()),
-    manual_file: isMode4 ? "" : manualFilePath.value.trim(),
+    input_file: isMode3 ? chosenFinalFile : inputFilePath.value.trim(),
+    manual_file: manualFilePath.value.trim(),
     final_file: isMode3 ? chosenFinalFile : "",
-    location_name: isMode4 ? effectiveOutlierLoc : (appState.selectedLocation || (driveInputLocationSelect?.selectedOptions[0]?.dataset.location) || null),
-    outlier_location: effectiveOutlierLoc,
+    location_name: appState.selectedLocation || (driveInputLocationSelect?.selectedOptions[0]?.dataset.location) || null,
     city_id: parseInt(cityIdInput.value, 10) || (isDubai ? 15 : 9),
     output_path: isMode3 ? chosenFinalFile : targetOutput,
     database: getSelectedDb(),
@@ -1521,6 +1784,7 @@ async function startPipeline() {
   btnStop.disabled = false;
   btnStop.classList.remove("hidden");
   startTimer();
+  switchDashboardTab("progress");
 
   logToConsole(`\n[Execution] Triggering Pipeline Run in Mode ${appState.mode}...`);
   logToConsole(`[Target Output] ${targetOutput}`);
@@ -1571,8 +1835,11 @@ function startPolling() {
         resetRunState();
 
         if (status.state === "completed") {
-          logToConsole(`\n🎉 [Pipeline Finished] File saved to: ${status.output_file}`, "success");
-          alert(`🎉 Pipeline execution completed successfully!\nSaved to: ${status.output_file}`);
+          const fileMsg = status.output_file && status.output_file !== "Database Updated" 
+            ? `\nSaved to: ${status.output_file}` 
+            : "";
+          logToConsole(`\n🎉 [Pipeline Finished] Completed successfully!${fileMsg}`, "success");
+          alert(`🎉 Pipeline execution completed successfully!${fileMsg}`);
         } else if (status.state === "failed") {
           logToConsole(`\n❌ [Pipeline Failed] Error: ${status.error}`, "error");
         }
@@ -1601,6 +1868,11 @@ function applyStatusUpdate(status) {
   progressPercent.textContent = `${pct}%`;
   currentStepText.textContent = status.current_step_name || "Executing...";
 
+  if (compactProgressBar) compactProgressBar.style.width = `${pct}%`;
+  if (compactProgressPercent) compactProgressPercent.textContent = `${pct}%`;
+  if (compactStepLabel) compactStepLabel.textContent = status.current_step_name || "Executing...";
+  if (tabBadgeProgress) tabBadgeProgress.textContent = `${pct}%`;
+
   // Update metrics
   if (status.metrics) {
     if (status.metrics.total_rows !== undefined && status.metrics.total_rows !== null) metricRows.textContent = status.metrics.total_rows.toLocaleString();
@@ -1617,10 +1889,15 @@ function applyStatusUpdate(status) {
       if (s.status === "completed") completedCount++;
     });
     stepsStatusSummary.textContent = `${completedCount} / ${status.steps.length} Completed`;
+    updateStepCounts();
   }
 
   if (status.step7_merge_report) {
     renderStep7MergeReport(status.step7_merge_report);
+    if (tabBadgeReports) {
+      tabBadgeReports.textContent = `${status.step7_merge_report.files?.length || 1} files`;
+    }
+    mirrorStep7MergeReportToTab4(status.step7_merge_report);
   }
 
   // Handle Step 7 and Step 18 Pause States (strictly hide for Dubai)
@@ -1663,6 +1940,7 @@ function applyStatusUpdate(status) {
       }
       if (isFirstTimePaused) {
         loadManualDriveLocations();
+        switchDashboardTab("progress");
         pauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
         logToConsole(`\n⏸️ [Action Required] Step 6 Complete! File saved to Google Drive at ${status.v1_saved_at || "just now"}. Please review/correct project names in Google Drive or select file below.`, "warning");
       }
@@ -1698,6 +1976,7 @@ function applyStatusUpdate(status) {
         }
         if (isFirstTimePaused) {
           loadFinalDriveLocations(status.city_id || (cityIdInput ? cityIdInput.value : ""));
+          switchDashboardTab("progress");
           parquetPauseCard.scrollIntoView({ behavior: "smooth", block: "center" });
         }
       }
@@ -1742,6 +2021,13 @@ function updateStepUI(id, status, detail, duration) {
 
   if (detail) detailEl.textContent = detail;
   if (duration) durationEl.textContent = duration;
+
+  // Respect active filter on step cards
+  if (appState.stepFilter && appState.stepFilter !== "all") {
+    card.style.display = (appState.stepFilter === status) ? "" : "none";
+  } else {
+    card.style.display = "";
+  }
 }
 
 function resetRunState() {
@@ -1775,14 +2061,191 @@ function stopTimer() {
   }
 }
 
-function logToConsole(message, level = "info") {
-  const line = document.createElement("div");
-  line.className = `console-line ${level}`;
-  line.textContent = message;
-  consoleOutput.appendChild(line);
+function getConsolePageSize() {
+  const val = logPageSizeSelect ? logPageSizeSelect.value : "50";
+  if (val === "all") return Infinity;
+  const num = parseInt(val, 10);
+  return isNaN(num) ? 50 : num;
+}
 
-  if (autoscrollCb.checked) {
+function getFilteredLogs() {
+  const levelFilter = appState.consoleFilterLevel || "all";
+  const search = (appState.consoleSearchQuery || "").toLowerCase().trim();
+
+  return (appState.allLogs || []).filter(log => {
+    if (levelFilter !== "all" && log.level !== levelFilter) {
+      return false;
+    }
+    if (search && !log.text.toLowerCase().includes(search)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function updateLogStats() {
+  const total = appState.allLogs ? appState.allLogs.length : 0;
+  let info = 0, success = 0, warning = 0, error = 0;
+
+  for (let i = 0; i < total; i++) {
+    const l = appState.allLogs[i].level;
+    if (l === "info") info++;
+    else if (l === "success") success++;
+    else if (l === "warning") warning++;
+    else if (l === "error") error++;
+  }
+
+  if (consoleTotalBadge) consoleTotalBadge.textContent = `${total.toLocaleString()} events`;
+  if (tabBadgeLogs) tabBadgeLogs.textContent = total > 999 ? `${(total / 1000).toFixed(1)}k` : `${total} Logs`;
+
+  if (countLogAll) countLogAll.textContent = total;
+  if (countLogInfo) countLogInfo.textContent = info;
+  if (countLogSuccess) countLogSuccess.textContent = success;
+  if (countLogWarning) countLogWarning.textContent = warning;
+  if (countLogError) countLogError.textContent = error;
+}
+
+function updateConsolePaginationUI(filteredCount, totalPages) {
+  if (logPageInfo) {
+    if (filteredCount === 0) {
+      logPageInfo.textContent = "No logs match filter";
+    } else {
+      const page = appState.consolePage || 1;
+      logPageInfo.textContent = `Page ${page} of ${totalPages} (${filteredCount.toLocaleString()} total)`;
+    }
+  }
+
+  const curPage = appState.consolePage || 1;
+  if (logPageFirst) logPageFirst.disabled = (curPage <= 1);
+  if (logPagePrev) logPagePrev.disabled = (curPage <= 1);
+  if (logPageNext) logPageNext.disabled = (curPage >= totalPages || filteredCount === 0);
+  if (logPageLast) logPageLast.disabled = (curPage >= totalPages || filteredCount === 0);
+}
+
+function renderConsoleLogs() {
+  if (!consoleOutput) return;
+
+  const filtered = getFilteredLogs();
+  const pageSize = getConsolePageSize();
+  const totalPages = pageSize === Infinity ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize));
+
+  // Bound current page
+  if (appState.consolePage > totalPages) appState.consolePage = totalPages;
+  if (appState.consolePage < 1) appState.consolePage = 1;
+
+  updateConsolePaginationUI(filtered.length, totalPages);
+
+  const startIdx = pageSize === Infinity ? 0 : (appState.consolePage - 1) * pageSize;
+  const endIdx = pageSize === Infinity ? filtered.length : startIdx + pageSize;
+  const pageItems = filtered.slice(startIdx, endIdx);
+
+  consoleOutput.innerHTML = "";
+
+  if (pageItems.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "console-empty-notice";
+    empty.style.padding = "28px 16px";
+    empty.style.textAlign = "center";
+    empty.style.color = "var(--text-muted)";
+    empty.style.fontSize = "0.85rem";
+    empty.textContent = (!appState.allLogs || appState.allLogs.length === 0)
+      ? "Terminal ready. Start a pipeline run to stream real-time execution logs."
+      : "No log entries match the current filter or search criteria.";
+    consoleOutput.appendChild(empty);
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  const search = (appState.consoleSearchQuery || "").toLowerCase().trim();
+
+  pageItems.forEach(item => {
+    const line = document.createElement("div");
+    line.className = `console-line ${item.level}`;
+
+    if (search && item.text.toLowerCase().includes(search)) {
+      const raw = item.text;
+      const lower = raw.toLowerCase();
+      const idx = lower.indexOf(search);
+      const before = raw.slice(0, idx);
+      const match = raw.slice(idx, idx + search.length);
+      const after = raw.slice(idx + search.length);
+
+      line.appendChild(document.createTextNode(before));
+      const mark = document.createElement("mark");
+      mark.style.background = "#fbbf24";
+      mark.style.color = "#000";
+      mark.style.borderRadius = "2px";
+      mark.style.padding = "0 3px";
+      mark.style.fontWeight = "600";
+      mark.textContent = match;
+      line.appendChild(mark);
+      line.appendChild(document.createTextNode(after));
+    } else {
+      line.textContent = item.text;
+    }
+    frag.appendChild(line);
+  });
+
+  consoleOutput.appendChild(frag);
+
+  // Auto-scroll if enabled and we are viewing the latest page
+  if (autoscrollCb && autoscrollCb.checked && (appState.consolePage >= totalPages)) {
     consoleOutput.scrollTop = consoleOutput.scrollHeight;
+  }
+}
+
+function exportLogsToFile() {
+  if (!appState.allLogs || appState.allLogs.length === 0) {
+    alert("No console logs to export.");
+    return;
+  }
+
+  const logLines = appState.allLogs.map(l => `[${l.timestamp}] [${(l.level || "INFO").toUpperCase()}] ${l.text}`);
+  const blob = new Blob([logLines.join("\r\n")], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 10);
+  const timeStr = now.toTimeString().slice(0, 8).replace(/:/g, "-");
+  a.download = `IGR_Pipeline_Logs_${dateStr}_${timeStr}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function logToConsole(message, level = "info") {
+  if (!message) return;
+  if (!appState.allLogs) appState.allLogs = [];
+
+  const logItem = {
+    id: appState.allLogs.length + 1,
+    text: String(message),
+    level: level || "info",
+    timestamp: new Date().toLocaleTimeString()
+  };
+  appState.allLogs.push(logItem);
+
+  updateLogStats();
+
+  const pageSize = getConsolePageSize();
+  const filtered = getFilteredLogs();
+  const totalPages = pageSize === Infinity ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize));
+
+  if (appState.consoleLiveFollow) {
+    appState.consolePage = totalPages;
+    appState.unreadNewLogsCount = 0;
+    if (btnJumpLatestLogs) btnJumpLatestLogs.classList.add("hidden");
+    renderConsoleLogs();
+  } else {
+    // User is browsing an earlier page, increment unread logs counter without jumping view
+    appState.unreadNewLogsCount = (appState.unreadNewLogsCount || 0) + 1;
+    if (btnJumpLatestLogs) {
+      btnJumpLatestLogs.classList.remove("hidden");
+      btnJumpLatestLogs.textContent = `⬇ +${appState.unreadNewLogsCount} new logs (Jump to latest)`;
+    }
+    updateConsolePaginationUI(filtered.length, totalPages);
   }
 }
 
@@ -1891,12 +2354,10 @@ async function loadInputDriveLocations(cityId) {
 
     // Auto-select first found location from Google Drive
     if (firstValidFile) {
-      if (!inputFilePath.value || !inputFilePath.value.includes(".shortcut-targets-by-id")) {
-        driveInputLocationSelect.value = firstValidFile;
-        inputFilePath.value = firstValidFile;
-        appState.selectedLocation = firstLocation;
-        logToConsole(`[Drive] Connected to ${cityName} Drive location: ${firstLocation} (${firstValidFile})`, "info");
-      }
+      driveInputLocationSelect.value = firstValidFile;
+      inputFilePath.value = firstValidFile;
+      appState.selectedLocation = firstLocation;
+      logToConsole(`[Drive] Connected to ${cityName} Drive location: ${firstLocation} (${firstValidFile})`, "info");
     }
   } catch (err) {
     console.error("Error loading input drive locations:", err);
@@ -1912,8 +2373,11 @@ async function loadManualDriveLocations(cityId) {
     s.disabled = true;
   });
 
-  const pauseChipsContainer = document.getElementById("pause-location-chips");
-  if (pauseChipsContainer) pauseChipsContainer.innerHTML = "";
+  const chipContainers = [
+    document.getElementById("pause-location-chips"),
+    document.getElementById("mode2-location-chips")
+  ].filter(Boolean);
+  chipContainers.forEach(c => { c.innerHTML = ""; });
 
   const currentCityId = cityId || (cityIdInput ? cityIdInput.value : "9");
 
@@ -1970,51 +2434,6 @@ async function loadManualDriveLocations(cityId) {
           }
           select.appendChild(opt);
         });
-
-        // Add interactive location folder chips for Step 7 pause card
-        if (isPauseSelect && pauseChipsContainer) {
-          const chip = document.createElement("button");
-          chip.type = "button";
-          chip.className = "loc-folder-chip";
-          const firstFile = loc.files[0];
-          const allInLocSelected = loc.files.length > 0 && loc.files.every(f => 
-            appState.step7SelectedFiles.some(sf => sf.path.toLowerCase() === f.path.toLowerCase())
-          );
-          if (allInLocSelected) chip.classList.add("active");
-
-          chip.innerHTML = `📂 <strong>${loc.location}</strong> <span class="chip-count">(${loc.files.length} file${loc.files.length > 1 ? 's' : ''})</span>`;
-          chip.title = `Click to toggle ${loc.location} folder files for Step 7 merge`;
-
-          chip.addEventListener("click", () => {
-            const currentlyAllSelected = loc.files.length > 0 && loc.files.every(f => 
-              appState.step7SelectedFiles.some(sf => sf.path.toLowerCase() === f.path.toLowerCase())
-            );
-
-            if (currentlyAllSelected) {
-              loc.files.forEach(f => removeStep7File(f.path));
-              chip.classList.remove("active");
-              logToConsole(`[Step 7] Deselected location folder '${loc.location}'`, "info");
-            } else {
-              loc.files.forEach(f => addStep7File(f.path, f.name, loc.location));
-              chip.classList.add("active");
-              logToConsole(`[Step 7] Added ${loc.files.length} file(s) from '${loc.location}' for merge`, "info");
-            }
-
-            if (firstFile) {
-              pauseLocationSelect.value = firstFile.path;
-              appState.selectedLocation = loc.location;
-              const pauseDriveLink = document.getElementById("pause-drive-link") || document.querySelector(".pause-desc .drive-external-link");
-              if (pauseDriveLink) {
-                const targetDriveUrl = loc.drive_url || (loc.location.toLowerCase() === "bandra" ? "https://drive.google.com/drive/folders/1wsvFldaqifK_yoyifZqqFpL8MsZKJZUq?usp=drive_link" : (data.drive_url || ""));
-                if (targetDriveUrl) {
-                  pauseDriveLink.href = targetDriveUrl;
-                  pauseDriveLink.textContent = `🌐 Open ${loc.location} Drive Folder ↗`;
-                }
-              }
-            }
-          });
-          pauseChipsContainer.appendChild(chip);
-        }
       });
 
       // If current default wasn't in scanned list
@@ -2026,6 +2445,55 @@ async function loadManualDriveLocations(cityId) {
         defaultOpt.textContent = `📍 [SELECTED] ${fileName} (Step 6 Default)`;
         select.insertBefore(defaultOpt, select.firstChild);
       }
+    });
+
+    // Populate interactive location folder chips for both Step 7 pause card and Mode 2 container
+    locations.forEach(loc => {
+      chipContainers.forEach(container => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "loc-folder-chip";
+        chip.dataset.loc = loc.location;
+        const firstFile = loc.files[0];
+        const allInLocSelected = loc.files.length > 0 && loc.files.every(f => 
+          appState.step7SelectedFiles.some(sf => sf.path.toLowerCase() === f.path.toLowerCase())
+        );
+        if (allInLocSelected) chip.classList.add("active");
+
+        chip.innerHTML = `📂 <strong>${loc.location}</strong> <span class="chip-count">(${loc.files.length} file${loc.files.length > 1 ? 's' : ''})</span>`;
+        chip.title = `Click to toggle ${loc.location} folder files for merge`;
+
+        chip.addEventListener("click", () => {
+          const currentlyAllSelected = loc.files.length > 0 && loc.files.every(f => 
+            appState.step7SelectedFiles.some(sf => sf.path.toLowerCase() === f.path.toLowerCase())
+          );
+
+          if (currentlyAllSelected) {
+            loc.files.forEach(f => removeStep7File(f.path));
+            document.querySelectorAll(`.loc-folder-chip[data-loc="${loc.location}"]`).forEach(c => c.classList.remove("active"));
+            logToConsole(`[Manual Merge] Deselected location folder '${loc.location}'`, "info");
+          } else {
+            loc.files.forEach(f => addStep7File(f.path, f.name, loc.location));
+            document.querySelectorAll(`.loc-folder-chip[data-loc="${loc.location}"]`).forEach(c => c.classList.add("active"));
+            logToConsole(`[Manual Merge] Added ${loc.files.length} file(s) from '${loc.location}' for merge`, "info");
+          }
+
+          if (firstFile) {
+            if (pauseLocationSelect) pauseLocationSelect.value = firstFile.path;
+            if (driveManualLocationSelect) driveManualLocationSelect.value = firstFile.path;
+            appState.selectedLocation = loc.location;
+            const pauseDriveLink = document.getElementById("pause-drive-link") || document.querySelector(".pause-desc .drive-external-link");
+            if (pauseDriveLink) {
+              const targetDriveUrl = loc.drive_url || (loc.location.toLowerCase() === "bandra" ? "https://drive.google.com/drive/folders/1wsvFldaqifK_yoyifZqqFpL8MsZKJZUq?usp=drive_link" : (data.drive_url || ""));
+              if (targetDriveUrl) {
+                pauseDriveLink.href = targetDriveUrl;
+                pauseDriveLink.textContent = `🌐 Open ${loc.location} Drive Folder ↗`;
+              }
+            }
+          }
+        });
+        container.appendChild(chip);
+      });
     });
   } catch (err) {
     console.error("Error loading manual drive locations:", err);
@@ -2269,10 +2737,10 @@ async function loadOutlierLocations(cityId) {
     allChip.className = "outlier-chip chip-all active";
     allChip.innerHTML = `🌐 <strong>ALL Locations</strong>`;
     allChip.addEventListener("click", () => {
-      if (mode4AllLocations) mode4AllLocations.checked = true;
-      if (mode4LocationInput) {
-        mode4LocationInput.value = "";
-        mode4LocationInput.disabled = true;
+      if (mode5AllLocations) mode5AllLocations.checked = true;
+      if (mode5LocationInput) {
+        mode5LocationInput.value = "";
+        mode5LocationInput.disabled = true;
       }
       if (outlierLocationSelect) outlierLocationSelect.value = "";
       document.querySelectorAll(".outlier-chip").forEach(c => c.classList.remove("active"));
@@ -2301,17 +2769,17 @@ async function loadOutlierLocations(cityId) {
         if (activeLocNames.length === 0) {
           // No location selected, revert to ALL
           allChip.classList.add("active");
-          if (mode4AllLocations) mode4AllLocations.checked = true;
-          if (mode4LocationInput) {
-            mode4LocationInput.value = "";
-            mode4LocationInput.disabled = true;
+          if (mode5AllLocations) mode5AllLocations.checked = true;
+          if (mode5LocationInput) {
+            mode5LocationInput.value = "";
+            mode5LocationInput.disabled = true;
           }
           if (outlierLocationSelect) outlierLocationSelect.value = "";
         } else {
-          if (mode4AllLocations) mode4AllLocations.checked = false;
-          if (mode4LocationInput) {
-            mode4LocationInput.disabled = false;
-            mode4LocationInput.value = activeLocNames.join(", ");
+          if (mode5AllLocations) mode5AllLocations.checked = false;
+          if (mode5LocationInput) {
+            mode5LocationInput.disabled = false;
+            mode5LocationInput.value = activeLocNames.join(", ");
           }
           if (outlierLocationSelect) {
             outlierLocationSelect.value = (activeLocNames.length === 1 ? activeLocNames[0] : "");
@@ -2334,8 +2802,8 @@ async function loadOutlierLocations(cityId) {
 async function runOutlierDetection() {
   const currentCityId = parseInt(cityIdInput ? cityIdInput.value : "9", 10) || 9;
   const cityName = cityIdInput?.selectedOptions[0]?.text.split(" (")[0] || "City";
-  const isAll = mode4AllLocations ? mode4AllLocations.checked : true;
-  const chosenLoc = isAll ? null : ((mode4LocationInput ? mode4LocationInput.value.trim() : "") || (outlierLocationSelect ? outlierLocationSelect.value.trim() : ""));
+  const isAll = mode5AllLocations ? mode5AllLocations.checked : true;
+  const chosenLoc = isAll ? null : ((mode5LocationInput ? mode5LocationInput.value.trim() : "") || (outlierLocationSelect ? outlierLocationSelect.value.trim() : ""));
   const saveReport = saveOutlierReportCb ? saveOutlierReportCb.checked : false;
 
   const scopeMsg = chosenLoc ? `location(s) '${chosenLoc}'` : `ALL locations in ${cityName}`;
@@ -2371,39 +2839,48 @@ async function runOutlierDetection() {
 }
 
 function renderStep7SelectedFilesList() {
-  if (!step7SelectedFilesList) return;
   const files = appState.step7SelectedFiles || [];
   const count = files.length;
 
   if (step7FilesCountBadge) {
     step7FilesCountBadge.textContent = `${count} File${count !== 1 ? 's' : ''}`;
   }
+  if (mode2FilesCountBadge) {
+    mode2FilesCountBadge.textContent = `${count} File${count !== 1 ? 's' : ''}`;
+  }
+
+  const emptyHtml = `<span style="font-size: 0.78rem; color: #64748b; font-style: italic;">No files selected. Click location chips or select options above to add files for merge.</span>`;
 
   if (count === 0) {
-    step7SelectedFilesList.innerHTML = `<span style="font-size: 0.78rem; color: #64748b; font-style: italic;">No files selected. Click location chips or select options above to add files for merge.</span>`;
+    if (step7SelectedFilesList) step7SelectedFilesList.innerHTML = emptyHtml;
+    if (mode2SelectedFilesList) mode2SelectedFilesList.innerHTML = emptyHtml;
     if (resumeFilePath) resumeFilePath.value = "";
-    if (manualFilePath && appState.mode === "2") manualFilePath.value = "";
+    if (manualFilePath) manualFilePath.value = "";
     return;
   }
 
-  step7SelectedFilesList.innerHTML = files.map(f => `
+  const tagsHtml = files.map(f => `
     <span class="file-pill-tag" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(30, 41, 59, 0.9); border: 1px solid rgba(251, 191, 36, 0.4); color: #f8fafc; padding: 4px 10px; border-radius: 9999px; font-size: 0.78rem;" title="${f.path}">
       <span>📄 <strong>${f.location ? f.location + ' / ' : ''}</strong>${f.name}</span>
       <button type="button" class="btn-remove-file" data-path="${encodeURIComponent(f.path)}" style="background: none; border: none; color: #f87171; font-weight: bold; cursor: pointer; font-size: 0.82rem; padding: 0 2px;">✕</button>
     </span>
   `).join("");
 
-  step7SelectedFilesList.querySelectorAll(".btn-remove-file").forEach(btn => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const pathToRemove = decodeURIComponent(btn.dataset.path);
-      removeStep7File(pathToRemove);
+  [step7SelectedFilesList, mode2SelectedFilesList].forEach(listEl => {
+    if (!listEl) return;
+    listEl.innerHTML = tagsHtml;
+    listEl.querySelectorAll(".btn-remove-file").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const pathToRemove = decodeURIComponent(btn.dataset.path);
+        removeStep7File(pathToRemove);
+      });
     });
   });
 
   const pathsStr = files.map(f => f.path).join(", ");
   if (resumeFilePath) resumeFilePath.value = pathsStr;
-  if (manualFilePath && appState.mode === "2") manualFilePath.value = pathsStr;
+  if (manualFilePath) manualFilePath.value = pathsStr;
 }
 
 function addStep7File(path, name, location) {
@@ -2489,3 +2966,390 @@ window.launchUploadPipeline = launchUploadPipeline;
 window.runOutlierDetection = runOutlierDetection;
 window.loadOutlierLocations = loadOutlierLocations;
 window.setMode = setMode;
+window.switchDashboardTab = switchDashboardTab;
+window.setLayoutMode = setLayoutMode;
+
+function mirrorStep7MergeReportToTab4(report) {
+  const container = document.getElementById("step7-report-pane-container");
+  if (!container || !report) return;
+
+  let badgeColor = "#38bdf8";
+  let badgeBg = "rgba(56, 189, 248, 0.2)";
+  let badgeBorder = "rgba(56, 189, 248, 0.4)";
+  let badgeText = `Single File (${report.total_unique_columns || 0} cols)`;
+
+  if (report.status_type === "PERFECT_MATCH") {
+    badgeColor = "#34d399";
+    badgeBg = "rgba(16, 185, 129, 0.2)";
+    badgeBorder = "rgba(16, 185, 129, 0.4)";
+    badgeText = `✓ Perfect Column Match (${report.total_unique_columns || 0} cols)`;
+  } else if (report.status_type === "COLUMN_MISMATCH") {
+    badgeColor = "#fbbf24";
+    badgeBg = "rgba(245, 158, 11, 0.2)";
+    badgeBorder = "rgba(245, 158, 11, 0.4)";
+    badgeText = `⚠️ Column Differences Detected`;
+  }
+
+  let rowsHtml = "";
+  if (Array.isArray(report.files)) {
+    rowsHtml = report.files.map(f => {
+      let missingHtml = "";
+      if (f.missing_count > 0 && Array.isArray(f.missing_columns)) {
+        const pills = f.missing_columns.map(col =>
+          `<span style="display: inline-block; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; font-family: var(--font-mono); margin: 2px;">${col}</span>`
+        ).join("");
+        missingHtml = `<div style="display: flex; flex-wrap: wrap; gap: 2px; align-items: center;">${pills}</div>`;
+      } else {
+        missingHtml = `<span style="color: #34d399; font-weight: 500;">✓ All columns match</span>`;
+      }
+
+      return `
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+          <td style="padding: 8px 10px; font-weight: 600; color: #94a3b8;">${f.index}</td>
+          <td style="padding: 8px 10px; font-weight: 600; color: #f8fafc;" title="${f.path}">${f.filename}</td>
+          <td style="padding: 8px 10px; color: #cbd5e1;">${(f.row_count || 0).toLocaleString()}</td>
+          <td style="padding: 8px 10px; font-weight: 600; color: #38bdf8;">${f.column_count}</td>
+          <td style="padding: 8px 10px;">${missingHtml}</td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  container.innerHTML = `
+    <div style="padding: 16px; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: var(--radius-sm);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 8px;">
+        <span style="font-weight: 600; font-size: 0.92rem; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
+          📊 Step 7 Multi-File Merge Verification
+        </span>
+        <span style="font-size: 0.78rem; font-weight: 600; padding: 4px 10px; border-radius: 9999px; background: ${badgeBg}; color: ${badgeColor}; border: 1px solid ${badgeBorder};">
+          ${badgeText}
+        </span>
+      </div>
+      <div style="font-size: 0.82rem; color: #cbd5e1; margin-bottom: 12px; line-height: 1.4;">
+        ${report.status_message || ""}
+      </div>
+      <div style="overflow-x: auto;">
+        <table class="report-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left;">
+          <thead>
+            <tr style="background: rgba(15, 23, 42, 0.8); color: #94a3b8; border-bottom: 1px solid #334155;">
+              <th style="padding: 8px 10px;">#</th>
+              <th style="padding: 8px 10px;">File Name</th>
+              <th style="padding: 8px 10px;">Rows</th>
+              <th style="padding: 8px 10px;">Columns</th>
+              <th style="padding: 8px 10px;">Missing Columns vs Master Union</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function initNavTabs() {
+  const tabs = [
+    { btn: tabBtnConfig, id: "config" },
+    { btn: tabBtnProgress, id: "progress" },
+    { btn: tabBtnConsole, id: "console" },
+    { btn: tabBtnReports, id: "reports" }
+  ];
+
+  tabs.forEach(t => {
+    if (t.btn) {
+      t.btn.addEventListener("click", () => {
+        switchDashboardTab(t.id);
+      });
+    }
+  });
+
+  // Footer navigation buttons across all panes
+  document.querySelectorAll(".btn-nav-pane").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const target = btn.dataset.target || btn.dataset.goto;
+      if (target) {
+        switchDashboardTab(target);
+      }
+    });
+  });
+
+  // Restore saved active tab from sessionStorage if available
+  const savedTab = sessionStorage.getItem("igr_active_tab");
+  if (savedTab && ["config", "progress", "console", "reports"].includes(savedTab)) {
+    switchDashboardTab(savedTab, false);
+  } else {
+    switchDashboardTab("config", false);
+  }
+}
+
+function switchDashboardTab(tabId, scroll = true) {
+  appState.activeTab = tabId;
+  sessionStorage.setItem("igr_active_tab", tabId);
+
+  const tabBtns = [
+    { btn: tabBtnConfig, id: "config" },
+    { btn: tabBtnProgress, id: "progress" },
+    { btn: tabBtnConsole, id: "console" },
+    { btn: tabBtnReports, id: "reports" }
+  ];
+
+  tabBtns.forEach(t => {
+    if (t.btn) {
+      if (t.id === tabId) {
+        t.btn.classList.add("active");
+        t.btn.setAttribute("aria-selected", "true");
+      } else {
+        t.btn.classList.remove("active");
+        t.btn.setAttribute("aria-selected", "false");
+      }
+    }
+  });
+
+  const panes = [
+    { pane: paneConfig, id: "config" },
+    { pane: paneProgress, id: "progress" },
+    { pane: paneConsole, id: "console" },
+    { pane: paneReports, id: "reports" }
+  ];
+
+  panes.forEach(p => {
+    if (p.pane) {
+      if (p.id === tabId) {
+        p.pane.classList.add("active");
+      } else {
+        p.pane.classList.remove("active");
+      }
+    }
+  });
+
+  if (appState.layoutMode === "scroll") {
+    const targetPane = document.getElementById(`pane-${tabId}`);
+    if (targetPane) {
+      targetPane.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  } else if (scroll) {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  if (tabId === "console") {
+    renderConsoleLogs();
+  }
+}
+
+function initLayoutMode() {
+  const savedMode = localStorage.getItem("igr_layout_mode") || "tabbed";
+  setLayoutMode(savedMode);
+
+  if (btnModeTabbed) {
+    btnModeTabbed.addEventListener("click", () => setLayoutMode("tabbed"));
+  }
+  if (btnModeScroll) {
+    btnModeScroll.addEventListener("click", () => setLayoutMode("scroll"));
+  }
+}
+
+function setLayoutMode(mode) {
+  appState.layoutMode = mode;
+  localStorage.setItem("igr_layout_mode", mode);
+
+  if (mode === "scroll") {
+    document.body.classList.remove("layout-tabbed");
+    document.body.classList.add("layout-scroll");
+    if (btnModeScroll) btnModeScroll.classList.add("active");
+    if (btnModeTabbed) btnModeTabbed.classList.remove("active");
+  } else {
+    document.body.classList.remove("layout-scroll");
+    document.body.classList.add("layout-tabbed");
+    if (btnModeTabbed) btnModeTabbed.classList.add("active");
+    if (btnModeScroll) btnModeScroll.classList.remove("active");
+  }
+}
+
+function initConsoleControls() {
+  if (consoleSearchInput) {
+    consoleSearchInput.addEventListener("input", (e) => {
+      appState.consoleSearchQuery = e.target.value.trim();
+      appState.consolePage = 1;
+      if (btnClearSearch) {
+        btnClearSearch.style.display = e.target.value ? "inline" : "none";
+      }
+      renderConsoleLogs();
+    });
+  }
+
+  if (btnClearSearch) {
+    btnClearSearch.addEventListener("click", () => {
+      if (consoleSearchInput) consoleSearchInput.value = "";
+      appState.consoleSearchQuery = "";
+      appState.consolePage = 1;
+      btnClearSearch.style.display = "none";
+      renderConsoleLogs();
+    });
+  }
+
+  document.querySelectorAll(".log-filter-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".log-filter-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      appState.consoleFilterLevel = btn.dataset.level || "all";
+      appState.consolePage = 1;
+      renderConsoleLogs();
+    });
+  });
+
+  if (logPageSizeSelect) {
+    logPageSizeSelect.addEventListener("change", (e) => {
+      appState.consolePageSize = e.target.value;
+      appState.consolePage = 1;
+      renderConsoleLogs();
+    });
+  }
+
+  if (logPageFirst) {
+    logPageFirst.addEventListener("click", () => {
+      appState.consolePage = 1;
+      appState.consoleLiveFollow = false;
+      if (liveFollowCb) liveFollowCb.checked = false;
+      renderConsoleLogs();
+    });
+  }
+
+  if (logPagePrev) {
+    logPagePrev.addEventListener("click", () => {
+      const curPage = appState.consolePage || 1;
+      if (curPage > 1) {
+        appState.consolePage = curPage - 1;
+        appState.consoleLiveFollow = false;
+        if (liveFollowCb) liveFollowCb.checked = false;
+        renderConsoleLogs();
+      }
+    });
+  }
+
+  if (logPageNext) {
+    logPageNext.addEventListener("click", () => {
+      const filtered = getFilteredLogs();
+      const pageSize = getConsolePageSize();
+      const totalPages = pageSize === Infinity ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize));
+      const curPage = appState.consolePage || 1;
+      if (curPage < totalPages) {
+        appState.consolePage = curPage + 1;
+        renderConsoleLogs();
+      }
+    });
+  }
+
+  if (logPageLast) {
+    logPageLast.addEventListener("click", () => {
+      const filtered = getFilteredLogs();
+      const pageSize = getConsolePageSize();
+      const totalPages = pageSize === Infinity ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize));
+      appState.consolePage = totalPages;
+      renderConsoleLogs();
+    });
+  }
+
+  if (liveFollowCb) {
+    liveFollowCb.addEventListener("change", (e) => {
+      appState.consoleLiveFollow = e.target.checked;
+      if (e.target.checked) {
+        const filtered = getFilteredLogs();
+        const pageSize = getConsolePageSize();
+        const totalPages = pageSize === Infinity ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize));
+        appState.consolePage = totalPages;
+        appState.unreadNewLogsCount = 0;
+        if (btnJumpLatestLogs) btnJumpLatestLogs.classList.add("hidden");
+        renderConsoleLogs();
+      }
+    });
+  }
+
+  if (btnJumpLatestLogs) {
+    btnJumpLatestLogs.addEventListener("click", () => {
+      appState.consoleLiveFollow = true;
+      if (liveFollowCb) liveFollowCb.checked = true;
+      const filtered = getFilteredLogs();
+      const pageSize = getConsolePageSize();
+      const totalPages = pageSize === Infinity ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize));
+      appState.consolePage = totalPages;
+      appState.unreadNewLogsCount = 0;
+      btnJumpLatestLogs.classList.add("hidden");
+      renderConsoleLogs();
+    });
+  }
+
+  if (btnExportLogs) {
+    btnExportLogs.addEventListener("click", () => {
+      exportLogsToFile();
+    });
+  }
+
+  // Keyboard hotkeys (1-4 for tabs, V for view switcher)
+  document.addEventListener("keydown", (e) => {
+    const tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) {
+      return;
+    }
+    if (e.key === "1") {
+      switchDashboardTab("config");
+    } else if (e.key === "2") {
+      switchDashboardTab("progress");
+    } else if (e.key === "3") {
+      switchDashboardTab("console");
+    } else if (e.key === "4") {
+      switchDashboardTab("reports");
+    } else if (e.key === "v" || e.key === "V") {
+      setLayoutMode(appState.layoutMode === "tabbed" ? "scroll" : "tabbed");
+    }
+  });
+}
+
+function initStepFilters() {
+  document.querySelectorAll(".step-filter-pill").forEach(pill => {
+    pill.addEventListener("click", () => {
+      document.querySelectorAll(".step-filter-pill").forEach(p => p.classList.remove("active"));
+      pill.classList.add("active");
+      applyStepFilter(pill.dataset.filter || "all");
+    });
+  });
+}
+
+function applyStepFilter(filter) {
+  appState.stepFilter = filter;
+  const cards = document.querySelectorAll(".step-card");
+  cards.forEach(card => {
+    if (filter === "all") {
+      card.style.display = "";
+    } else if (filter === "running") {
+      card.style.display = card.classList.contains("running") ? "" : "none";
+    } else if (filter === "completed") {
+      card.style.display = card.classList.contains("completed") ? "" : "none";
+    } else if (filter === "pending") {
+      card.style.display = card.classList.contains("pending") ? "" : "none";
+    }
+  });
+}
+
+function updateStepCounts() {
+  const cards = document.querySelectorAll(".step-card");
+  let running = 0, completed = 0, pending = 0;
+
+  cards.forEach(c => {
+    if (c.classList.contains("running")) running++;
+    else if (c.classList.contains("completed")) completed++;
+    else if (c.classList.contains("pending")) pending++;
+  });
+
+  const total = cards.length;
+  if (countStepAll) countStepAll.textContent = total;
+  if (countStepRunning) countStepRunning.textContent = running;
+  if (countStepCompleted) countStepCompleted.textContent = completed;
+  if (countStepPending) countStepPending.textContent = pending;
+
+  // Re-apply current step filter if one is active
+  if (appState.stepFilter && appState.stepFilter !== "all") {
+    applyStepFilter(appState.stepFilter);
+  }
+}
+
