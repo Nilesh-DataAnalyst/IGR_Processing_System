@@ -913,6 +913,461 @@ def run_dubai_pipeline(params):
     add_log("🎉 Dubai 2-step workflow (Scraping & Processing) completed successfully!", "success")
 
 
+def normalize_date_to_iso(date_str: str) -> str:
+    """Normalizes any common date format (YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY) to YYYY-MM-DD."""
+    if not date_str or not str(date_str).strip():
+        return ""
+    s = str(date_str).strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return s
+    m = re.match(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$", s)
+    if m:
+        d, mo, y = m.groups()
+        return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+    m = re.match(r"^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})$", s)
+    if m:
+        y, mo, d = m.groups()
+        return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+    return s
+
+
+def get_abu_dhabi_drive_files() -> list:
+    """
+    Fetches the list of files stored in the Abu Dhabi Google Drive Raw Data folder (1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG).
+    Uses the authenticated service in adrec_downloader.py without saving or scanning any local directories.
+    """
+    files_list = []
+    try:
+        ad_dir = os.path.join(CURR_DIR, "Abu Dhabi")
+        if ad_dir not in sys.path:
+            sys.path.insert(0, ad_dir)
+        import adrec_downloader
+        service = adrec_downloader.get_google_drive_service()
+        if service:
+            raw_folder_id = "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG"
+            query = f"'{raw_folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+            results = service.files().list(
+                q=query,
+                fields="files(id, name, mimeType, modifiedTime, size, webViewLink)",
+                orderBy="modifiedTime desc",
+                pageSize=50
+            ).execute()
+            for f in results.get("files", []):
+                fname = f.get("name", "")
+                if fname.lower().endswith(".csv") and not any(ign in fname.lower() for ign in ["_processed", "cleaned", "coordinates", "master"]):
+                    files_list.append({
+                        "id": f.get("id"),
+                        "name": fname,
+                        "size": int(f.get("size", 0)) if f.get("size") else None,
+                        "modified": f.get("modifiedTime"),
+                        "link": f.get("webViewLink"),
+                        "source": "gdrive"
+                    })
+            # If Raw Data folder has no files yet, fall back to checking the parent folder (1h_cUque4NqERMGvE__LaJgLuanXu1Ov2)
+            if not files_list:
+                parent_folder_id = "1h_cUque4NqERMGvE__LaJgLuanXu1Ov2"
+                query_parent = f"'{parent_folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+                results_parent = service.files().list(
+                    q=query_parent,
+                    fields="files(id, name, mimeType, modifiedTime, size, webViewLink)",
+                    orderBy="modifiedTime desc",
+                    pageSize=50
+                ).execute()
+                for f in results_parent.get("files", []):
+                    fname = f.get("name", "")
+                    if fname.lower().endswith(".csv") and not any(ign in fname.lower() for ign in ["_processed", "cleaned", "coordinates", "master"]):
+                        files_list.append({
+                            "id": f.get("id"),
+                            "name": fname,
+                            "size": int(f.get("size", 0)) if f.get("size") else None,
+                            "modified": f.get("modifiedTime"),
+                            "link": f.get("webViewLink"),
+                            "source": "gdrive"
+                        })
+    except Exception as e:
+        print(f"[Abu Dhabi] Error querying Google Drive Raw Data files: {e}")
+
+    return files_list
+
+
+def run_abu_dhabi_pipeline(params):
+    """
+    Dedicated workflow for Abu Dhabi (City ID: 1):
+    Step 1: Downloading / Scraping via adrec_downloader.py
+    Step 2: Google Drive File Sync & Dataset Selection
+    Streams stdout in real-time to the web dashboard console via add_log().
+    """
+    global pipeline_state
+
+    city_id = 1
+    city_name = "Abu Dhabi"
+
+    adrec_dir = os.path.join(CURR_DIR, "Abu Dhabi")
+    downloader_path = os.path.join(adrec_dir, "adrec_downloader.py")
+
+    from_date = normalize_date_to_iso(params.get("from_date"))
+    to_date = normalize_date_to_iso(params.get("to_date"))
+
+    if not to_date:
+        to_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    if not from_date:
+        try:
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d")
+            from_date = (to_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+        except Exception:
+            from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    skip_scraping = params.get("skip_scraping", False)
+    headless = params.get("headless", True)
+    selected_file = params.get("input_file") or params.get("selected_file")
+
+    abu_dhabi_steps = [
+        {
+            "id": 1,
+            "name": "ADREC Portal Ingestion",
+            "desc": "Automated transaction scraping from ADREC portal with Google Drive sync (adrec_downloader.py). Skippable.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 2,
+            "name": "Raw CSV Loading & Validation",
+            "desc": "Loads raw ADREC transaction CSV (UTF-8-SIG) from Google Drive or local storage.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 3,
+            "name": "Duplicate Transaction Removal",
+            "desc": "Identifies and drops identical transaction records across all attributes.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 4,
+            "name": "Date Parsing & Quarter Normalization",
+            "desc": "Converts Sale Application Date to ISO YYYY-MM-DD, extracts year, quarter, and agreement date.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 5,
+            "name": "Property Type Categorization",
+            "desc": "Maps raw property types (Apartment, Villa, Duplex, Plot, etc.) into standardized taxonomy.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 6,
+            "name": "Project Type & Asset Class Mapping",
+            "desc": "Classifies asset classes into Residential, Commercial, Industrial, Agricultural, etc.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 7,
+            "name": "Unit Configuration Normalization",
+            "desc": "Normalizes bedroom count and property layouts into standardized BHK and unit types.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 8,
+            "name": "Location Coordinates & ID Lookup",
+            "desc": "Maps location_id, latitude, and longitude from master location reference with Jabal Hafeet fallback.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 9,
+            "name": "Project Master Reference Matching",
+            "desc": "Matches projects against Abudhabi_project_coordinates.csv using 3-key composite matching.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 10,
+            "name": "Google Places & Geocoding Enrichment",
+            "desc": "Enriches missing commercial project coordinates via Google Places API (unmatched project coordinates kept blank without copying location coordinates).",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 11,
+            "name": "PostgreSQL NR Index Assignment",
+            "desc": "Assigns Non-RERA index (internal_index_id) sequentially starting from nr468 for all projects [project_name + location_name].",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 12,
+            "name": "DB Schema Column Alignment",
+            "desc": "Filters and orders columns strictly to Abu Dhabi schema with internal_index_id, Title Case, and project_id purged.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        },
+        {
+            "id": 13,
+            "name": "Final Output Save & Google Drive Upload",
+            "desc": "Exports database-ready final processed files (.xlsx and .csv) directly to Google Drive Processed Data folder.",
+            "status": "pending",
+            "detail": "Waiting...",
+            "duration": "-"
+        }
+    ]
+
+    selected_db = params.get("database") or pipeline_state.get("selected_db") or "nilesh"
+    core.set_active_db(selected_db)
+
+    with state_lock:
+        pipeline_state["state"] = "running"
+        pipeline_state["city_id"] = 1
+        pipeline_state["city_name"] = "Abu Dhabi"
+        pipeline_state["city_key"] = "abu_dhabi"
+        pipeline_state["selected_db"] = selected_db
+        pipeline_state["steps"] = [dict(s) for s in abu_dhabi_steps]
+        pipeline_state["progress"] = 3
+        pipeline_state["current_step_id"] = 1 if not skip_scraping else 2
+        pipeline_state["current_step_name"] = abu_dhabi_steps[0]["name"] if not skip_scraping else abu_dhabi_steps[1]["name"]
+        pipeline_state["logs"] = []
+        pipeline_state["error"] = None
+        pipeline_state["stop_requested"] = False
+        pipeline_state["metrics"] = {
+            "total_rows": 0,
+            "rera_matched": 0,
+            "reused_matched": 0,
+            "nr_assigned": 0
+        }
+
+    add_log("=" * 60, "info")
+    add_log("🕌  STARTING ABU DHABI ADREC WORKFLOW", "info")
+    add_log("=" * 60, "info")
+
+    # -----------------------------------------------------------------
+    # STEP 1: SCRAPING / DOWNLOADING (adrec_downloader.py)
+    # -----------------------------------------------------------------
+    if not skip_scraping:
+        t0 = time.time()
+        update_step_status(1, "running", f"Downloading ADREC transactions from {from_date} to {to_date}...")
+        add_log(f"[Abu Dhabi Step 1/14] 🌐 Launching ADREC Downloader (adrec_downloader.py)...", "info")
+        with state_lock:
+            pipeline_state["current_step_id"] = 1
+            pipeline_state["current_step_name"] = "ADREC Portal Ingestion"
+            pipeline_state["progress"] = 7
+
+        cmd = [
+            sys.executable,
+            downloader_path,
+            "--from-date", from_date,
+            "--to-date", to_date,
+            "--folder-id", "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+            "--cleanup",
+        ]
+        if headless:
+            cmd.append("--headless")
+
+        add_log(f"Executing: {' '.join(cmd)}", "info")
+        proc = subprocess.Popen(
+            cmd,
+            cwd=adrec_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        for line in iter(proc.stdout.readline, ""):
+            if pipeline_state.get("stop_requested"):
+                proc.kill()
+                add_log("⚠️ Abu Dhabi downloading aborted due to user stop request.", "warning")
+                update_step_status(1, "failed", "Aborted by user")
+                return
+            line_str = line.strip()
+            if line_str:
+                if any(k in line_str for k in ["✔", "🎉", "successful", "completed successfully", "Google Drive upload successful"]):
+                    lvl = "success"
+                elif any(k in line_str for k in ["❌", "Error", "failed", "Could not find"]):
+                    lvl = "error"
+                elif any(k in line_str for k in ["⚠️", "warning", "Warning"]):
+                    lvl = "warning"
+                else:
+                    lvl = "info"
+                add_log(line_str, lvl)
+        proc.stdout.close()
+        rc = proc.wait()
+
+        if rc != 0:
+            err_msg = f"adrec_downloader.py exited with return code {rc}"
+            update_step_status(1, "failed", err_msg)
+            add_log(f"❌ [Abu Dhabi Step 1/14] {err_msg}", "error")
+            with state_lock:
+                pipeline_state["state"] = "failed"
+                pipeline_state["error"] = err_msg
+            return
+
+        dur = f"{time.time() - t0:.1f}s"
+        update_step_status(1, "completed", "Download complete & uploaded to Google Drive", dur)
+        add_log(f"✔ [Abu Dhabi Step 1/14] Downloading complete & file uploaded to Google Drive ({dur})!", "success")
+    else:
+        update_step_status(1, "skipped", "Downloader skipped - Direct processing started", "-")
+        add_log("↷ [Abu Dhabi Step 1/14] Downloading step skipped (Starting directly from Step 2).", "info")
+
+    # -----------------------------------------------------------------
+    # STEPS 2-14: PROCESSING PIPELINE (adrec_pipeline.py)
+    # -----------------------------------------------------------------
+    pipeline_script = os.path.join(adrec_dir, "adrec_pipeline.py")
+    t0_pipe = time.time()
+    add_log("[Abu Dhabi Steps 2-14] ⚙️ Launching Processing Pipeline (adrec_pipeline.py)...", "info")
+
+    pipe_cmd = [
+        sys.executable,
+        "-u",
+        pipeline_script,
+        "--auto-confirm",
+        "--db", selected_db,
+        "--raw-folder-id", "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+        "--processed-folder-id", "126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s",
+    ]
+    if selected_file:
+        pipe_cmd.extend(["--input-file", selected_file])
+    if params.get("include_geocoding") is False:
+        pipe_cmd.append("--skip-geocoding")
+
+    pipe_env = os.environ.copy()
+    pipe_env["PYTHONUNBUFFERED"] = "1"
+    pipe_env["PYTHONIOENCODING"] = "utf-8"
+
+    add_log(f"Executing: {' '.join(pipe_cmd)}", "info")
+    proc2 = subprocess.Popen(
+        pipe_cmd,
+        cwd=adrec_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+        encoding="utf-8",
+        errors="replace",
+        env=pipe_env
+    )
+
+    step_start_times = {}
+    current_active_step = 2
+    final_saved_file = None
+
+    for line in iter(proc2.stdout.readline, ""):
+        if pipeline_state.get("stop_requested"):
+            proc2.kill()
+            add_log("⚠️ Abu Dhabi processing aborted due to user stop request.", "warning")
+            if current_active_step <= 13:
+                update_step_status(current_active_step, "failed", "Aborted by user")
+            return
+
+        line_str = line.strip()
+        if not line_str:
+            continue
+
+        # Check for structured step start marker [STEP:X:START]
+        m_start = re.match(r"^\[STEP:(\d+):START\]\s*(.*)", line_str)
+        if m_start:
+            s_id = int(m_start.group(1))
+            s_msg = m_start.group(2)
+            current_active_step = s_id
+            step_start_times[s_id] = time.time()
+            update_step_status(s_id, "running", s_msg)
+            with state_lock:
+                pipeline_state["current_step_id"] = s_id
+                if 1 <= s_id <= len(abu_dhabi_steps):
+                    pipeline_state["current_step_name"] = abu_dhabi_steps[s_id - 1]["name"]
+                pipeline_state["progress"] = min(98, max(5, int((s_id / 13) * 100)))
+
+        # Check for structured step done marker [STEP:X:DONE]
+        m_done = re.match(r"^\[STEP:(\d+):DONE\]\s*(.*)", line_str)
+        if m_done:
+            s_id = int(m_done.group(1))
+            s_msg = m_done.group(2)
+            s_dur = f"{time.time() - step_start_times.get(s_id, time.time()):.1f}s"
+            update_step_status(s_id, "completed", s_msg, s_dur)
+
+            # Update metrics live from done logs
+            if s_id == 2:
+                m_rows = re.search(r"Loaded\s+([\d,]+)\s+rows", s_msg)
+                if m_rows:
+                    pipeline_state["metrics"]["total_rows"] = int(m_rows.group(1).replace(",", ""))
+            elif s_id == 9:
+                m_match = re.search(r"matched\s+([\d,]+)/", s_msg)
+                if m_match:
+                    pipeline_state["metrics"]["rera_matched"] = int(m_match.group(1).replace(",", ""))
+            elif s_id == 11:
+                m_nr = re.search(r"all\s+([\d,]+)/", s_msg)
+                if m_nr:
+                    pipeline_state["metrics"]["nr_assigned"] = int(m_nr.group(1).replace(",", ""))
+
+        # Log line classification
+        if any(k in line_str for k in ["✔", "🎉", "Saved:", "Final Excel", "Found (", "[STEP:"]):
+            lvl = "success" if any(k in line_str for k in ["✔", "🎉", "DONE"]) else "info"
+        elif any(k in line_str for k in ["❌", "FAILED", "Error:"]):
+            lvl = "error"
+        elif any(k in line_str for k in ["⚠️", "NOT_FOUND", "SKIPPED", "skipped"]):
+            lvl = "warning"
+        else:
+            lvl = "info"
+
+        add_log(line_str, lvl)
+
+        if "Final Excel File" in line_str and ":" in line_str:
+            final_saved_file = line_str.split(":", 1)[1].strip()
+
+    proc2.stdout.close()
+    rc2 = proc2.wait()
+
+    if rc2 != 0:
+        err_msg = f"adrec_pipeline.py exited with return code {rc2}"
+        if current_active_step <= 13:
+            update_step_status(current_active_step, "failed", err_msg)
+        add_log(f"❌ [Abu Dhabi Processing] {err_msg}", "error")
+        with state_lock:
+            pipeline_state["state"] = "failed"
+            pipeline_state["error"] = err_msg
+        return
+
+    # Ensure all steps 2..13 are marked completed if finished with rc=0
+    for s in range(2, 14):
+        with state_lock:
+            cur_s = next((x for x in pipeline_state["steps"] if x["id"] == s), None)
+            if cur_s and cur_s["status"] != "completed":
+                cur_s["status"] = "completed"
+                if cur_s["duration"] == "-":
+                    cur_s["duration"] = "0.5s"
+
+    dur_total = f"{time.time() - t0_pipe:.1f}s"
+    add_log(f"✔ [Abu Dhabi Processing] All processing steps finished successfully ({dur_total})!", "success")
+    if final_saved_file:
+        pipeline_state["output_file"] = final_saved_file
+
+    with state_lock:
+        pipeline_state["state"] = "completed"
+        pipeline_state["progress"] = 100
+        pipeline_state["current_step_name"] = "All Abu Dhabi Steps Finished"
+
+    add_log("🎉 Abu Dhabi ADREC workflow completed successfully!", "success")
+
+
 def run_pipeline_worker(params):
     import importlib
     importlib.reload(core)
@@ -954,6 +1409,8 @@ def run_pipeline_worker(params):
         city_cfg = get_city_config("mumbai")
     elif any(pat in loc_lower or pat in path_lower for pat in ["thane", "kalyan", "dombivli", "navi mumbai", "mira bhayandar"]):
         city_cfg = get_city_config("thane")
+    elif any(pat in loc_lower or pat in path_lower for pat in ["abu dhabi", "abu_dhabi", "abudhabi", "adrec", "1h_cuque4nqermgve__lajgluanxu1ov2"]):
+        city_cfg = get_city_config("abu_dhabi")
     elif city_id_raw:
         city_cfg = get_city_config(city_id_raw)
     else:
@@ -967,6 +1424,11 @@ def run_pipeline_worker(params):
     # Route Dubai to dedicated 2-step pipeline (unless Mode 3 Parquet, Mode 4 Upload, or Mode 5 Outlier)
     if (city_id == 15 or city_key == "dubai") and mode_str not in ["3", "4", "5"]:
         run_dubai_pipeline(params)
+        return
+
+    # Route Abu Dhabi to dedicated workflow (unless Mode 3 Parquet, Mode 4 Upload, or Mode 5 Outlier)
+    if (city_id == 1 or city_key in ["abu_dhabi", "abudhabi", "abu dhabi"]) and mode_str not in ["3", "4", "5"]:
+        run_abu_dhabi_pipeline(params)
         return
 
     city_name = city_cfg.get("display_name", "Pune")
@@ -1138,6 +1600,8 @@ def run_pipeline_worker(params):
 
             if city_id == 15 or city_key == "dubai":
                 p_city_name = "Dubai"
+            elif city_id == 1 or city_key in ["abu_dhabi", "abudhabi", "abu dhabi"]:
+                p_city_name = "Abu Dhabi"
             else:
                 p_city_name = "Pune"
                 try:
@@ -1770,6 +2234,10 @@ def run_pipeline_worker(params):
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
+    def address_string(self):
+        # Avoid Windows reverse DNS lookup timeout (2.0s delay per request)
+        return str(self.client_address[0])
+
     def log_message(self, format, *args):
         pass  # Suppress default server access noise in stdout
 
@@ -1816,6 +2284,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "parent_drive_url": "https://drive.google.com/drive/folders/1q-rgFMUS5gyZq9ngoIozgzDwb-cSguim?usp=drive_link",
                 "input_folder_name": "1. Download Files(Row)",
                 "output_folder_name": "2.Processed Files"
+            })
+        elif url_path == "/api/abu-dhabi/config":
+            yesterday_d = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            from_d = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            self.send_json({
+                "city_id": 1,
+                "city_name": "Abu Dhabi",
+                "city_key": "abu_dhabi",
+                "from_date": from_d,
+                "to_date": yesterday_d,
+                "parent_drive_url": "https://drive.google.com/drive/folders/1h_cUque4NqERMGvE__LaJgLuanXu1Ov2?usp=drive_link",
+                "parent_folder_id": "1h_cUque4NqERMGvE__LaJgLuanXu1Ov2",
+                "raw_folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+                "raw_drive_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
+                "processed_folder_id": "126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s",
+                "processed_drive_url": "https://drive.google.com/drive/folders/126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s?usp=drive_link",
+                "drive_folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+                "drive_folder_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
+                "folder_name": "Raw Data"
+            })
+        elif url_path == "/api/abu-dhabi/files":
+            files = get_abu_dhabi_drive_files()
+            self.send_json({
+                "city_id": 1,
+                "city_name": "Abu Dhabi",
+                "parent_folder_id": "1h_cUque4NqERMGvE__LaJgLuanXu1Ov2",
+                "raw_folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+                "processed_folder_id": "126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s",
+                "folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+                "drive_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
+                "raw_drive_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
+                "processed_drive_url": "https://drive.google.com/drive/folders/126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s?usp=drive_link",
+                "files": files
             })
         elif url_path == "/api/city-config":
             city_param = self.get_query_param("city") or self.get_query_param("city_id") or "9"
@@ -2167,17 +2668,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass
 
 
+class DualStackServer(HTTPServerClass):
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        try:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except (AttributeError, OSError):
+            pass
+        super().server_bind()
+
+
 def find_available_port(start_port=8000, max_tries=10):
     for port in range(start_port, start_port + max_tries):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("localhost", port)) != 0:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
                 return port
     return start_port
 
 
 def start_server():
     port = find_available_port(8000)
-    server = HTTPServerClass(("localhost", port), DashboardHandler)
+    try:
+        server = DualStackServer(("::", port), DashboardHandler)
+    except Exception:
+        server = HTTPServerClass(("0.0.0.0", port), DashboardHandler)
     url = f"http://localhost:{port}"
     print("\n" + "=" * 60)
     print(f"🚀 Sogaon Pipeline Web Dashboard Running!")
