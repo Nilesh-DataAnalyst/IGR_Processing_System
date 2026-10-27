@@ -25,7 +25,7 @@ import logging
 import argparse
 import tempfile
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Tuple, Optional, List, Dict, Any
 
 try:
@@ -64,8 +64,10 @@ except ImportError:
 # CONFIGURATION & CREDENTIALS (LOADED FROM ENVIRONMENT / .ENV)
 # ==============================================================================
 
-# Target Google Drive Folder ID (Abu Dhabi Raw Data folder)
-DEFAULT_GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+# Target Google Drive Folder ID (Abu Dhabi 1.Raw folder)
+DEFAULT_GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB")
+DEFAULT_GOOGLE_DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB?usp=drive_link"
+
 
 # Google OAuth 2.0 Client Credentials (Loaded from environment variables)
 OAUTH_CLIENT_CONFIG = {
@@ -83,10 +85,83 @@ OAUTH_CLIENT_CONFIG = {
 # Google Drive Scopes
 GOOGLE_DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
-# Token and credentials file names for authorization (resolved relative to script directory)
+# Ensure Processing directory is on sys.path to access pipeline_core & city_config
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROCESSING_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+if PROCESSING_DIR not in sys.path:
+    sys.path.insert(0, PROCESSING_DIR)
+
 TOKEN_FILE = os.path.join(SCRIPT_DIR, "token.json")
 CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, "credentials.json")
+
+# Database Configuration & Runtime Query Engine
+try:
+    from pipeline_core import DB_PARAMS
+except Exception:
+    DB_PARAMS = {
+        "host": "localhost",
+        "port": "5432",
+        "database": "nilesh",
+        "user": "postgres",
+        "password": "nilesh",
+    }
+
+
+def get_last_transaction_date_from_db(city_name: str = "Abu Dhabi", db_params: dict = None) -> Optional[str]:
+    """
+    Dynamically queries public.dim_city to obtain the runtime city_id for Abu Dhabi,
+    then retrieves the latest transaction_date from public.transactions for that city.
+    Returns the start date (latest transaction date + 1 day) formatted as 'YYYY-MM-DD' or None on failure.
+    """
+    params = dict(db_params or DB_PARAMS)
+    params.setdefault("connect_timeout", 3)
+    try:
+        import psycopg2
+        with psycopg2.connect(**params) as conn:
+            with conn.cursor() as cur:
+                # 1. Fetch runtime city_id from dim_city (matching 'Abu Dhabi' or 'Abu_Dhabi')
+                cur.execute(
+                    """
+                    SELECT city_id FROM public.dim_city 
+                    WHERE lower(replace(city_name, '_', ' ')) = lower(replace(%s, '_', ' '))
+                       OR lower(city_name) = lower(%s)
+                    LIMIT 1;
+                    """,
+                    (city_name, city_name)
+                )
+                city_row = cur.fetchone()
+                city_id = city_row[0] if (city_row and city_row[0] is not None) else 1
+
+                # 2. Fetch max transaction_date using index
+                cur.execute(
+                    "SELECT MAX(transaction_date) FROM public.transactions WHERE city_id = %s;",
+                    (city_id,)
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    last_date = row[0]
+                    if isinstance(last_date, str):
+                        try:
+                            dt = datetime.strptime(last_date[:10], "%Y-%m-%d")
+                        except ValueError:
+                            dt = datetime.strptime(last_date[:10], "%d/%m/%Y")
+                    elif hasattr(last_date, "year"):
+                        dt = datetime(last_date.year, last_date.month, last_date.day)
+                    else:
+                        dt = datetime.strptime(str(last_date)[:10], "%Y-%m-%d")
+
+                    next_date = dt + timedelta(days=1)
+                    return next_date.strftime("%Y-%m-%d")
+    except Exception as e:
+        logger.warning(f"Failed to query latest transaction date from DB for {city_name}: {e}")
+    return None
+
+
+# Date Range Settings (Format: YYYY-MM-DD)
+# Start date is automatically resolved from the latest transaction in the database (last date + 1)
+_db_last_date = get_last_transaction_date_from_db("Abu Dhabi")
+DEFAULT_FROM_DATE = _db_last_date or (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+DEFAULT_TO_DATE = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
 # ADREC Website URL
 ADREC_DASHBOARD_URL = "https://adrec.gov.ae/en/property_and_index/adrec-dashboard"
@@ -153,8 +228,12 @@ def validate_date_string(date_str: str) -> Tuple[bool, str, Optional[datetime]]:
 def get_user_date_range(cli_from: Optional[str] = None, cli_to: Optional[str] = None) -> Tuple[str, str]:
     """
     Prompts user in terminal for date range or uses validated CLI args.
+    Defaults From Date to DB latest transaction + 1 day and To Date to yesterday.
     Loops until a valid date range (From Date <= To Date) is entered.
     """
+    default_from = DEFAULT_FROM_DATE
+    default_to = DEFAULT_TO_DATE
+
     if cli_from and cli_to:
         v_from, err_from, dt_from = validate_date_string(cli_from)
         v_to, err_to, dt_to = validate_date_string(cli_to)
@@ -165,16 +244,30 @@ def get_user_date_range(cli_from: Optional[str] = None, cli_to: Optional[str] = 
                 logger.warning(f"From Date ({cli_from}) must be <= To Date ({cli_to}). Asking via terminal.")
         else:
             logger.warning(f"CLI date error: {err_from or err_to}. Asking via terminal.")
+    elif cli_from and not cli_to:
+        v_from, err_from, dt_from = validate_date_string(cli_from)
+        v_to, err_to, dt_to = validate_date_string(default_to)
+        if v_from and v_to and dt_from and dt_to and dt_from <= dt_to:
+            return cli_from.strip(), default_to
+
+    print(f"\n[Date Range Setup] Auto-detected start date from DB (last date + 1): {default_from}")
+    print(f"[Date Range Setup] Default end date (yesterday): {default_to}\n")
 
     while True:
         try:
-            from_input = input("Enter From Date (YYYY-MM-DD): ").strip()
+            from_prompt = f"Enter From Date (YYYY-MM-DD) [default: {default_from}]: "
+            from_input = input(from_prompt).strip()
+            if not from_input:
+                from_input = default_from
             valid_from, msg_from, dt_from = validate_date_string(from_input)
             if not valid_from or dt_from is None:
                 print(f"Invalid date. Please enter the date in YYYY-MM-DD format. ({msg_from})")
                 continue
 
-            to_input = input("Enter To Date (YYYY-MM-DD): ").strip()
+            to_prompt = f"Enter To Date (YYYY-MM-DD) [default: {default_to}]: "
+            to_input = input(to_prompt).strip()
+            if not to_input:
+                to_input = default_to
             valid_to, msg_to, dt_to = validate_date_string(to_input)
             if not valid_to or dt_to is None:
                 print(f"Invalid date. Please enter the date in YYYY-MM-DD format. ({msg_to})")
@@ -189,6 +282,53 @@ def get_user_date_range(cli_from: Optional[str] = None, cli_to: Optional[str] = 
         except (KeyboardInterrupt, EOFError):
             print("\nOperation cancelled by user.")
             sys.exit(1)
+
+
+def format_range_filename(from_date: str, to_date: str, original_filename: str = "") -> str:
+    """
+    Generates a filename based on the scraping date range with 2-digit year (e.g. '11jun26_22oct26.csv').
+    Matches the exact naming convention used by Dubai scraper.
+    """
+    ext = os.path.splitext(original_filename)[1] if original_filename else ".csv"
+    if not ext:
+        ext = ".csv"
+
+    MONTH_MAP = {
+        1: "jan", 2: "feb", 3: "mar", 4: "apr", 5: "may", 6: "jun",
+        7: "jul", 8: "aug", 9: "sept", 10: "oct", 11: "nov", 12: "dec"
+    }
+
+    try:
+        dt_from = None
+        for fmt in ["%Y-%m-%d", "%d/%m/%Y"]:
+            try:
+                dt_from = datetime.strptime(str(from_date).strip(), fmt)
+                break
+            except Exception:
+                pass
+
+        dt_to = None
+        for fmt in ["%Y-%m-%d", "%d/%m/%Y"]:
+            try:
+                dt_to = datetime.strptime(str(to_date).strip(), fmt)
+                break
+            except Exception:
+                pass
+
+        if not dt_from or not dt_to:
+            raise ValueError("Invalid date format")
+
+        m_from = MONTH_MAP.get(dt_from.month, dt_from.strftime("%b").lower())
+        m_to = MONTH_MAP.get(dt_to.month, dt_to.strftime("%b").lower())
+
+        y_from = dt_from.strftime("%y")
+        y_to = dt_to.strftime("%y")
+
+        return f"{dt_from.day}{m_from}{y_from}_{dt_to.day}{m_to}{y_to}{ext}"
+    except Exception:
+        clean_from = re.sub(r'[/\\:\s]+', '_', str(from_date).strip())
+        clean_to = re.sub(r'[/\\:\s]+', '_', str(to_date).strip())
+        return f"{clean_from}_{clean_to}{ext}"
 
 
 # ==============================================================================
@@ -216,9 +356,10 @@ def capture_screenshot(driver: Optional[webdriver.Chrome], prefix: str, screensh
 # ==============================================================================
 # CHROME WEBDRIVER CONFIGURATION
 # ==============================================================================
-def create_chrome_driver(download_dir: str, headless: bool = False) -> webdriver.Chrome:
+def create_chrome_driver(download_dir: str) -> webdriver.Chrome:
     """
     Configures Chrome with automatic download settings and stealth options.
+    Always opens a visible, standard Chrome browser window.
     """
     abs_download_dir = os.path.abspath(download_dir)
     os.makedirs(abs_download_dir, exist_ok=True)
@@ -246,9 +387,6 @@ def create_chrome_driver(download_dir: str, headless: bool = False) -> webdriver
         "profile.default_content_setting_values.automatic_downloads": 1,
     }
     chrome_options.add_experimental_option("prefs", prefs)
-
-    if headless:
-        chrome_options.add_argument("--headless=new")
 
     driver = webdriver.Chrome(options=chrome_options)
 
@@ -427,26 +565,81 @@ def get_google_drive_service() -> Optional[Any]:
         return None
 
 
-def upload_file_to_google_drive(file_path: str, folder_id: str = DEFAULT_GOOGLE_DRIVE_FOLDER_ID) -> Optional[str]:
+def resolve_local_gdrive_folder(folder_id: str) -> Optional[str]:
+    """
+    Resolves local Google Drive folder path under G:\\.shortcut-targets-by-id\\<folder_id>.
+    Returns the target folder or subfolder (e.g. 1.Raw or 2.Processed) if available and writable.
+    """
+    if not folder_id:
+        return None
+    clean_id = str(folder_id).strip()
+    match = re.search(r"folders/([a-zA-Z0-9_-]+)", clean_id)
+    folder_id = match.group(1) if match else clean_id
+
+    base_path = os.path.join(r"G:\.shortcut-targets-by-id", folder_id)
+    if os.path.exists(base_path):
+        try:
+            subdirs = [
+                os.path.join(base_path, d)
+                for d in os.listdir(base_path)
+                if os.path.isdir(os.path.join(base_path, d))
+            ]
+            for sub in subdirs:
+                test_f = os.path.join(sub, ".test_write.tmp")
+                try:
+                    with open(test_f, "w") as f:
+                        f.write("1")
+                    os.remove(test_f)
+                    return sub
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return base_path
+    return None
+
+
+def upload_file_to_google_drive(file_path: str, folder_id: str = DEFAULT_GOOGLE_DRIVE_FOLDER_ID, target_filename: Optional[str] = None) -> Optional[str]:
     """
     Uploads the downloaded property transaction file to the target Google Drive folder.
+    Supports both direct Google Drive Desktop (G: drive) synchronization and Google Drive API v3 upload.
+    If target_filename is provided, renames the uploaded file accordingly.
     """
     target_folder_id = folder_id or DEFAULT_GOOGLE_DRIVE_FOLDER_ID
 
-    if not target_folder_id or target_folder_id.strip() == "":
+    if not target_folder_id or str(target_folder_id).strip() == "":
         logger.warning("No Google Drive Folder ID provided. Skipping upload.")
         return None
+
+    clean_id = str(target_folder_id).strip()
+    match = re.search(r"folders/([a-zA-Z0-9_-]+)", clean_id)
+    target_folder_id = match.group(1) if match else clean_id
 
     if not os.path.exists(file_path):
         logger.error(f"Cannot upload: File does not exist at '{file_path}'")
         return None
 
-    filename = os.path.basename(file_path)
-    logger.info("Uploading file to Google Drive")
+    filename = target_filename or os.path.basename(file_path)
+    local_saved_path = None
 
+    # 1. First, check if mapped locally via Google Drive Desktop on G:
+    local_target_dir = resolve_local_gdrive_folder(target_folder_id)
+    if local_target_dir and os.path.exists(local_target_dir):
+        try:
+            dest_file = os.path.join(local_target_dir, filename)
+            shutil.copy2(file_path, dest_file)
+            local_saved_path = dest_file
+            logger.info(f"✔ [Drive Desktop] Saved file directly to Google Drive folder: {dest_file}")
+        except Exception as e:
+            logger.warning(f"⚠️ [Drive Desktop] Could not copy directly to Google Drive local folder: {e}")
+
+    # 2. Upload via Google Drive API if available
     service = get_google_drive_service()
     if not service:
-        logger.warning("Google Drive authentication not available. File remains saved locally in downloads directory.")
+        if local_saved_path:
+            logger.info("✔ File is saved via Google Drive Desktop sync.")
+            return local_saved_path
+        logger.warning("Google Drive authentication not available and local G: drive folder not found. File remains saved locally in downloads directory.")
         return None
 
     try:
@@ -472,16 +665,21 @@ def upload_file_to_google_drive(file_path: str, folder_id: str = DEFAULT_GOOGLE_
 
         file_id = drive_file.get("id")
         if file_id:
-            logger.info("Google Drive upload successful")
-            logger.info(f"File name: {drive_file.get('name')}")
-            logger.info(f"Google Drive file ID: {file_id}")
+            logger.info("✔ Google Drive API upload successful")
+            logger.info(f"  File name: {drive_file.get('name')}")
+            logger.info(f"  Drive file ID: {file_id}")
             return file_id
+        elif local_saved_path:
+            return local_saved_path
         else:
             logger.error("Google Drive API did not return a valid file ID.")
             return None
 
     except Exception as e:
-        logger.error(f"Google Drive upload failed: {e}")
+        logger.error(f"Google Drive API upload failed: {e}")
+        if local_saved_path:
+            logger.info(f"✔ File is safely present in Google Drive Desktop folder: {local_saved_path}")
+            return local_saved_path
         return None
 
 
@@ -491,11 +689,11 @@ def upload_file_to_google_drive(file_path: str, folder_id: str = DEFAULT_GOOGLE_
 def run_adrec_automation(
     from_date: str,
     to_date: str,
-    headless: bool = False,
     download_dir: Optional[str] = None,
     screenshot_dir: Optional[str] = None,
     folder_id: str = DEFAULT_GOOGLE_DRIVE_FOLDER_ID,
     cleanup_local: bool = True,
+    **kwargs
 ) -> bool:
     """
     Executes the complete ADREC property transaction download workflow.
@@ -522,7 +720,7 @@ def run_adrec_automation(
     try:
         # 1. Open ADREC website
         logger.info("Opening ADREC website")
-        driver = create_chrome_driver(abs_download_dir, headless=headless)
+        driver = create_chrome_driver(abs_download_dir)
         driver.get(ADREC_DASHBOARD_URL)
 
         wait = WebDriverWait(driver, 60)
@@ -619,10 +817,25 @@ def run_adrec_automation(
             capture_screenshot(driver, "error_download", screenshot_dir)
             return False
 
+        orig_filename = os.path.basename(downloaded_file_path)
+        target_filename = format_range_filename(from_date, to_date, orig_filename)
+
+        # Rename local downloaded file to match Dubai naming convention (e.g. 11jun26_22oct26.csv)
+        renamed_local_path = os.path.join(os.path.dirname(downloaded_file_path), target_filename)
+        try:
+            if os.path.exists(renamed_local_path) and os.path.abspath(renamed_local_path) != os.path.abspath(downloaded_file_path):
+                os.remove(renamed_local_path)
+            os.rename(downloaded_file_path, renamed_local_path)
+            downloaded_file_path = renamed_local_path
+            logger.info(f"✔ Renamed downloaded file to Dubai convention: {target_filename}")
+        except Exception as e:
+            logger.warning(f"Could not rename local file: {e}")
+
         # 9. Upload to Google Drive
         drive_file_id = upload_file_to_google_drive(
             file_path=downloaded_file_path,
             folder_id=folder_id,
+            target_filename=target_filename,
         )
 
         # 10. Optional local file cleanup
@@ -665,18 +878,14 @@ def main():
     parser.add_argument(
         "--from-date",
         dest="from_date",
-        help="Start date in YYYY-MM-DD format (prompted interactively if omitted)",
+        default=None,
+        help=f"Start date in YYYY-MM-DD format (defaults to DB last transaction + 1: {DEFAULT_FROM_DATE})",
     )
     parser.add_argument(
         "--to-date",
         dest="to_date",
-        help="End date in YYYY-MM-DD format (prompted interactively if omitted)",
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        default=False,
-        help="Run Chrome in headless background mode without a visible window",
+        default=None,
+        help=f"End date in YYYY-MM-DD format (defaults to yesterday: {DEFAULT_TO_DATE})",
     )
     parser.add_argument(
         "--download-dir",
@@ -708,7 +917,6 @@ def main():
     success = run_adrec_automation(
         from_date=from_date,
         to_date=to_date,
-        headless=args.headless,
         download_dir=args.download_dir,
         folder_id=args.folder_id,
         cleanup_local=args.cleanup,

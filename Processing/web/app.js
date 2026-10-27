@@ -264,7 +264,7 @@ const ABU_DHABI_STEPS = [
   {
     id: 13,
     name: "Final Output Save & Google Drive Upload",
-    desc: "Exports database-ready final processed files (.xlsx and .csv) directly to Google Drive Processed Data folder.",
+    desc: "Exports database-ready final processed file (.xlsx) directly to Google Drive Processed Data folder.",
     status: "pending",
     detail: "Waiting...",
     duration: "-"
@@ -438,9 +438,9 @@ const dubaiCustomCsv = document.getElementById("dubai-custom-csv");
 // Abu Dhabi ADREC Workflow Elements
 const abuDhabiWorkflowCard = document.getElementById("abu-dhabi-workflow-card");
 const adRunScraping = document.getElementById("ad-run-scraping");
+const adRunProcessing = document.getElementById("ad-run-processing");
 const adFromDate = document.getElementById("ad-from-date");
 const adToDate = document.getElementById("ad-to-date");
-const adHeadless = document.getElementById("ad-headless");
 const adDriveFileSelect = document.getElementById("ad-drive-file-select");
 const adCustomCsv = document.getElementById("ad-custom-csv");
 const btnRefreshAdFiles = document.getElementById("btn-refresh-ad-files");
@@ -563,9 +563,11 @@ async function handleDatabaseChange(newDb, isInitial = false) {
     console.error("Failed to notify server of DB change:", err);
   }
 
-  // If Dubai is active, re-query latest date from the newly selected DB
+  // If Dubai or Abu Dhabi is active, re-query latest date from the newly selected DB
   if (cityIdInput && cityIdInput.value === "15") {
     fetchDubaiConfig(true);
+  } else if (cityIdInput && cityIdInput.value === "1") {
+    fetchAbuDhabiConfig(true);
   }
 }
 
@@ -643,6 +645,8 @@ document.addEventListener("DOMContentLoaded", () => {
   initDefaultPaths();
   attachEventListeners();
   handleCityChange(cityIdInput ? cityIdInput.value : "9");
+  fetchAbuDhabiConfig(true);
+  fetchDubaiConfig(true);
   checkServerHealth();
 });
 
@@ -784,16 +788,25 @@ function disableDubaiView() {
 // Abu Dhabi 2-Step Workflow Controller Functions
 async function fetchAbuDhabiConfig(forceRefresh = false) {
   try {
-    const res = await fetch(`/api/abu-dhabi/config`);
+    const activeDb = getSelectedDb();
+    const res = await fetch(`/api/abu-dhabi/config?db=${encodeURIComponent(activeDb)}`);
     if (!res.ok) return;
     const data = await res.json();
     if (adFromDate && (forceRefresh || !adFromDate.value)) {
-      adFromDate.value = data.from_date || "2026-09-01";
+      adFromDate.value = data.from_date || "2026-06-11";
     }
     if (adToDate && (forceRefresh || !adToDate.value)) {
       adToDate.value = data.to_date || new Date().toISOString().split("T")[0];
     }
-    logToConsole(`[Abu Dhabi] Config loaded. Default date range: ${adFromDate ? adFromDate.value : ""} to ${adToDate ? adToDate.value : ""}`);
+    const adFromDateHint = document.getElementById("ad-from-date-hint");
+    if (adFromDateHint) {
+      adFromDateHint.textContent = `Auto-detected from DB: ${adFromDate.value} (last date + 1)`;
+    }
+    const adToDateHint = document.getElementById("ad-to-date-hint");
+    if (adToDateHint) {
+      adToDateHint.textContent = `Defaults to Yesterday: ${adToDate.value}`;
+    }
+    logToConsole(`[Abu Dhabi DB (${activeDb})] Auto-detected start date: ${data.from_date || "N/A"}`);
   } catch (err) {
     console.error("Failed to fetch Abu Dhabi config:", err);
   }
@@ -823,7 +836,7 @@ async function fetchAbuDhabiDriveFiles(forceRefresh = false) {
       adDriveFileSelect.appendChild(opt);
     });
     if (adFileInfoText) {
-      adFileInfoText.textContent = `Found ${files.length} file(s) in Raw Data folder (1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG)`;
+      adFileInfoText.textContent = `Found ${files.length} file(s) in 1.Raw folder (1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB)`;
     }
     if (forceRefresh) {
       logToConsole(`[Abu Dhabi Drive] Refreshed files list: ${files.length} file(s) found.`, "info");
@@ -870,7 +883,7 @@ function enableAbuDhabiView() {
   updateAbuDhabiButtonState();
   renderStepCards("abu_dhabi");
 
-  fetchAbuDhabiConfig();
+  fetchAbuDhabiConfig(true);
   fetchAbuDhabiDriveFiles();
 
   if (appState.mode === "3") {
@@ -892,10 +905,15 @@ function enableAbuDhabiView() {
 function updateAbuDhabiButtonState() {
   if (!btnRun) return;
   const isScrapingOn = adRunScraping ? adRunScraping.checked : true;
-  if (isScrapingOn) {
+  const isProcessingOn = adRunProcessing ? adRunProcessing.checked : true;
+  if (isScrapingOn && isProcessingOn) {
     btnRun.innerHTML = '<span class="btn-icon">🚀</span> <span class="btn-text">Start Abu Dhabi Execution (Download + Process)</span>';
+  } else if (isScrapingOn && !isProcessingOn) {
+    btnRun.innerHTML = '<span class="btn-icon">📥</span> <span class="btn-text">Run Download Only (Step 1 → Save to 1.Raw)</span>';
+  } else if (!isScrapingOn && isProcessingOn) {
+    btnRun.innerHTML = '<span class="btn-icon">⚡</span> <span class="btn-text">Process Selected Raw File (Step 2 → 13)</span>';
   } else {
-    btnRun.innerHTML = '<span class="btn-icon">⚡</span> <span class="btn-text">Run Abu Dhabi Processing (Step 2 → 13)</span>';
+    btnRun.innerHTML = '<span class="btn-icon">⚠️</span> <span class="btn-text">Enable Step 1 or Step 2</span>';
   }
 }
 
@@ -934,9 +952,9 @@ function updateCityDriveLinks(cityId) {
     },
     "1": {
       name: "Abu Dhabi",
-      input: "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
+      input: "https://drive.google.com/drive/folders/1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB?usp=drive_link",
       manual: null,
-      final: "https://drive.google.com/drive/folders/126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s?usp=drive_link"
+      final: "https://drive.google.com/drive/folders/186t_JOcO_VAFpImIk8bNE4fOE8u4gwlV?usp=drive_link"
     }
   };
 
@@ -1124,7 +1142,9 @@ function attachEventListeners() {
   if (btnAdQuickDownload) {
     btnAdQuickDownload.addEventListener("click", () => {
       if (adRunScraping) adRunScraping.checked = true;
+      if (adRunProcessing) adRunProcessing.checked = false;
       updateAbuDhabiButtonState();
+      logToConsole("[Abu Dhabi] 📥 Download Only triggered. Transactions will be saved to 1.Raw for file selection.", "info");
       startPipeline();
     });
   }
@@ -1132,8 +1152,9 @@ function attachEventListeners() {
   if (btnAdRunProcessing) {
     btnAdRunProcessing.addEventListener("click", () => {
       if (adRunScraping) adRunScraping.checked = false;
+      if (adRunProcessing) adRunProcessing.checked = true;
       updateAbuDhabiButtonState();
-      logToConsole("[Abu Dhabi] ⚡ Triggered direct Step 2 processing on selected file (Skipping Downloader)...", "info");
+      logToConsole("[Abu Dhabi] ⚡ Triggered direct Step 2 processing on selected raw file...", "info");
       startPipeline();
     });
   }
@@ -1141,6 +1162,7 @@ function attachEventListeners() {
   if (btnAdQuickStep2) {
     btnAdQuickStep2.addEventListener("click", () => {
       if (adRunScraping) adRunScraping.checked = false;
+      if (adRunProcessing) adRunProcessing.checked = true;
       updateAbuDhabiButtonState();
       logToConsole("[Abu Dhabi] ⚡ Triggered direct processing on chosen file (Skipping Downloader)...", "info");
       startPipeline();
@@ -1151,9 +1173,20 @@ function attachEventListeners() {
     adRunScraping.addEventListener("change", () => {
       updateAbuDhabiButtonState();
       if (!adRunScraping.checked) {
-        logToConsole("[Abu Dhabi] Downloader disabled. Starting directly from Step 2 on selected file.", "warning");
+        logToConsole("[Abu Dhabi] Downloader disabled. Step 2 processing active on selected file.", "warning");
       } else {
-        logToConsole("[Abu Dhabi] Downloader enabled. Full workflow (Download -> Process) active.", "info");
+        logToConsole("[Abu Dhabi] Downloader enabled.", "info");
+      }
+    });
+  }
+
+  if (adRunProcessing) {
+    adRunProcessing.addEventListener("change", () => {
+      updateAbuDhabiButtonState();
+      if (!adRunProcessing.checked) {
+        logToConsole("[Abu Dhabi] Processing disabled. Download Only mode active.", "warning");
+      } else {
+        logToConsole("[Abu Dhabi] Processing enabled.", "info");
       }
     });
   }
@@ -2029,10 +2062,27 @@ async function startPipeline() {
   // Abu Dhabi scraping & file selection workflow
   if (isAbuDhabi && appState.mode !== "3" && appState.mode !== "4") {
     const runScraping = adRunScraping ? adRunScraping.checked : true;
+    const runProcessing = adRunProcessing ? adRunProcessing.checked : true;
+
+    if (!runScraping && !runProcessing) {
+      alert("Please enable at least Step 1 (Scraping) or Step 2 (Processing).");
+      return;
+    }
+
     const fromDate = adFromDate ? adFromDate.value.trim() : "";
     const toDate = adToDate ? adToDate.value.trim() : "";
     const customCsv = adCustomCsv ? adCustomCsv.value.trim() : "";
-    const headless = adHeadless ? adHeadless.checked : true;
+    const selectedOpt = adDriveFileSelect && adDriveFileSelect.selectedIndex > 0 ? adDriveFileSelect.selectedOptions[0] : null;
+
+    let targetInputFile = customCsv;
+    if (selectedOpt && selectedOpt.dataset.id && (!customCsv || customCsv === selectedOpt.value)) {
+      targetInputFile = selectedOpt.dataset.id;
+    }
+
+    if (!runScraping && runProcessing && !targetInputFile && (!adDriveFileSelect || !adDriveFileSelect.value)) {
+      alert("Please select or enter a raw CSV file from 1.Raw to process.");
+      return;
+    }
 
     const payload = {
       city_id: 1,
@@ -2041,10 +2091,10 @@ async function startPipeline() {
       mode: "1",
       from_date: fromDate,
       to_date: toDate,
-      input_file: customCsv,
-      headless: headless,
+      input_file: targetInputFile,
       database: getSelectedDb(),
-      skip_scraping: !runScraping
+      skip_scraping: !runScraping,
+      skip_processing: !runProcessing
     };
 
     // Reset UI
@@ -2053,6 +2103,11 @@ async function startPipeline() {
     renderStepCards("abu_dhabi");
     if (!runScraping) {
       updateStepUI(1, "skipped", "Downloader skipped - Direct processing started", "-");
+    }
+    if (!runProcessing) {
+      for (let s = 2; s <= 13; s++) {
+        updateStepUI(s, "skipped", "Processing skipped - Ready for file selection", "-");
+      }
     }
     progressBar.style.width = "0%";
     progressPercent.textContent = "0%";
@@ -2063,11 +2118,11 @@ async function startPipeline() {
 
     logToConsole(`\n[Execution] Triggering Abu Dhabi Real Estate (ADREC) Workflow...`);
     if (runScraping) {
-      logToConsole(`  - Step 1 (ADREC Downloader): Date range ${fromDate || "Auto 30d"} to ${toDate || "Yesterday"} (Headless: ${headless})`);
+      logToConsole(`  - Step 1 (ADREC Downloader): Date range ${fromDate || "Auto 30d"} to ${toDate || "Yesterday"}`);
     } else {
       logToConsole(`  - Step 1 (ADREC Downloader): Skipped (Direct Processing from Step 2)`);
     }
-    logToConsole(`  - Input File Selection: ${customCsv ? customCsv : "Auto: Latest in Drive/local folder"}`);
+    logToConsole(`  - Input File Selection: ${customCsv || (selectedOpt ? selectedOpt.value : "Auto: Latest in Drive/local folder")}`);
 
     try {
       const res = await fetch("/api/run", {
@@ -2263,6 +2318,9 @@ function startPolling() {
         resetRunState();
 
         if (status.state === "completed") {
+          if (status.city_id === 1 || status.city_key === "abu_dhabi" || (cityIdInput && cityIdInput.value === "1")) {
+            fetchAbuDhabiDriveFiles(true);
+          }
           const fileMsg = status.output_file && status.output_file !== "Database Updated"
             ? `\nSaved to: ${status.output_file}`
             : (status.output_file === "Database Updated" ? "\nDatabase Updated Successfully!" : "");

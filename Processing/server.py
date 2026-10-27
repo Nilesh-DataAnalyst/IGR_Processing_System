@@ -933,60 +933,97 @@ def normalize_date_to_iso(date_str: str) -> str:
 
 def get_abu_dhabi_drive_files() -> list:
     """
-    Fetches the list of files stored in the Abu Dhabi Google Drive Raw Data folder (1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG).
-    Uses the authenticated service in adrec_downloader.py without saving or scanning any local directories.
+    Fetches the list of files stored in the Abu Dhabi Google Drive 1.Raw folder (1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB).
+    Checks local Google Drive Desktop folder on G: and Google Drive API.
     """
     files_list = []
+    seen_names = set()
+    raw_folder_id = "1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB"
     try:
         ad_dir = os.path.join(CURR_DIR, "Abu Dhabi")
         if ad_dir not in sys.path:
             sys.path.insert(0, ad_dir)
         import adrec_downloader
-        service = adrec_downloader.get_google_drive_service()
-        if service:
-            raw_folder_id = "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG"
-            query = f"'{raw_folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
-            results = service.files().list(
-                q=query,
-                fields="files(id, name, mimeType, modifiedTime, size, webViewLink)",
-                orderBy="modifiedTime desc",
-                pageSize=50
-            ).execute()
-            for f in results.get("files", []):
-                fname = f.get("name", "")
-                if fname.lower().endswith(".csv") and not any(ign in fname.lower() for ign in ["_processed", "cleaned", "coordinates", "master"]):
-                    files_list.append({
-                        "id": f.get("id"),
-                        "name": fname,
-                        "size": int(f.get("size", 0)) if f.get("size") else None,
-                        "modified": f.get("modifiedTime"),
-                        "link": f.get("webViewLink"),
-                        "source": "gdrive"
-                    })
-            # If Raw Data folder has no files yet, fall back to checking the parent folder (1h_cUque4NqERMGvE__LaJgLuanXu1Ov2)
-            if not files_list:
-                parent_folder_id = "1h_cUque4NqERMGvE__LaJgLuanXu1Ov2"
-                query_parent = f"'{parent_folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
-                results_parent = service.files().list(
-                    q=query_parent,
+
+        # 1. Check local Google Drive Desktop folder on G:
+        try:
+            local_raw_dir = adrec_downloader.resolve_local_gdrive_folder(raw_folder_id)
+            if local_raw_dir and os.path.exists(local_raw_dir):
+                for fname in os.listdir(local_raw_dir):
+                    if fname.lower().endswith(".csv") and not any(ign in fname.lower() for ign in ["_processed", "cleaned", "coordinates", "master"]):
+                        fpath = os.path.join(local_raw_dir, fname)
+                        if os.path.isfile(fpath):
+                            mtime = os.path.getmtime(fpath)
+                            sz = os.path.getsize(fpath)
+                            files_list.append({
+                                "id": fpath,
+                                "name": fname,
+                                "size": sz,
+                                "modified": datetime.fromtimestamp(mtime).isoformat(),
+                                "link": f"https://drive.google.com/drive/folders/{raw_folder_id}?usp=drive_link",
+                                "source": "local_gdrive"
+                            })
+                            seen_names.add(fname)
+        except Exception as e:
+            print(f"[Abu Dhabi] Local G: scan note: {e}")
+
+        # 2. Check Google Drive API if local files not found or credentials configured
+        has_creds = (
+            os.path.exists(adrec_downloader.TOKEN_FILE)
+            or os.path.exists(adrec_downloader.CREDENTIALS_FILE)
+            or (adrec_downloader.OAUTH_CLIENT_CONFIG["installed"].get("client_id") and adrec_downloader.OAUTH_CLIENT_CONFIG["installed"].get("client_secret"))
+        )
+        if has_creds or not files_list:
+            service = adrec_downloader.get_google_drive_service()
+            if service:
+                query = f"'{raw_folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+                results = service.files().list(
+                    q=query,
                     fields="files(id, name, mimeType, modifiedTime, size, webViewLink)",
                     orderBy="modifiedTime desc",
                     pageSize=50
                 ).execute()
-                for f in results_parent.get("files", []):
+                for f in results.get("files", []):
                     fname = f.get("name", "")
                     if fname.lower().endswith(".csv") and not any(ign in fname.lower() for ign in ["_processed", "cleaned", "coordinates", "master"]):
-                        files_list.append({
-                            "id": f.get("id"),
-                            "name": fname,
-                            "size": int(f.get("size", 0)) if f.get("size") else None,
-                            "modified": f.get("modifiedTime"),
-                            "link": f.get("webViewLink"),
-                            "source": "gdrive"
-                        })
+                        if fname not in seen_names:
+                            files_list.append({
+                                "id": f.get("id"),
+                                "name": fname,
+                                "size": int(f.get("size", 0)) if f.get("size") else None,
+                                "modified": f.get("modifiedTime"),
+                                "link": f.get("webViewLink"),
+                                "source": "gdrive"
+                            })
+                            seen_names.add(fname)
+
+                # If Raw Data folder has no files yet, fall back to checking the parent folder (1h_cUque4NqERMGvE__LaJgLuanXu1Ov2)
+                if not files_list:
+                    parent_folder_id = "1h_cUque4NqERMGvE__LaJgLuanXu1Ov2"
+                    query_parent = f"'{parent_folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+                    results_parent = service.files().list(
+                        q=query_parent,
+                        fields="files(id, name, mimeType, modifiedTime, size, webViewLink)",
+                        orderBy="modifiedTime desc",
+                        pageSize=50
+                    ).execute()
+                    for f in results_parent.get("files", []):
+                        fname = f.get("name", "")
+                        if fname.lower().endswith(".csv") and not any(ign in fname.lower() for ign in ["_processed", "cleaned", "coordinates", "master"]):
+                            if fname not in seen_names:
+                                files_list.append({
+                                    "id": f.get("id"),
+                                    "name": fname,
+                                    "size": int(f.get("size", 0)) if f.get("size") else None,
+                                    "modified": f.get("modifiedTime"),
+                                    "link": f.get("webViewLink"),
+                                    "source": "gdrive"
+                                })
+                                seen_names.add(fname)
     except Exception as e:
         print(f"[Abu Dhabi] Error querying Google Drive Raw Data files: {e}")
 
+    files_list.sort(key=lambda x: str(x.get("modified", "")), reverse=True)
     return files_list
 
 
@@ -1011,14 +1048,23 @@ def run_abu_dhabi_pipeline(params):
     if not to_date:
         to_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     if not from_date:
+        selected_db = params.get("database") or pipeline_state.get("selected_db") or "nilesh"
         try:
-            to_dt = datetime.strptime(to_date, "%Y-%m-%d")
-            from_date = (to_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+            if adrec_dir not in sys.path:
+                sys.path.insert(0, adrec_dir)
+            import adrec_downloader
+            from_date = adrec_downloader.get_last_transaction_date_from_db("Abu Dhabi", db_params=core.get_db_params(selected_db))
         except Exception:
-            from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            pass
+        if not from_date:
+            try:
+                to_dt = datetime.strptime(to_date, "%Y-%m-%d")
+                from_date = (to_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+            except Exception:
+                from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
     skip_scraping = params.get("skip_scraping", False)
-    headless = params.get("headless", True)
+    skip_processing = params.get("skip_processing", False)
     selected_file = params.get("input_file") or params.get("selected_file")
 
     abu_dhabi_steps = [
@@ -1121,7 +1167,7 @@ def run_abu_dhabi_pipeline(params):
         {
             "id": 13,
             "name": "Final Output Save & Google Drive Upload",
-            "desc": "Exports database-ready final processed files (.xlsx and .csv) directly to Google Drive Processed Data folder.",
+            "desc": "Exports database-ready final processed file (.xlsx) directly to Google Drive Processed Data folder.",
             "status": "pending",
             "detail": "Waiting...",
             "duration": "-"
@@ -1172,11 +1218,9 @@ def run_abu_dhabi_pipeline(params):
             downloader_path,
             "--from-date", from_date,
             "--to-date", to_date,
-            "--folder-id", "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
+            "--folder-id", "1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB",
             "--cleanup",
         ]
-        if headless:
-            cmd.append("--headless")
 
         add_log(f"Executing: {' '.join(cmd)}", "info")
         proc = subprocess.Popen(
@@ -1230,142 +1274,167 @@ def run_abu_dhabi_pipeline(params):
     # -----------------------------------------------------------------
     # STEPS 2-14: PROCESSING PIPELINE (adrec_pipeline.py)
     # -----------------------------------------------------------------
-    pipeline_script = os.path.join(adrec_dir, "adrec_pipeline.py")
-    t0_pipe = time.time()
-    add_log("[Abu Dhabi Steps 2-14] ⚙️ Launching Processing Pipeline (adrec_pipeline.py)...", "info")
+    if not skip_processing:
+        pipeline_script = os.path.join(adrec_dir, "adrec_pipeline.py")
+        t0_pipe = time.time()
+        add_log("[Abu Dhabi Steps 2-14] ⚙️ Launching Processing Pipeline (adrec_pipeline.py)...", "info")
 
-    pipe_cmd = [
-        sys.executable,
-        "-u",
-        pipeline_script,
-        "--auto-confirm",
-        "--db", selected_db,
-        "--raw-folder-id", "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
-        "--processed-folder-id", "126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s",
-    ]
-    if selected_file:
-        pipe_cmd.extend(["--input-file", selected_file])
-    if params.get("include_geocoding") is False:
-        pipe_cmd.append("--skip-geocoding")
+        pipe_cmd = [
+            sys.executable,
+            "-u",
+            pipeline_script,
+            "--auto-confirm",
+            "--db", selected_db,
+            "--raw-folder-id", "1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB",
+            "--processed-folder-id", "186t_JOcO_VAFpImIk8bNE4fOE8u4gwlV",
+        ]
+        if selected_file:
+            resolved_file = selected_file
+            if not os.path.isfile(resolved_file):
+                try:
+                    if adrec_dir not in sys.path:
+                        sys.path.insert(0, adrec_dir)
+                    import adrec_downloader
+                    local_raw_dir = adrec_downloader.resolve_local_gdrive_folder("1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB")
+                    if local_raw_dir and os.path.exists(local_raw_dir):
+                        cand = os.path.join(local_raw_dir, os.path.basename(selected_file))
+                        if os.path.isfile(cand):
+                            resolved_file = cand
+                except Exception:
+                    pass
+            pipe_cmd.extend(["--input-file", resolved_file])
+        if params.get("include_geocoding") is False:
+            pipe_cmd.append("--skip-geocoding")
 
-    pipe_env = os.environ.copy()
-    pipe_env["PYTHONUNBUFFERED"] = "1"
-    pipe_env["PYTHONIOENCODING"] = "utf-8"
+        pipe_env = os.environ.copy()
+        pipe_env["PYTHONUNBUFFERED"] = "1"
+        pipe_env["PYTHONIOENCODING"] = "utf-8"
 
-    add_log(f"Executing: {' '.join(pipe_cmd)}", "info")
-    proc2 = subprocess.Popen(
-        pipe_cmd,
-        cwd=adrec_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        universal_newlines=True,
-        encoding="utf-8",
-        errors="replace",
-        env=pipe_env
-    )
+        add_log(f"Executing: {' '.join(pipe_cmd)}", "info")
+        proc2 = subprocess.Popen(
+            pipe_cmd,
+            cwd=adrec_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace",
+            env=pipe_env
+        )
 
-    step_start_times = {}
-    current_active_step = 2
-    final_saved_file = None
+        step_start_times = {}
+        current_active_step = 2
+        final_saved_file = None
 
-    for line in iter(proc2.stdout.readline, ""):
-        if pipeline_state.get("stop_requested"):
-            proc2.kill()
-            add_log("⚠️ Abu Dhabi processing aborted due to user stop request.", "warning")
+        for line in iter(proc2.stdout.readline, ""):
+            if pipeline_state.get("stop_requested"):
+                proc2.kill()
+                add_log("⚠️ Abu Dhabi processing aborted due to user stop request.", "warning")
+                if current_active_step <= 13:
+                    update_step_status(current_active_step, "failed", "Aborted by user")
+                return
+
+            line_str = line.strip()
+            if not line_str:
+                continue
+
+            # Check for structured step start marker [STEP:X:START]
+            m_start = re.match(r"^\[STEP:(\d+):START\]\s*(.*)", line_str)
+            if m_start:
+                s_id = int(m_start.group(1))
+                s_msg = m_start.group(2)
+                current_active_step = s_id
+                step_start_times[s_id] = time.time()
+                update_step_status(s_id, "running", s_msg)
+                with state_lock:
+                    pipeline_state["current_step_id"] = s_id
+                    if 1 <= s_id <= len(abu_dhabi_steps):
+                        pipeline_state["current_step_name"] = abu_dhabi_steps[s_id - 1]["name"]
+                    pipeline_state["progress"] = min(98, max(5, int((s_id / 13) * 100)))
+
+            # Check for structured step done marker [STEP:X:DONE]
+            m_done = re.match(r"^\[STEP:(\d+):DONE\]\s*(.*)", line_str)
+            if m_done:
+                s_id = int(m_done.group(1))
+                s_msg = m_done.group(2)
+                s_dur = f"{time.time() - step_start_times.get(s_id, time.time()):.1f}s"
+                update_step_status(s_id, "completed", s_msg, s_dur)
+
+                # Update metrics live from done logs
+                if s_id == 2:
+                    m_rows = re.search(r"Loaded\s+([\d,]+)\s+rows", s_msg)
+                    if m_rows:
+                        pipeline_state["metrics"]["total_rows"] = int(m_rows.group(1).replace(",", ""))
+                elif s_id == 9:
+                    m_match = re.search(r"matched\s+([\d,]+)/", s_msg)
+                    if m_match:
+                        pipeline_state["metrics"]["rera_matched"] = int(m_match.group(1).replace(",", ""))
+                elif s_id == 11:
+                    m_nr = re.search(r"all\s+([\d,]+)/", s_msg)
+                    if m_nr:
+                        pipeline_state["metrics"]["nr_assigned"] = int(m_nr.group(1).replace(",", ""))
+
+            # Log line classification
+            if any(k in line_str for k in ["✔", "🎉", "Saved:", "Final Excel", "Found (", "[STEP:"]):
+                lvl = "success" if any(k in line_str for k in ["✔", "🎉", "DONE"]) else "info"
+            elif any(k in line_str for k in ["❌", "FAILED", "Error:"]):
+                lvl = "error"
+            elif any(k in line_str for k in ["⚠️", "NOT_FOUND", "SKIPPED", "skipped"]):
+                lvl = "warning"
+            else:
+                lvl = "info"
+
+            add_log(line_str, lvl)
+
+            if "Final Excel File" in line_str and ":" in line_str:
+                final_saved_file = line_str.split(":", 1)[1].strip()
+            elif "Saved:" in line_str:
+                final_saved_file = line_str.split("Saved:", 1)[1].strip()
+
+        proc2.stdout.close()
+        rc2 = proc2.wait()
+
+        if rc2 != 0:
+            err_msg = f"adrec_pipeline.py exited with return code {rc2}"
             if current_active_step <= 13:
-                update_step_status(current_active_step, "failed", "Aborted by user")
+                update_step_status(current_active_step, "failed", err_msg)
+            add_log(f"❌ [Abu Dhabi Processing] {err_msg}", "error")
+            with state_lock:
+                pipeline_state["state"] = "failed"
+                pipeline_state["error"] = err_msg
             return
 
-        line_str = line.strip()
-        if not line_str:
-            continue
-
-        # Check for structured step start marker [STEP:X:START]
-        m_start = re.match(r"^\[STEP:(\d+):START\]\s*(.*)", line_str)
-        if m_start:
-            s_id = int(m_start.group(1))
-            s_msg = m_start.group(2)
-            current_active_step = s_id
-            step_start_times[s_id] = time.time()
-            update_step_status(s_id, "running", s_msg)
+        # Ensure all steps 2..13 are marked completed if finished with rc=0
+        for s in range(2, 14):
             with state_lock:
-                pipeline_state["current_step_id"] = s_id
-                if 1 <= s_id <= len(abu_dhabi_steps):
-                    pipeline_state["current_step_name"] = abu_dhabi_steps[s_id - 1]["name"]
-                pipeline_state["progress"] = min(98, max(5, int((s_id / 13) * 100)))
+                cur_s = next((x for x in pipeline_state["steps"] if x["id"] == s), None)
+                if cur_s and cur_s["status"] != "completed":
+                    cur_s["status"] = "completed"
+                    if cur_s["duration"] == "-":
+                        cur_s["duration"] = "0.5s"
 
-        # Check for structured step done marker [STEP:X:DONE]
-        m_done = re.match(r"^\[STEP:(\d+):DONE\]\s*(.*)", line_str)
-        if m_done:
-            s_id = int(m_done.group(1))
-            s_msg = m_done.group(2)
-            s_dur = f"{time.time() - step_start_times.get(s_id, time.time()):.1f}s"
-            update_step_status(s_id, "completed", s_msg, s_dur)
+        dur_total = f"{time.time() - t0_pipe:.1f}s"
+        add_log(f"✔ [Abu Dhabi Processing] All processing steps finished successfully ({dur_total})!", "success")
+        if final_saved_file:
+            pipeline_state["output_file"] = final_saved_file
 
-            # Update metrics live from done logs
-            if s_id == 2:
-                m_rows = re.search(r"Loaded\s+([\d,]+)\s+rows", s_msg)
-                if m_rows:
-                    pipeline_state["metrics"]["total_rows"] = int(m_rows.group(1).replace(",", ""))
-            elif s_id == 9:
-                m_match = re.search(r"matched\s+([\d,]+)/", s_msg)
-                if m_match:
-                    pipeline_state["metrics"]["rera_matched"] = int(m_match.group(1).replace(",", ""))
-            elif s_id == 11:
-                m_nr = re.search(r"all\s+([\d,]+)/", s_msg)
-                if m_nr:
-                    pipeline_state["metrics"]["nr_assigned"] = int(m_nr.group(1).replace(",", ""))
-
-        # Log line classification
-        if any(k in line_str for k in ["✔", "🎉", "Saved:", "Final Excel", "Found (", "[STEP:"]):
-            lvl = "success" if any(k in line_str for k in ["✔", "🎉", "DONE"]) else "info"
-        elif any(k in line_str for k in ["❌", "FAILED", "Error:"]):
-            lvl = "error"
-        elif any(k in line_str for k in ["⚠️", "NOT_FOUND", "SKIPPED", "skipped"]):
-            lvl = "warning"
-        else:
-            lvl = "info"
-
-        add_log(line_str, lvl)
-
-        if "Final Excel File" in line_str and ":" in line_str:
-            final_saved_file = line_str.split(":", 1)[1].strip()
-
-    proc2.stdout.close()
-    rc2 = proc2.wait()
-
-    if rc2 != 0:
-        err_msg = f"adrec_pipeline.py exited with return code {rc2}"
-        if current_active_step <= 13:
-            update_step_status(current_active_step, "failed", err_msg)
-        add_log(f"❌ [Abu Dhabi Processing] {err_msg}", "error")
         with state_lock:
-            pipeline_state["state"] = "failed"
-            pipeline_state["error"] = err_msg
-        return
+            pipeline_state["state"] = "completed"
+            pipeline_state["progress"] = 100
+            pipeline_state["current_step_name"] = "All Abu Dhabi Steps Finished"
 
-    # Ensure all steps 2..13 are marked completed if finished with rc=0
-    for s in range(2, 14):
+        add_log("🎉 Abu Dhabi ADREC workflow completed successfully!", "success")
+    else:
+        for s in range(2, 14):
+            update_step_status(s, "skipped", "Processing skipped - Select raw file to process", "-")
+        add_log("↷ [Abu Dhabi Step 2/13] Processing skipped by user request. Select raw file in Step 2 to process.", "info")
         with state_lock:
-            cur_s = next((x for x in pipeline_state["steps"] if x["id"] == s), None)
-            if cur_s and cur_s["status"] != "completed":
-                cur_s["status"] = "completed"
-                if cur_s["duration"] == "-":
-                    cur_s["duration"] = "0.5s"
-
-    dur_total = f"{time.time() - t0_pipe:.1f}s"
-    add_log(f"✔ [Abu Dhabi Processing] All processing steps finished successfully ({dur_total})!", "success")
-    if final_saved_file:
-        pipeline_state["output_file"] = final_saved_file
-
-    with state_lock:
-        pipeline_state["state"] = "completed"
-        pipeline_state["progress"] = 100
-        pipeline_state["current_step_name"] = "All Abu Dhabi Steps Finished"
-
-    add_log("🎉 Abu Dhabi ADREC workflow completed successfully!", "success")
+            pipeline_state["state"] = "completed"
+            pipeline_state["progress"] = 100
+            pipeline_state["current_step_name"] = "Download Complete - Ready for Processing"
+        add_log("🎉 Abu Dhabi download completed! Select your raw file in Step 2 to process.", "success")
 
 
 def run_pipeline_worker(params):
@@ -2286,23 +2355,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "output_folder_name": "2.Processed Files"
             })
         elif url_path == "/api/abu-dhabi/config":
+            last_d = None
             yesterday_d = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-            from_d = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            target_db = self.get_query_param("db") or pipeline_state.get("selected_db") or "nilesh"
+            try:
+                import importlib
+                adrec_dir = os.path.join(CURR_DIR, "Abu Dhabi")
+                if adrec_dir not in sys.path:
+                    sys.path.insert(0, adrec_dir)
+                import adrec_downloader
+                importlib.reload(adrec_downloader)
+                last_d = adrec_downloader.get_last_transaction_date_from_db("Abu Dhabi", db_params=core.get_db_params(target_db))
+                yesterday_d = getattr(adrec_downloader, "DEFAULT_TO_DATE", None) or yesterday_d
+            except Exception as e:
+                print(f"[Abu Dhabi Config] DB lookup error: {e}")
+            from_d = last_d or (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
             self.send_json({
                 "city_id": 1,
                 "city_name": "Abu Dhabi",
                 "city_key": "abu_dhabi",
+                "selected_db": target_db,
                 "from_date": from_d,
                 "to_date": yesterday_d,
                 "parent_drive_url": "https://drive.google.com/drive/folders/1h_cUque4NqERMGvE__LaJgLuanXu1Ov2?usp=drive_link",
                 "parent_folder_id": "1h_cUque4NqERMGvE__LaJgLuanXu1Ov2",
-                "raw_folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
-                "raw_drive_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
-                "processed_folder_id": "126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s",
-                "processed_drive_url": "https://drive.google.com/drive/folders/126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s?usp=drive_link",
-                "drive_folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
-                "drive_folder_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
-                "folder_name": "Raw Data"
+                "raw_folder_id": "1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB",
+                "raw_drive_url": "https://drive.google.com/drive/folders/1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB?usp=drive_link",
+                "processed_folder_id": "186t_JOcO_VAFpImIk8bNE4fOE8u4gwlV",
+                "processed_drive_url": "https://drive.google.com/drive/folders/186t_JOcO_VAFpImIk8bNE4fOE8u4gwlV?usp=drive_link",
+                "drive_folder_id": "1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB",
+                "drive_folder_url": "https://drive.google.com/drive/folders/1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB?usp=drive_link",
+                "folder_name": "1.Raw"
             })
         elif url_path == "/api/abu-dhabi/files":
             files = get_abu_dhabi_drive_files()
@@ -2310,12 +2393,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "city_id": 1,
                 "city_name": "Abu Dhabi",
                 "parent_folder_id": "1h_cUque4NqERMGvE__LaJgLuanXu1Ov2",
-                "raw_folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
-                "processed_folder_id": "126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s",
-                "folder_id": "1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG",
-                "drive_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
-                "raw_drive_url": "https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link",
-                "processed_drive_url": "https://drive.google.com/drive/folders/126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s?usp=drive_link",
+                "raw_folder_id": "1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB",
+                "processed_folder_id": "186t_JOcO_VAFpImIk8bNE4fOE8u4gwlV",
+                "folder_id": "1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB",
+                "drive_url": "https://drive.google.com/drive/folders/1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB?usp=drive_link",
+                "raw_drive_url": "https://drive.google.com/drive/folders/1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB?usp=drive_link",
+                "processed_drive_url": "https://drive.google.com/drive/folders/186t_JOcO_VAFpImIk8bNE4fOE8u4gwlV?usp=drive_link",
                 "files": files
             })
         elif url_path == "/api/city-config":

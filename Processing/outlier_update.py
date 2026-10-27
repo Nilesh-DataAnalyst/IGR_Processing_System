@@ -35,6 +35,8 @@ except ImportError:
         "pune": {"city_id": 9, "display_name": "Pune"},
         "mumbai": {"city_id": 8, "display_name": "Mumbai"},
         "thane": {"city_id": 12, "display_name": "Thane"},
+        "dubai": {"city_id": 15, "display_name": "Dubai"},
+        "abu_dhabi": {"city_id": 1, "display_name": "Abu Dhabi"},
     }
 
 # NOTE: CITY_ID and LOCATION_NAME are obtained dynamically from user selection
@@ -46,7 +48,7 @@ GROUP_COLS = ["k_city", "k_loc", "k_cat", "k_ptype"]
 # --------------------------------------------------------------------------- #
 # Fetch
 # --------------------------------------------------------------------------- #
-ALL_LOCATIONS_CITIES = {"dubai", "abu_dhabi"}
+ALL_LOCATIONS_CITIES = {"dubai", "abu_dhabi", "abu dhabi"}
 
 
 def normalize_locations(loc_input) -> list[str]:
@@ -141,7 +143,7 @@ def fetch_data(conn, city_id: int, location_name: str | list[str] | None = None,
     if locations:
         locations = resolve_canonical_locations(conn, city_id, locations)
 
-    if locations and city_clean in ALL_LOCATIONS_CITIES:
+    if locations and (city_clean in ALL_LOCATIONS_CITIES or city_clean.replace(" ", "_") in ALL_LOCATIONS_CITIES):
         msg = f"City ID {city_id} ({city_name}) groups all locations together; pulling entire city dataset."
         print(f"Note: {msg}")
         if log_fn:
@@ -208,8 +210,9 @@ def compute_outliers(df: pd.DataFrame, save_merged_path: str | None = None, log_
     )
 
     # Dubai / Abu Dhabi -> collapse all locations into one bucket
+    is_uae_city = df["city_name_clean"].isin(["dubai", "abu_dhabi", "abu dhabi"]) | (df["city_name_clean"].str.replace(" ", "_").isin(["dubai", "abu_dhabi"]))
     df["group_location_name"] = np.where(
-        df["city_name_clean"].isin(["dubai", "abu_dhabi"]),
+        is_uae_city,
         "__ALL_LOCATIONS__",
         df["location_name"],
     )
@@ -419,10 +422,16 @@ def main(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Outlier detection & update")
-    parser.add_argument("--city_id", type=int, default=None, help="Target city ID (e.g. Pune: 9, Mumbai: 8, Thane: 12)")
+    parser.add_argument("--city_id", type=int, default=None, help="Target city ID (e.g. Pune: 9, Mumbai: 8, Thane: 12, Dubai: 15, Abu Dhabi: 1)")
     parser.add_argument("--location", type=str, default=None, help="Location name(s) (comma-separated, or None / all for all locations)")
     parser.add_argument("--save_excel", type=str, default=None, help="Optional file path to save merged outlier Excel report")
+    parser.add_argument("--db", type=str, default=None, help="Target PostgreSQL database name [Default: nilesh]")
     args, _ = parser.parse_known_args()
+
+    cli_db_params = None
+    if args.db:
+        from pipeline_core import get_db_params
+        cli_db_params = get_db_params(args.db)
 
     target_city_id = args.city_id
     if target_city_id is None:
@@ -472,4 +481,4 @@ if __name__ == "__main__":
         os.makedirs(outlier_dir, exist_ok=True)
         save_excel_path = os.path.join(outlier_dir, os.path.basename(save_excel_path))
 
-    main(city_id=target_city_id, location_name=target_location, save_merged_path=save_excel_path)
+    main(city_id=target_city_id, location_name=target_location, save_merged_path=save_excel_path, db_params=cli_db_params)

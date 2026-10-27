@@ -319,17 +319,17 @@
                 </p>
               </div>
               <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-                <a href="https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link"
+                <a href="https://drive.google.com/drive/folders/1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB?usp=drive_link"
                   target="_blank" class="drive-external-link"
                   style="font-size: 0.8rem; padding: 7px 14px; background: rgba(16, 185, 129, 0.18); border: 1px solid rgba(52, 211, 153, 0.4); color: #6ee7b7; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 500;"
-                  title="Open Raw Data Google Drive Folder">
-                  📥 Raw Data Folder ↗
+                  title="Open 1.Raw Google Drive Folder">
+                  📥 1.Raw Folder ↗
                 </a>
-                <a href="https://drive.google.com/drive/folders/126uTbJ8Sp4mHUuhgR6Q18W6k6qtgEu0s?usp=drive_link"
+                <a href="https://drive.google.com/drive/folders/186t_JOcO_VAFpImIk8bNE4fOE8u4gwlV?usp=drive_link"
                   target="_blank" class="drive-external-link"
                   style="font-size: 0.8rem; padding: 7px 14px; background: rgba(56, 189, 248, 0.18); border: 1px solid rgba(56, 189, 248, 0.4); color: #7dd3fc; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 500;"
-                  title="Open Processed Data Google Drive Folder">
-                  📁 Processed Data Folder ↗
+                  title="Open 2.Processed Google Drive Folder">
+                  📁 2.Processed Folder ↗
                 </a>
               </div>
             </div>
@@ -353,13 +353,13 @@
                       <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">From Date:</label>
                       <input type="text" id="ad-from-date" placeholder="YYYY-MM-DD"
                         style="padding: 9px 12px; font-size: 0.85rem; background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 6px; color: #fff; width: 100%;">
-                      <small style="font-size: 0.7rem; color: #34d399; margin-top: 3px; display: block;">Manual entry (DB auto-detect)</small>
+                      <small id="ad-from-date-hint" style="font-size: 0.7rem; color: #34d399; margin-top: 3px; display: block;">Auto-detected from DB</small>
                     </div>
                     <div>
                       <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">To Date:</label>
                       <input type="text" id="ad-to-date" placeholder="YYYY-MM-DD"
                         style="padding: 9px 12px; font-size: 0.85rem; background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 6px; color: #fff; width: 100%;">
-                      <small style="font-size: 0.7rem; color: #94a3b8; margin-top: 3px; display: block;">Defaults to Yesterday</small>
+                      <small id="ad-to-date-hint" style="font-size: 0.7rem; color: #94a3b8; margin-top: 3px; display: block;">Defaults to Yesterday</small>
                     </div>
                   </div>
                 </div>
@@ -368,11 +368,6 @@
                   <small style="font-size: 0.75rem; color: #64748b;">
                     Uploads raw CSV directly to Google Drive
                   </small>
-                  <label class="checkbox-pill" style="padding: 3px 10px; font-size: 0.74rem;"
-                    title="Run Chrome in headless background mode">
-                    <input type="checkbox" id="ad-headless" checked>
-                    <span>🕶️ Headless Chrome</span>
-                  </label>
                 </div>
               </div>
 
@@ -381,31 +376,37 @@
                 style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(52, 211, 153, 0.25); border-radius: var(--radius-sm); padding: 16px; display: flex; flex-direction: column; justify-content: space-between;">
                 <div>
                   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                    <span style="font-weight: 600; color: #d1fae5; font-size: 0.92rem;">📁 Step 2: Google Drive File Selection</span>
-                    <button type="button" id="btn-refresh-ad-files" title="Refresh files from Google Drive folder"
-                      style="background: rgba(52, 211, 153, 0.15); border: 1px solid rgba(52, 211, 153, 0.3); color: #6ee7b7; font-size: 0.75rem; padding: 3px 10px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
-                      🔄 Refresh Files
-                    </button>
+                    <span style="font-weight: 600; color: #d1fae5; font-size: 0.92rem;">⚙️ Step 2: Processing (adrec_pipeline.py)</span>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <button type="button" id="btn-refresh-ad-files" title="Refresh files from 1.Raw folder"
+                        style="background: rgba(52, 211, 153, 0.15); border: 1px solid rgba(52, 211, 153, 0.3); color: #6ee7b7; font-size: 0.75rem; padding: 3px 10px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                        🔄 Refresh Files
+                      </button>
+                      <label class="checkbox-pill" style="padding: 3px 10px; font-size: 0.78rem;">
+                        <input type="checkbox" id="ad-run-processing" checked>
+                        <span>Enable</span>
+                      </label>
+                    </div>
                   </div>
                   <div>
-                    <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">Select File from Google Drive:</label>
+                    <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">Select Raw Scraped File to Process:</label>
                     <select id="ad-drive-file-select"
                       style="padding: 9px 12px; font-size: 0.85rem; background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 6px; color: #fff; width: 100%; margin-bottom: 8px;">
-                      <option value="">[Auto: Latest uploaded file in Google Drive]</option>
+                      <option value="">[Auto: Latest uploaded file in 1.Raw]</option>
                     </select>
                   </div>
                   <div>
-                    <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">Selected CSV Input File:</label>
-                    <input type="text" id="ad-custom-csv" placeholder="[Auto: latest file in Google Drive folder]"
+                    <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">Selected Raw CSV Input File:</label>
+                    <input type="text" id="ad-custom-csv" placeholder="[Auto: latest file in 1.Raw folder]"
                       style="padding: 9px 12px; font-size: 0.85rem; background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 6px; color: #fff; width: 100%;">
                   </div>
                 </div>
                 <div id="ad-file-info-badge"
                   style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.05); font-size: 0.74rem; color: #6ee7b7; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
-                  <span id="ad-file-info-text">Raw Data Folder: 1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG</span>
+                  <span id="ad-file-info-text">1.Raw Folder: 1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB</span>
                   <a id="ad-file-view-link"
-                    href="https://drive.google.com/drive/folders/1F5Wau7ePRd90JI2nKaUDqa6kJLiWvqjG?usp=drive_link"
-                    target="_blank" style="color: #34d399; text-decoration: underline; font-size: 0.74rem;">View Raw Data on Drive ↗</a>
+                    href="https://drive.google.com/drive/folders/1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB?usp=drive_link"
+                    target="_blank" style="color: #34d399; text-decoration: underline; font-size: 0.74rem;">View 1.Raw on Drive ↗</a>
                 </div>
               </div>
             </div>
@@ -418,18 +419,18 @@
                   ⚡ Quick Trigger:
                 </span>
                 <span style="font-size: 0.78rem; color: #6ee7b7;">
-                  Select an existing file from Drive or run full download + processing pipeline:
+                  Download from ADREC, select raw file, or process directly:
                 </span>
               </div>
               <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                 <button type="button" id="btn-ad-quick-download"
                   style="background: linear-gradient(135deg, #059669, #047857); border: 1px solid rgba(52, 211, 153, 0.4); color: #fff; font-size: 0.82rem; font-weight: 600; padding: 8px 18px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: transform 0.15s ease;"
-                  title="Run end-to-end: Download from ADREC and process steps 2 to 13">
-                  <span>📥</span> Download & Process (Step 1 → 13)
+                  title="Run Step 1 only: Download raw transactions from ADREC into 1.Raw (without processing)">
+                  <span>📥</span> Download Only (Step 1)
                 </button>
                 <button type="button" id="btn-ad-quick-step2"
                   style="background: linear-gradient(135deg, #0284c7, #0369a1); border: 1px solid rgba(56, 189, 248, 0.4); color: #fff; font-size: 0.82rem; font-weight: 600; padding: 8px 18px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: transform 0.15s ease;"
-                  title="Directly process the selected Google Drive file without scraping">
+                  title="Directly process the selected raw CSV file without scraping">
                   <span>⚡</span> Process Selected File Only (Step 2 → 13)
                 </button>
                 <button type="button" id="btn-ad-run-processing" style="display: none;"></button>

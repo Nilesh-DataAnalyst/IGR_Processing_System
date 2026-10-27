@@ -72,16 +72,15 @@ When you run the script for the **first time**:
 
 ---
 
-## ⚙️ Customizing the Google Drive Folder (Optional)
+## ⚙️ Google Drive Folders
 
-By default, files are uploaded to the pre-configured Google Drive folder:
-`1h_cUque4NqERMGvE__LaJgLuanXu1Ov2`
+By default, files are synced to the following Google Drive folders:
+- **1.Raw Data Folder** (Scraped Files): `1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB`
+  Link: [1.Raw Folder](https://drive.google.com/drive/folders/1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB?usp=drive_link)
+- **2.Processed Data Folder** (Pipeline Results): `186t_JOcO_VAFpImIk8bNE4fOE8u4gwlV`
+  Link: [2.Processed Folder](https://drive.google.com/drive/folders/186t_JOcO_VAFpImIk8bNE4fOE8u4gwlV?usp=drive_link)
 
-If you want to change the target folder, open `adrec_downloader.py` and edit line 60:
-```python
-DEFAULT_GOOGLE_DRIVE_FOLDER_ID = "YOUR_NEW_GOOGLE_DRIVE_FOLDER_ID"
-```
-*(Or pass `--folder-id YOUR_NEW_ID` when running the command).*
+If you want to customize the target folder, you can pass `--folder-id <ID>` or set `GOOGLE_DRIVE_FOLDER_ID`.
 
 ---
 
