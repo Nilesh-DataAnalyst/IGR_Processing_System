@@ -14,7 +14,7 @@ Matches the architecture and execution style of Dubai's dld_pipeline.py and Pune
   Step 9: Match against Abudhabi_project_coordinates.csv:
           project_latitude, project_longitude, internal_index_id via composite key
   Step 10: Geocode missing commercial projects via Google Places API & ArcGIS fallback (Private project lat/long kept blank)
-  Step 11: Assign Non-RERA index (internal_index_id):
+  Step 11: Assign Non-RERA index (index):
           - Master table highest NR is Nr467__abu_dhabi -> starts strictly from nr468
           - Reuses existing NR indexes for matched master projects
           - Assigns sequential nr468, nr469, etc. for all unlisted commercial and private projects [project_name + location_name]
@@ -579,7 +579,7 @@ df["property_description"] = None
 df["city_id"] = CITY_ID
 df["city_name"] = CITY_NAME
 df["state_name"] = "Abu Dhabi"
-df["country_name"] = "UAE"
+df["country_name"] = "United Arab Emirates"
 df["transaction_category"] = "Sale"
 df["data_source"] = "Adrec"
 df["data_type"] = "Registered Document"
@@ -588,20 +588,26 @@ df["source_accessibility_way"] = "Easy"
 df["is_llm_processed"] = "No"
 df["is_manual_processed"] = "No"
 
-# Placeholder columns for full schema compliance (internal_index_id replacing index)
+# Placeholder columns for full schema compliance (index)
 default_blank_cols = [
     "registered_document_village_name", "sub_registrar_office_code", "sub_registrar_office_name",
     "document_number", "guideline_value", "floor_number", "unit_number", "balcony_sq_m",
     "terrace_sq_m", "seller_name", "buyer_name", "internal_document_number", "micr_number",
     "bank_type", "party_code", "stamp_duty_paid", "registration_fee", "project_latitude",
     "project_longitude", "location_latitude", "location_longitude", "location_id",
-    "internal_index_id", "buyer_pincode", "buyer_locality", "buyer_district", "buyer_state", "tower_name",
+    "index", "buyer_pincode", "buyer_locality", "buyer_district", "buyer_state", "tower_name",
     "is_duplicate", "pincode", "parking_count", "facing_direction", "view_type", "furnishing_status",
     "condition_status", "sourcing_cost", "sourcing_time"
 ]
 for col in default_blank_cols:
     if col not in df.columns:
         df[col] = None
+
+# If input file has internal_index_id but not index, normalize to index
+if "internal_index_id" in df.columns:
+    if "index" not in df.columns or df["index"].isna().all():
+        df["index"] = df["internal_index_id"]
+    df = df.drop(columns=["internal_index_id"])
 
 # Helpers
 def norm(s):
@@ -613,9 +619,16 @@ def clean_nr_index(x):
     if pd.isna(x):
         return None
     x = str(x).strip()
+    if not x or x.lower() in ["nan", "none", "null", "<na>"]:
+        return None
     x = re.sub(r"__.*$", "", x)
-    m = re.match(r"(?i)^nr(\d+)", x)
-    return f"nr{m.group(1)}" if m else x
+    x = re.sub(r"_abu[\s_]?dhabi$", "", x, flags=re.IGNORECASE)
+    m = re.match(r"(?i)^nr[\s_-]*(\d+)", x)
+    if m:
+        return f"Nr{m.group(1)}"
+    if x.lower().startswith("nr"):
+        return "Nr" + x[2:].strip()
+    return x
 
 # ============================== STEP 8: LOCATION COORDINATES & LOCATION ID ==============================
 print("[STEP:8:START] Looking up location IDs and coordinates from master reference & PostgreSQL database...")
@@ -813,15 +826,15 @@ for i in df.index:
 
     matched_idx_k = k if (k in master_index_map and pd.notna(master_index_map[k])) else (k2 if (k2 in master_index_map and pd.notna(master_index_map[k2])) else None)
     if matched_idx_k:
-        df.at[i, "internal_index_id"] = master_index_map[matched_idx_k]
+        df.at[i, "index"] = master_index_map[matched_idx_k]
 
     matched_loc_k = k if (k in master_loc_id_map and pd.isna(df.at[i, "location_id"])) else (k2 if (k2 in master_loc_id_map and pd.isna(df.at[i, "location_id"])) else None)
     if matched_loc_k:
         df.at[i, "location_id"] = master_loc_id_map[matched_loc_k]
 
 master_matched_rows = int(df["project_latitude"].notna().sum())
-index_matched_rows = int(df["internal_index_id"].notna().sum())
-print(f"[step9] Project + Location match: {master_matched_rows}/{len(df)} rows with coords, {index_matched_rows}/{len(df)} rows with internal_index_id")
+index_matched_rows = int(df["index"].notna().sum())
+print(f"[step9] Project + Location match: {master_matched_rows}/{len(df)} rows with coords, {index_matched_rows}/{len(df)} rows with index")
 time.sleep(0.15)
 print(f"[STEP:9:DONE] Master reference & DB matched {master_matched_rows:,}/{len(df):,} rows with coordinates and {index_matched_rows:,} with index")
 
@@ -915,8 +928,8 @@ print(f"[step10] Geocoding complete: {found_geo} newly resolved via API. Total r
 time.sleep(0.15)
 print(f"[STEP:10:DONE] Resolved project coordinates for {valid_coords:,}/{len(df):,} records")
 
-# ============================== STEP 11: ASSIGN NON-RERA INDEX (internal_index_id) ==============================
-print("[STEP:11:START] Assigning PostgreSQL NR indexes (internal_index_id) with database attribute reuse...")
+# ============================== STEP 11: ASSIGN NON-RERA INDEX (index) ==============================
+print("[STEP:11:START] Assigning PostgreSQL NR indexes (index) with database attribute reuse...")
 time.sleep(0.35)
 t_step = time.time()
 
@@ -950,8 +963,8 @@ def get_max_nr_number(params, city_id):
 db_max_nr = get_max_nr_number(db_params, CITY_ID)
 max_nr = max(csv_max_nr, db_max_nr)
 next_num = max_nr + 1
-print(f"[step11] Master CSV max = nr{csv_max_nr}, PostgreSQL DB max = nr{db_max_nr}")
-print(f"[step11] Unified max NR = nr{max_nr}, newly generated indexes will start at = nr{next_num}")
+print(f"[step11] Master CSV max = Nr{csv_max_nr}, PostgreSQL DB max = Nr{db_max_nr}")
+print(f"[step11] Unified max NR = Nr{max_nr}, newly generated indexes will start at = Nr{next_num}")
 
 # 3. Load DB project+location mapping from public.transactions and public.dim_project (like Dubai pipeline step B)
 def get_db_mapping(params, city_id):
@@ -1011,17 +1024,17 @@ df.loc[blank_mask, "project_name"] = "Private"
 df["norm_proj"] = norm(df["project_name"])
 
 existing_indexes = set(db_mapping.values())
-for v in df["internal_index_id"].dropna():
+for v in df["index"].dropna():
     clean_v = clean_nr_index(v)
     if clean_v:
         existing_indexes.add(clean_v)
 
 file_mapping = {}
 for i in df.index:
-    cur_idx = df.at[i, "internal_index_id"]
+    cur_idx = df.at[i, "index"]
     if pd.notna(cur_idx):
         clean_cur = clean_nr_index(cur_idx)
-        df.at[i, "internal_index_id"] = clean_cur
+        df.at[i, "index"] = clean_cur
         l_name = df.at[i, "location_name"] or "Unknown Location"
         k = (norm(l_name), df.at[i, "norm_proj"], norm(df.at[i, "city_name"]))
         k2 = (norm(l_name), df.at[i, "norm_proj"])
@@ -1032,7 +1045,7 @@ reused_db_count = 0
 new_nr_count = 0
 
 for i in df.index:
-    if pd.isna(df.at[i, "internal_index_id"]):
+    if pd.isna(df.at[i, "index"]):
         p_name = df.at[i, "project_name"]
         l_name = df.at[i, "location_name"]
         p_norm = df.at[i, "norm_proj"]
@@ -1044,46 +1057,46 @@ for i in df.index:
         key2 = (norm(l_name), p_norm)
 
         if key in file_mapping:
-            df.at[i, "internal_index_id"] = file_mapping[key]
+            df.at[i, "index"] = file_mapping[key]
         elif key2 in file_mapping:
-            df.at[i, "internal_index_id"] = file_mapping[key2]
+            df.at[i, "index"] = file_mapping[key2]
         elif key in db_mapping:
             idx = db_mapping[key]
-            df.at[i, "internal_index_id"] = idx
+            df.at[i, "index"] = idx
             file_mapping[key] = file_mapping[key2] = idx
             existing_indexes.add(idx)
             reused_db_count += 1
         elif key2 in db_mapping:
             idx = db_mapping[key2]
-            df.at[i, "internal_index_id"] = idx
+            df.at[i, "index"] = idx
             file_mapping[key] = file_mapping[key2] = idx
             existing_indexes.add(idx)
             reused_db_count += 1
         else:
-            while f"nr{next_num}" in existing_indexes:
+            while f"Nr{next_num}" in existing_indexes or f"nr{next_num}" in existing_indexes:
                 next_num += 1
-            new_index = f"nr{next_num}"
-            df.at[i, "internal_index_id"] = new_index
+            new_index = f"Nr{next_num}"
+            df.at[i, "index"] = new_index
             file_mapping[key] = file_mapping[key2] = db_mapping[key] = db_mapping[key2] = new_index
             existing_indexes.add(new_index)
             next_num += 1
             new_nr_count += 1
 
 # Enforce clean index format
-df["internal_index_id"] = df["internal_index_id"].map(clean_nr_index)
-total_with_internal_index = int(df["internal_index_id"].notna().sum())
+df["index"] = df["index"].map(clean_nr_index)
+total_with_index = int(df["index"].notna().sum())
 
-print(f"[step11] Reused from DB/file: {reused_db_count} occurrences, New NR indexes generated: {new_nr_count} (ending at nr{next_num - 1})")
-print(f"[step11] Total records with internal_index_id: {total_with_internal_index}/{len(df)} rows")
+print(f"[step11] Reused from DB/file: {reused_db_count} occurrences, New NR indexes generated: {new_nr_count} (ending at Nr{next_num - 1})")
+print(f"[step11] Total records with index: {total_with_index}/{len(df)} rows")
 time.sleep(0.15)
-print(f"[STEP:11:DONE] Assigned internal_index_id to all {total_with_internal_index:,}/{len(df):,} records ({reused_db_count} reused from DB, {new_nr_count} new NRs allocated from nr{max_nr + 1} to nr{next_num - 1})")
+print(f"[STEP:11:DONE] Assigned index to all {total_with_index:,}/{len(df):,} records ({reused_db_count} reused from DB, {new_nr_count} new NRs allocated from Nr{max_nr + 1} to Nr{next_num - 1})")
 
 # ============================== STEP 12: FINAL SCHEMA REORDER & TITLE CASE ==============================
 print("[STEP:12:START] Aligning columns strictly to Abu Dhabi schema (project_id completely removed) and applying Title Case...")
 time.sleep(0.35)
 t_step = time.time()
 final_schema_order = [
-    "internal_index_id", "project_name", "location_id", "location_name",
+    "index", "project_name", "location_id", "location_name",
     "registered_document_village_name", "agreement_price", "transaction_date",
     "net_carpet_area_sq_m", "sub_registrar_office_code", "sub_registrar_office_name",
     "document_number", "transaction_type", "city_id", "city_name",
@@ -1102,22 +1115,29 @@ final_schema_order = [
     "data_source", "normalized_unit_configuration", "project_stage"
 ]
 
-# Ensure project_id is purged from DataFrame
+# Ensure project_id and legacy internal_index_id are removed from DataFrame
 if "project_id" in df.columns:
     df = df.drop(columns=["project_id"])
+if "internal_index_id" in df.columns:
+    if "index" not in df.columns or df["index"].isna().all():
+        df["index"] = df["internal_index_id"]
+    df = df.drop(columns=["internal_index_id"])
 
 # Ensure all schema columns exist
 for col in final_schema_order:
     if col not in df.columns:
         df[col] = None
 
-final_columns = [c for c in final_schema_order if c != "project_id"]
+final_columns = [c for c in final_schema_order if c != "project_id" and c != "internal_index_id"]
 df = df[final_columns]
 
-# Apply Title Case to all object/text columns EXCEPT 'internal_index_id'
+# Apply Title Case to all object/text columns EXCEPT 'index'
 for col in df.select_dtypes(include=["object", "string"]).columns:
-    if col != "internal_index_id":
+    if col != "index":
         df[col] = df[col].apply(lambda x: x.title() if isinstance(x, str) and x.lower() not in ["none", "nan", "<na>"] else x)
+
+# Guarantee index strictly has capital 'N', lowercase 'r' (e.g. Nr468) across all rows in processed file
+df["index"] = df["index"].map(clean_nr_index)
 
 # Guarantee property_description and micro_market remain strictly blank (no mapping applied)
 df["property_description"] = None
@@ -1125,7 +1145,7 @@ df["micro_market"] = None
 
 print(f"[step12] Applied Title Case and organized {len(final_columns)} schema columns (project_id purged, property_description & micro_market blank)")
 time.sleep(0.15)
-print(f"[STEP:12:DONE] Formatted {len(final_columns)} schema columns with internal_index_id at position 0")
+print(f"[STEP:12:DONE] Formatted {len(final_columns)} schema columns with index at position 0")
 
 # ============================== STEP 13: SAVE OUTPUT & UPLOAD TO GOOGLE DRIVE ==============================
 print("[STEP:13:START] Saving and uploading database-ready file (Excel) to Google Drive Processed Data folder...")
@@ -1163,6 +1183,9 @@ def derive_range_stem(raw_stem: str, data_df: Optional[pd.DataFrame] = None) -> 
 _output_stem = derive_range_stem(_raw_stem, df)
 
 staging_xlsx = os.path.join(STAGING_DIR, f"{_output_stem}_processed.xlsx")
+
+# Final verification: guarantee index strictly follows 'Nr' capital casing in processed file
+df["index"] = df["index"].map(clean_nr_index)
 
 # Save Excel to temp staging
 try:
@@ -1206,6 +1229,6 @@ print(f"   • Final Processed Excel File       : {os.path.basename(staging_xlsx
 if xlsx_drive_id:
     print(f"   • Processed Excel File Drive ID    : {xlsx_drive_id}")
 print(f"   • Total Records Processed          : {len(df):,}")
-print(f"   • Total with internal_index_id     : {df['internal_index_id'].notna().sum():,}")
+print(f"   • Total with index                 : {df['index'].notna().sum():,}")
 print(f"   • Private Records Processed        : {(df['project_name'].str.lower() == 'private').sum():,}")
 print("=" * 75)

@@ -55,6 +55,91 @@ def resolve_drive_directory(drive_target: str = None) -> str | None:
     return None
 
 
+PARQUET_BASE_DIR = r"G:\.shortcut-targets-by-id\1oGd6xPdp686p0qW-tzZyy5quOpi82hLA\DB1+DB2\converted_feather_parquet"
+
+
+def resolve_city_parquet_path(city_id=None, city_key=None, target_city_name=None, base_dir=None):
+    """
+    Resolves the exact city directory and target parquet filename under converted_feather_parquet.
+    Ensures existing folders on Google Drive (such as 'Abu_Dhabi', 'Medchal_Malkajgiri', etc.)
+    are matched exactly without creating duplicate or stray folders (e.g. 'Abu Dhabi').
+    """
+    if not base_dir:
+        base_dir = PARQUET_BASE_DIR
+    if not os.path.exists(base_dir):
+        # Fallback to local workspace directory
+        base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "converted_feather_parquet")
+
+    cid = None
+    if city_id is not None:
+        try:
+            cid = int(city_id)
+        except (ValueError, TypeError):
+            pass
+
+    ckey = (str(city_key).strip().lower() if city_key else "")
+    cname = (str(target_city_name).strip() if target_city_name else "")
+
+    # Specific canonical mappings
+    if cid == 1 or ckey in ["abu_dhabi", "abudhabi", "abu dhabi"] or "abu dhabi" in cname.lower() or "abu_dhabi" in cname.lower():
+        folder_name = "Abu_Dhabi"
+        file_name = "Abu_Dhabi_DB1.parquet"
+    elif cid == 15 or ckey == "dubai" or "dubai" in cname.lower():
+        folder_name = "Dubai"
+        file_name = "Dubai_db1.parquet"
+    elif cid == 8 or ckey == "mumbai" or "mumbai" in cname.lower():
+        folder_name = "Mumbai"
+        file_name = "Mumbai_db1.parquet"
+    elif cid == 9 or ckey == "pune" or "pune" in cname.lower():
+        folder_name = "Pune"
+        file_name = "Pune_db1.parquet"
+    elif cid == 12 or ckey == "thane" or "thane" in cname.lower():
+        folder_name = "Thane"
+        file_name = "Thane_db1.parquet"
+    elif cid == 6 or ckey == "hyderabad" or "hyderabad" in cname.lower():
+        folder_name = "Hyderabad"
+        file_name = "Hyderabad_DB1.parquet"
+    elif cid == 7 or ckey in ["medchal_malkajgiri", "medchal malkajgiri"] or "medchal" in cname.lower():
+        folder_name = "Medchal_Malkajgiri"
+        file_name = "Medchal_Malkajgiri_DB1.parquet"
+    elif cid == 10 or ckey == "rangareddy" or "rangareddy" in cname.lower():
+        folder_name = "Rangareddy"
+        file_name = "Rangareddy_DB1.parquet"
+    elif cid == 11 or ckey == "sangareddy" or "sangareddy" in cname.lower():
+        folder_name = "Sangareddy"
+        file_name = "Sangareddy_DB1.parquet"
+    elif cid == 13 or ckey in ["yadadri_bhuvanagiri", "yadadri bhuvanagiri"] or "yadadri" in cname.lower():
+        folder_name = "Yadadri_Bhuvanagiri"
+        file_name = "Yadadri_Bhuvanagiri_DB1.parquet"
+    elif cid == 3 or ckey in ["banglore", "bangalore"] or "bangal" in cname.lower() or "bangl" in cname.lower():
+        folder_name = "Banglore"
+        file_name = "Bangalore_DB1.parquet"
+    else:
+        folder_name = cname.strip().title() if cname else "Pune"
+        file_name = f"{folder_name}_db1.parquet"
+
+    # Dynamic disk matching: check if an existing folder exists under base_dir (case-insensitive, space/underscore insensitive)
+    if os.path.exists(base_dir):
+        norm_target = folder_name.lower().replace(" ", "_").replace("-", "_")
+        for item in os.listdir(base_dir):
+            item_path = os.path.join(base_dir, item)
+            if os.path.isdir(item_path):
+                norm_item = item.lower().replace(" ", "_").replace("-", "_")
+                if norm_item == norm_target:
+                    folder_name = item
+                    # Check if an existing DB1 parquet file exists inside this folder
+                    for f in os.listdir(item_path):
+                        f_lower = f.lower()
+                        if f_lower.endswith(".parquet") and ("_db1." in f_lower or f_lower.startswith("db1")):
+                            file_name = f
+                            break
+                    break
+
+    city_parquet_dir = os.path.join(base_dir, folder_name)
+    parquet_target = os.path.join(city_parquet_dir, file_name)
+    return city_parquet_dir, parquet_target
+
+
 CITY_CONFIG = {
     "pune": {
         "city_id": 9,

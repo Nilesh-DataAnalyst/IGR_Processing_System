@@ -85,13 +85,49 @@ def normalize_locations(loc_input) -> list[str]:
 def resolve_canonical_locations(conn, city_id: int, locations: list[str]) -> list[str]:
     """
     Resolves location names to match dim_location or transactions in PostgreSQL.
-    Handles common spelling variations (e.g. 'Goregoan' -> 'Goregaon', trailing whitespace, etc.).
+    Handles common spelling variations (e.g. 'Mohmadwadi' -> 'Mohammadwadi', 'Goregoan' -> 'Goregaon').
     """
     if not locations:
         return []
     resolved = []
+    
+    # Common location aliases (e.g. Google Drive folder names vs official DB table names)
+    LOCATION_ALIASES = {
+        "mohmadwadi": "Mohammadwadi",
+        "mohamadwadi": "Mohammadwadi",
+        "mohammad wadi": "Mohammadwadi",
+        "mohammed wadi": "Mohammadwadi",
+        "mohammedwadi": "Mohammadwadi",
+        "kondhwa khurd": "Wanwadi_Kondhwa_Khurd",
+    }
+
     with conn.cursor() as cur:
         for loc in locations:
+            clean_loc = str(loc).strip()
+            loc_lower = clean_loc.lower()
+
+            # 0. Check predefined aliases
+            if loc_lower in LOCATION_ALIASES:
+                target_alias = LOCATION_ALIASES[loc_lower]
+                cur.execute(
+                    "SELECT location_name FROM public.dim_location WHERE city_id = %s AND lower(trim(location_name)) = lower(trim(%s)) LIMIT 1;",
+                    (city_id, target_alias),
+                )
+                r_alias = cur.fetchone()
+                if r_alias and r_alias[0]:
+                    resolved.append(r_alias[0])
+                    continue
+                cur.execute(
+                    "SELECT location_name FROM public.transactions WHERE city_id = %s AND lower(trim(location_name)) = lower(trim(%s)) LIMIT 1;",
+                    (city_id, target_alias),
+                )
+                r_alias = cur.fetchone()
+                if r_alias and r_alias[0]:
+                    resolved.append(r_alias[0])
+                    continue
+                resolved.append(target_alias)
+                continue
+
             # 1. Exact match in dim_location
             cur.execute(
                 "SELECT location_name FROM public.dim_location WHERE city_id = %s AND lower(trim(location_name)) = lower(trim(%s)) LIMIT 1;",
@@ -297,6 +333,18 @@ def compute_outliers(df: pd.DataFrame, save_merged_path: str | None = None, log_
             df.to_csv(save_merged_path, index=False)
         else:
             df.to_excel(save_merged_path, index=False)
+
+        # Mirror file to root 'outlier_implementaion' folder if it exists
+        try:
+            import shutil
+            p_dir = os.path.dirname(os.path.abspath(save_merged_path))
+            root_dir = os.path.dirname(os.path.dirname(p_dir)) if "processing" in p_dir.lower() else os.path.dirname(p_dir)
+            root_outlier = os.path.join(root_dir, "outlier_implementaion")
+            if os.path.exists(root_outlier) and os.path.abspath(p_dir) != os.path.abspath(root_outlier):
+                shutil.copy2(save_merged_path, os.path.join(root_outlier, os.path.basename(save_merged_path)))
+        except Exception:
+            pass
+
         msg = f"Saved merged outlier analysis to: {save_merged_path}"
         print(msg)
         if log_fn:

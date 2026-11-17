@@ -30,20 +30,23 @@ top to bottom in a single pass:
           e.g. "__dubai", "__pune") and rename it to 'index'
       10. Save final .csv (df_final)
 
-    PART 2 — Assign nr-style indexes to any rows still missing an index
-      0. Starting number + DB mapping (scoped to CITY_ID)
-      1. Show indexes containing numbers
-      2. Clean blanks; normalize any existing nr values already in df
-      3. Existing project + location + city -> index mapping (from df itself)
-      4. Existing indexes for collision checking
-      5. Fill only null indexes (reuse from this run, reuse from DB, or assign new nr)
-         Rows with a blank project_name / location_name / city_name are
-         skipped here too -- there's no valid key to assign an index against,
-         so those rows end the run with a null index by design.
+    PART 2 — Assign Non-RERA (NR) index & Coordinates from DB Transactions, then Highest NR
+      0. Interactive input file selection (choose from available scraped CSV files or custom path)
+      1. Calculate starting NR sequence number (MAX(nr) from public.transactions + 1)
+      2. DB lookup from public.transactions for (location, project, city) -> internal_index_id & coordinates
+      3. Existing project + location + city -> index and coordinates mapping (from df itself)
+      4. Assign NR index:
+         - Reuse matching index from current file
+         - Reuse matching index from DB transactions lookup (project + location match)
+         - If unmatched, assign sequential new index after highest NR (nr{next_num})
+      5. Get project coordinates:
+         - Populate project_latitude and project_longitude from matching transactions records
+         - Unify in-file project coordinates across same project + location
       6. Convert numeric indexes: 1001.0 -> 1001, keep nrXXXX unchanged
-      6b. Final safety pass: strip any lingering suffix on nr-style values
+      6b. Final safety pass: blank index/coordinates if project_name is blank
       7. Verification / logging
-      8. Save to CSV (with nr indexes)
+      8. Location coordinate fallback (STEP C) & Google Places Geocoding (STEP D)
+      9. Save to processed Excel (.xlsx)
 
 Run top to bottom as a script. All configurable paths/values are in the
 CONFIG section below.
@@ -153,73 +156,106 @@ def resolve_dubai_drive_paths(folder_id: str = PARENT_FOLDER_ID):
     return input_dir, output_dir
 
 
-def get_latest_csv_file(directory: str) -> str:
+def get_available_csv_files(input_dir: str) -> list[str]:
     """
-    Finds the last updated (newest by modification time) CSV file in the given directory.
+    Scans both the Google Drive input directory and the local 'downloads'
+    fallback directory for available CSV files, sorted newest first.
     """
-    if not os.path.exists(directory):
-        raise FileNotFoundError(f"Input directory does not exist: {directory}")
+    search_dirs = []
+    if input_dir and os.path.exists(input_dir):
+        search_dirs.append(input_dir)
 
-    csv_files = [
-        os.path.join(directory, f)
-        for f in os.listdir(directory)
-        if f.lower().endswith(".csv")
-        and not f.startswith(".")
-        and not f.endswith(".tmp")
-        and not f.endswith(".crdownload")
-        and f.lower() != "desktop.ini"
-    ]
+    local_dl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+    if os.path.exists(local_dl) and local_dl not in search_dirs:
+        search_dirs.append(local_dl)
 
-    if not csv_files:
-        raise FileNotFoundError(f"No valid CSV files found in '{directory}'.")
+    seen_files = set()
+    csv_files = []
+    for d in search_dirs:
+        try:
+            for f in os.listdir(d):
+                if (
+                    f.lower().endswith(".csv")
+                    and not f.startswith(".")
+                    and not f.endswith(".tmp")
+                    and not f.endswith(".crdownload")
+                    and f.lower() != "desktop.ini"
+                ):
+                    full_p = os.path.join(d, f)
+                    if os.path.isfile(full_p) and f.lower() not in seen_files:
+                        seen_files.add(f.lower())
+                        csv_files.append(full_p)
+        except Exception:
+            pass
 
-    # Sort by modification time descending (latest updated file first)
     csv_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return csv_files[0]
+    return csv_files
 
 
-def confirm_or_choose_input_file(detected_file: str, directory: str) -> str:
+def select_input_file(input_dir: str, explicit_file: str = None) -> str:
     """
-    Confirms the detected latest input file with the user in the terminal,
-    or allows selecting another CSV from the directory or providing a custom path.
+    Provides an interactive menu for the user to choose which scraped CSV file to process,
+    with the newest scraped file as default. Supports custom file path entry and non-interactive flags.
     """
-    filename = os.path.basename(detected_file)
-    print("\n" + "=" * 75)
-    print(f"📄 DETECTED LATEST INPUT FILE:")
-    print(f"   • File Name : {filename}")
-    print(f"   • Full Path : {detected_file}")
-    print("=" * 75)
+    all_csvs = get_available_csv_files(input_dir)
 
-    # Automatically confirm without prompting if run non-interactively or with flag
+    if explicit_file:
+        if str(explicit_file).lower().endswith(".gsheet"):
+            stem = os.path.splitext(os.path.basename(explicit_file))[0]
+            stem = re.sub(r"\s*\(\d+\)$", "", stem)
+            matched_real = None
+            for f in all_csvs:
+                if stem.lower() in os.path.basename(f).lower():
+                    matched_real = f
+                    break
+            if matched_real:
+                print(f"\n⚠️ Notice: '{os.path.basename(explicit_file)}' is a Google Sheet cloud shortcut.")
+                print(f"✔ Automatically redirected to actual CSV data file: {os.path.basename(matched_real)}")
+                print(f"   Full Path: {matched_real}\n")
+                return matched_real
+            raise ValueError(f"'{os.path.basename(explicit_file)}' is a Google Sheet cloud pointer (*.gsheet). Please select a valid CSV (*.csv) or Excel (*.xlsx) file.")
+
+        if os.path.isfile(explicit_file):
+            print(f"\n✔ Using explicitly specified input file: {os.path.basename(explicit_file)}")
+            print(f"   Full Path: {explicit_file}\n")
+            return explicit_file
+        for f in all_csvs:
+            if os.path.basename(f).lower() == os.path.basename(explicit_file).lower() or os.path.basename(f).lower() == explicit_file.strip().lower():
+                print(f"\n✔ Matched explicitly specified input file: {os.path.basename(f)}")
+                print(f"   Full Path: {f}\n")
+                return f
+    if not all_csvs:
+        raise FileNotFoundError(f"No valid CSV files found in '{input_dir}' or local downloads.")
+
+    latest_file = all_csvs[0]
+
+    # Non-interactive / headless auto-confirm
     if "--auto-confirm" in sys.argv or "--non-interactive" in sys.argv or not sys.stdin.isatty():
-        print(f"   ✔ Automatically confirmed input file: {filename}\n")
-        return detected_file
+        print("\n" + "=" * 75)
+        print(f"📄 AUTO-CONFIRMED LATEST INPUT FILE:")
+        print(f"   • File Name : {os.path.basename(latest_file)}")
+        print(f"   • Full Path : {latest_file}")
+        print("=" * 75 + "\n")
+        return latest_file
 
-    choice = input("👉 Is this input file correct? (Y/n) [Default: Y]: ").strip().lower()
-    if choice in ["", "y", "yes"]:
-        print(f"   ✔ Using confirmed input file: {filename}\n")
-        return detected_file
-
-    # List all available CSV files in the input folder
-    all_csvs = [
-        os.path.join(directory, f)
-        for f in os.listdir(directory)
-        if f.lower().endswith(".csv")
-        and not f.startswith(".")
-        and not f.endswith(".tmp")
-        and not f.endswith(".crdownload")
-        and f.lower() != "desktop.ini"
-    ]
-    all_csvs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-
-    print("\n📋 Available CSV files in '1. Download Files(Row)':")
+    # Interactive Menu
+    print("\n" + "=" * 75)
+    print("📋 AVAILABLE DUBAI SCRAPED CSV FILES:")
+    print("=" * 75)
     for idx, filepath in enumerate(all_csvs, 1):
         mtime_str = datetime.fromtimestamp(os.path.getmtime(filepath)).strftime("%d/%m/%Y %H:%M")
-        print(f"   [{idx}] {os.path.basename(filepath)}  (Modified: {mtime_str})")
+        size_mb = os.path.getsize(filepath) / (1024 * 1024)
+        tag = "  [Latest Scraped]" if idx == 1 else ""
+        print(f"   [{idx}] {os.path.basename(filepath)}  (Modified: {mtime_str}, {size_mb:.1f} MB){tag}")
     print(f"   [0] Enter a custom file path")
+    print("=" * 75)
 
     while True:
-        sel = input(f"\n👉 Select file number [1-{len(all_csvs)}] or [0]: ").strip()
+        sel = input(f"\n👉 Select file number to process [1-{len(all_csvs)}] or [0] [Default: 1]: ").strip()
+        if not sel or sel == "1":
+            chosen = all_csvs[0]
+            print(f"   ✔ Selected input file: {os.path.basename(chosen)}\n")
+            return chosen
         if sel.isdigit():
             val = int(sel)
             if 1 <= val <= len(all_csvs):
@@ -237,7 +273,7 @@ def confirm_or_choose_input_file(detected_file: str, directory: str) -> str:
             print(f"   ✔ Selected custom input file: {os.path.basename(clean_sel)}\n")
             return clean_sel
         else:
-            print("   ❌ Invalid selection! Please enter a valid number or path.")
+            print(f"   ❌ Invalid selection! Please enter 1 to {len(all_csvs)}, 0, or press Enter for default.")
 
 
 # Resolve paths automatically from Google Drive
@@ -248,9 +284,8 @@ for _idx, _arg in enumerate(sys.argv):
         if os.path.exists(sys.argv[_idx + 1]):
             _detected_csv = sys.argv[_idx + 1]
             break
-if not _detected_csv:
-    _detected_csv = get_latest_csv_file(INPUT_DIR)
-RAW_CSV_PATH = confirm_or_choose_input_file(_detected_csv, INPUT_DIR)
+
+RAW_CSV_PATH = select_input_file(INPUT_DIR, _detected_csv)
 
 # Generate output paths: same filename as input, with '_processed.xlsx' and '_test_merge.xlsx'
 _raw_basename = os.path.basename(RAW_CSV_PATH)
@@ -425,14 +460,18 @@ def strip_any_suffix(x):
 
 def strip_nr_suffix(x):
     if pd.isna(x): return x
-    x = str(x).strip(); m = re.match(r"(?i)^nr(\d+)", x)
-    return f"nr{m.group(1)}" if m else x
+    x = str(x).strip()
+    m = re.match(r"(?i)^nr[\s_-]*(\d+)", x)
+    return f"Nr{m.group(1)}" if m else x
 
 def clean_index(x):
     if pd.isna(x): return None
     x = str(x).strip()
     x = re.sub(r"__.*$", "", x)
     x = re.sub(r"_dubai$", "", x, flags=re.IGNORECASE)
+    m = re.match(r"(?i)^nr[\s_-]*(\d+)", x)
+    if m:
+        return f"Nr{m.group(1)}"
     try:
         n = float(x); return int(n) if n.is_integer() else x
     except ValueError:
@@ -520,65 +559,156 @@ max_nr = get_max_nr_number(db_params, CITY_ID)
 next_num = max_nr + 1
 print(f"[stepB] DB max = nr{max_nr}, new index starts = nr{next_num}")
 
-# ============================== STEP B: DB PROJECT+LOCATION MAP ==============================
+# ============================== STEP B: DB TRANSACTIONS PROJECT+LOCATION MAP (INDEX & COORDS) ==============================
 def get_db_mapping(params, city_id):
+    """
+    Fetches (lower(location), lower(project), lower(city)) -> internal_index_id
+    and coordinates (project_latitude, project_longitude) from public.transactions for the target city.
+    """
     with psycopg2.connect(**params) as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT lower(trim(location_name)), lower(trim(project_name)), lower(trim(city_name)), internal_index_id
+                SELECT lower(trim(location_name)), lower(trim(project_name)), lower(trim(city_name)), 
+                       internal_index_id, project_latitude, project_longitude
                 FROM public.transactions
-                WHERE city_id = %s AND internal_index_id IS NOT NULL
-                  AND project_name IS NOT NULL AND location_name IS NOT NULL AND city_name IS NOT NULL;
+                WHERE city_id = %s
+                  AND project_name IS NOT NULL AND location_name IS NOT NULL AND city_name IS NOT NULL
+                  AND (internal_index_id IS NOT NULL OR project_latitude IS NOT NULL);
             """, (city_id,))
             rows = cur.fetchall()
-    out = {}
-    for location, project, city, idx in rows:
-        out.setdefault((location, project, city), clean_index(idx))
-    return out
 
-db_mapping = get_db_mapping(db_params, CITY_ID)
-print(f"[stepB] DB mappings loaded: {len(db_mapping)}")
+    index_map = {}
+    coords_map = {}
+    for location, project, city, idx, lat, lon in rows:
+        key = make_key(location, project, city)
+        if idx is not None and key not in index_map:
+            c_idx = clean_index(idx)
+            if c_idx is not None:
+                index_map[key] = c_idx
+        if key not in coords_map:
+            try:
+                plat = None if (lat is None or pd.isna(lat)) else float(lat)
+                plon = None if (lon is None or pd.isna(lon)) else float(lon)
+                if plat is not None and plon is not None:
+                    coords_map[key] = (plat, plon)
+            except (ValueError, TypeError):
+                pass
+    return index_map, coords_map
+
+db_index_mapping, db_coords_mapping = get_db_mapping(db_params, CITY_ID)
+print(f"[stepB] DB mappings loaded: {len(db_index_mapping)} index mappings, {len(db_coords_mapping)} coordinate pairs")
 
 # ============================== CLEAN BLANKS ==============================
 cols = ["index", "project_name", "location_name", "city_name"]
 df[cols] = df[cols].replace(r"^\s*$", np.nan, regex=True)
 df["index"] = df["index"].astype("string").map(strip_nr_suffix)
+df["project_latitude"] = pd.to_numeric(df["project_latitude"], errors="coerce")
+df["project_longitude"] = pd.to_numeric(df["project_longitude"], errors="coerce")
 
 # ============================== CURRENT FILE MAP ==============================
-file_mapping = {}
-for _, row in df.dropna(subset=cols).iterrows():
-    file_mapping.setdefault(make_key(row["location_name"], row["project_name"], row["city_name"]), row["index"])
+file_index_mapping = {}
+file_coords_mapping = {}
+
+for _, row in df.dropna(subset=["location_name", "project_name", "city_name"]).iterrows():
+    key = make_key(row["location_name"], row["project_name"], row["city_name"])
+    if pd.notna(row.get("index")) and str(row["index"]).strip():
+        file_index_mapping.setdefault(key, clean_index(row["index"]))
+    plat_val = row.get("project_latitude")
+    plon_val = row.get("project_longitude")
+    if pd.notna(plat_val) and pd.notna(plon_val):
+        try:
+            plat, plon = float(plat_val), float(plon_val)
+            file_coords_mapping.setdefault(key, (plat, plon))
+        except (ValueError, TypeError):
+            pass
+
 existing_indexes = set(df["index"].dropna().astype("string").str.strip().str.lower())
 
-# ============================== ASSIGN INDEX ==============================
+# ============================== STEP 2: ASSIGN INDEX FROM TRANSACTIONS & HIGHEST NR ==============================
 new_count = 0
+reused_from_file = 0
+reused_from_db = 0
+
 for i in df.index[df["index"].isna()]:
-    project, location, city = df.at[i,"project_name"], df.at[i,"location_name"], df.at[i,"city_name"]
+    project, location, city = df.at[i, "project_name"], df.at[i, "location_name"], df.at[i, "city_name"]
     if pd.isna(project) or pd.isna(location) or pd.isna(city):
         continue
     key = make_key(location, project, city)
-    if key in file_mapping:
-        df.at[i,"index"] = file_mapping[key]
-    elif key in db_mapping:
-        idx = db_mapping[key]
-        df.at[i,"index"] = idx; file_mapping[key] = idx; existing_indexes.add(str(idx).strip().lower())
-    else:
-        while f"nr{next_num}" in existing_indexes:
-            next_num += 1
-        new_index = f"nr{next_num}"
-        df.at[i,"index"] = new_index
-        file_mapping[key] = db_mapping[key] = new_index
-        existing_indexes.add(new_index)
-        next_num += 1; new_count += 1
 
-# ============================== FINAL INDEX CLEANING ==============================
+    # 1. Match from current file
+    if key in file_index_mapping:
+        df.at[i, "index"] = file_index_mapping[key]
+        reused_from_file += 1
+    # 2. Match from transactions table lookup (project + location match)
+    elif key in db_index_mapping:
+        idx = db_index_mapping[key]
+        df.at[i, "index"] = idx
+        file_index_mapping[key] = idx
+        existing_indexes.add(str(idx).strip().lower())
+        reused_from_db += 1
+    # 3. Then assign index after highest nr
+    else:
+        while f"Nr{next_num}" in existing_indexes or f"nr{next_num}" in existing_indexes:
+            next_num += 1
+        new_index = f"Nr{next_num}"
+        df.at[i, "index"] = new_index
+        file_index_mapping[key] = db_index_mapping[key] = new_index
+        existing_indexes.add(new_index)
+        next_num += 1
+        new_count += 1
+
+# ============================== STEP 2 (cont): GET CO-ORDINATES FOR MATCH RECORDS ==============================
+coords_filled_from_db = 0
+coords_filled_from_file = 0
+
+for i in df.index:
+    project, location, city = df.at[i, "project_name"], df.at[i, "location_name"], df.at[i, "city_name"]
+    if pd.isna(project) or pd.isna(location) or pd.isna(city):
+        continue
+    key = make_key(location, project, city)
+
+    lat_blank = pd.isna(df.at[i, "project_latitude"])
+    lon_blank = pd.isna(df.at[i, "project_longitude"])
+
+    if lat_blank or lon_blank:
+        # Check coordinates from transaction table lookup (project + location match)
+        if key in db_coords_mapping:
+            db_lat, db_lon = db_coords_mapping[key]
+            if lat_blank and db_lat is not None:
+                df.at[i, "project_latitude"] = db_lat
+            if lon_blank and db_lon is not None:
+                df.at[i, "project_longitude"] = db_lon
+            coords_filled_from_db += 1
+            file_coords_mapping.setdefault(key, (db_lat, db_lon))
+        # Check in-file coordinates (unify coordinates across same project+location in file)
+        elif key in file_coords_mapping:
+            f_lat, f_lon = file_coords_mapping[key]
+            if lat_blank and f_lat is not None:
+                df.at[i, "project_latitude"] = f_lat
+            if lon_blank and f_lon is not None:
+                df.at[i, "project_longitude"] = f_lon
+            coords_filled_from_file += 1
+
+# ============================== FINAL INDEX CLEANING & SAFETY ==============================
 df["index"] = df["index"].astype(object).map(clean_index)
 df["index"] = df["index"].map(lambda x: strip_nr_suffix(x) if isinstance(x, str) else x)
-print(f"[stepB] new nr assigned: {new_count}")
-if new_count: print(f"[stepB] highest new nr: nr{next_num-1}")
+
+blank_project = is_blank(df["project_name"])
+df.loc[blank_project, ["index", "project_latitude", "project_longitude"]] = pd.NA
+
+print(f"[stepB] Index reused from file: {reused_from_file}")
+print(f"[stepB] Index matched & reused from DB transactions: {reused_from_db}")
+print(f"[stepB] Brand new NR assigned: {new_count}")
+if new_count:
+    print(f"[stepB] Sequence start: nr{max_nr + 1} -> Highest new NR: nr{next_num - 1}")
+print(f"[stepB] Project coords filled from DB transactions: {coords_filled_from_db}")
+print(f"[stepB] Project coords unified across in-file rows: {coords_filled_from_file}")
 print("[stepB] remaining null index:", df["index"].isna().sum())
+print("[stepB] remaining blank project_latitude:", df["project_latitude"].isna().sum())
+print("[stepB] remaining blank project_longitude:", df["project_longitude"].isna().sum())
 nr_numbers = df["index"].astype("string").str.extract(r"(?i)^nr(\d+)$")[0].dropna().astype(int)
-if not nr_numbers.empty: print("[stepB] highest nr in final file:", f"nr{nr_numbers.max()}")
+if not nr_numbers.empty:
+    print("[stepB] highest nr in final file:", f"nr{nr_numbers.max()}")
 
 # ============================== STEP C: LOCATION COORD FALLBACK ==============================
 engine = create_engine(

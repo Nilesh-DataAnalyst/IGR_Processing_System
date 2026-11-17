@@ -23,6 +23,49 @@ CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(CURR_DIR)
 sys.path.insert(0, CURR_DIR)
 
+# ============================================================
+# SAFE STREAM WRAPPER (Prevents ValueError on closed stdout/stderr)
+# ============================================================
+class SafeStream:
+    def __init__(self, target):
+        self.target = target
+
+    def write(self, s):
+        try:
+            if self.target and not getattr(self.target, 'closed', False):
+                return self.target.write(s)
+        except (ValueError, OSError):
+            pass
+        return len(s)
+
+    def flush(self):
+        try:
+            if self.target and not getattr(self.target, 'closed', False):
+                self.target.flush()
+        except (ValueError, OSError):
+            pass
+
+    def isatty(self):
+        try:
+            if self.target and not getattr(self.target, 'closed', False):
+                return getattr(self.target, 'isatty', lambda: False)()
+        except (ValueError, OSError):
+            pass
+        return False
+
+    def fileno(self):
+        try:
+            if self.target and not getattr(self.target, 'closed', False):
+                return self.target.fileno()
+        except (ValueError, OSError, AttributeError):
+            raise OSError('Stream has no valid fileno')
+
+    def __getattr__(self, name):
+        return getattr(self.target, name)
+
+sys.stdout = SafeStream(sys.stdout)
+sys.stderr = SafeStream(sys.stderr)
+
 import pipeline_core as core
 from city_config import CITY_CONFIG, get_city_config, extract_folder_id, get_manual_correction_drive_url, LOCATION_DRIVE_CONFIG, render_correction_email_html, get_google_drive_file_url, get_clean_drive_path, send_final_checker_email
 from DictToColumn import process_dict_to_column
@@ -931,6 +974,114 @@ def normalize_date_to_iso(date_str: str) -> str:
     return s
 
 
+def get_dubai_drive_files() -> list:
+    """
+    Fetches the list of raw files available for Dubai processing.
+    Directly mirrors the Google Drive '1. Download Files(Row)' folder.
+    When Google Drive folder is present, it ONLY returns files actually on Google Drive.
+    Never auto-copies or resurrects deleted files from local downloads.
+    """
+    files_list = []
+    seen_names = set()
+
+    # 1. Search Google Drive Desktop paths
+    g_candidates = [
+        os.path.join(r"G:\.shortcut-targets-by-id", "1CyL3ecimjHLcpUv2AfP8d6fJXNbOcVVE", "1. Download Files(Row)"),
+        os.path.join(r"G:\.shortcut-targets-by-id", "1CyL3ecimjHLcpUv2AfP8d6fJXNbOcVVE"),
+        os.path.join(r"G:\.shortcut-targets-by-id", "1q-rgFMUS5gyZq9ngoIozgzDwb-cSguim", "1. Download Files(Row)"),
+    ]
+    parent_shortcut = os.path.join(r"G:\.shortcut-targets-by-id", "1q-rgFMUS5gyZq9ngoIozgzDwb-cSguim")
+    if os.path.exists(parent_shortcut):
+        try:
+            for sub in os.listdir(parent_shortcut):
+                sub_path = os.path.join(parent_shortcut, sub)
+                if os.path.isdir(sub_path) and "download" in sub.lower():
+                    g_candidates.insert(0, sub_path)
+        except Exception:
+            pass
+
+    drive_folder_found = None
+    for folder in g_candidates:
+        if os.path.exists(folder) and os.path.isdir(folder):
+            drive_folder_found = folder
+            try:
+                real_files = set()
+                all_items = os.listdir(folder)
+                # 1. Collect actual CSV / Excel files
+                for fname in all_items:
+                    if (
+                        fname.lower().endswith((".csv", ".xlsx"))
+                        and not fname.lower().endswith(".gsheet")
+                        and not fname.startswith(".")
+                        and fname.lower() != "desktop.ini"
+                    ):
+                        real_files.add(fname.lower())
+                        fpath = os.path.join(folder, fname)
+                        if os.path.isfile(fpath) and fname not in seen_names:
+                            mtime = os.path.getmtime(fpath)
+                            sz = os.path.getsize(fpath)
+                            files_list.append({
+                                "id": fpath,
+                                "name": fname,
+                                "size": sz,
+                                "modified": datetime.fromtimestamp(mtime).isoformat(),
+                                "link": "https://drive.google.com/drive/folders/1CyL3ecimjHLcpUv2AfP8d6fJXNbOcVVE?usp=drive_link",
+                                "source": "Google Drive (1. Download Files(Row))"
+                            })
+                            seen_names.add(fname)
+
+                # 2. Check for Google Sheets cloud pointer files (.gsheet)
+                for fname in all_items:
+                    if fname.lower().endswith(".gsheet") and not fname.startswith("."):
+                        base_display = fname[:-7]
+                        if not base_display.lower().endswith((".csv", ".xlsx")):
+                            base_display += ".csv"
+                        if base_display.lower() not in real_files and base_display not in seen_names:
+                            fpath = os.path.join(folder, fname)
+                            local_candidate = os.path.join(CURR_DIR, "Dubai_processing", "downloads", base_display)
+                            target_id = local_candidate if os.path.isfile(local_candidate) else fpath
+                            mtime = os.path.getmtime(fpath)
+                            sz = os.path.getsize(local_candidate) if os.path.isfile(local_candidate) else os.path.getsize(fpath)
+                            files_list.append({
+                                "id": target_id,
+                                "name": base_display,
+                                "size": sz,
+                                "modified": datetime.fromtimestamp(mtime).isoformat(),
+                                "link": "https://drive.google.com/drive/folders/1CyL3ecimjHLcpUv2AfP8d6fJXNbOcVVE?usp=drive_link",
+                                "source": "Google Drive (1. Download Files(Row))"
+                            })
+                            seen_names.add(base_display)
+            except Exception:
+                pass
+            break
+
+    # 2. Only fall back to local downloads if Google Drive folder was NOT found at all
+    if not drive_folder_found:
+        local_dl = os.path.join(CURR_DIR, "Dubai_processing", "downloads")
+        if os.path.exists(local_dl):
+            try:
+                for fname in os.listdir(local_dl):
+                    if fname.lower().endswith((".csv", ".xlsx")) and not fname.startswith("."):
+                        fpath = os.path.join(local_dl, fname)
+                        if os.path.isfile(fpath) and fname not in seen_names:
+                            mtime = os.path.getmtime(fpath)
+                            sz = os.path.getsize(fpath)
+                            files_list.append({
+                                "id": fpath,
+                                "name": fname,
+                                "size": sz,
+                                "modified": datetime.fromtimestamp(mtime).isoformat(),
+                                "link": "",
+                                "source": "Local (downloads)"
+                            })
+                            seen_names.add(fname)
+            except Exception:
+                pass
+
+    files_list.sort(key=lambda x: str(x.get("modified", "")), reverse=True)
+    return files_list
+
+
 def get_abu_dhabi_drive_files() -> list:
     """
     Fetches the list of files stored in the Abu Dhabi Google Drive 1.Raw folder (1PsPVRqvhnJJSBPpyu6FvNgrblVTRMcSB).
@@ -1151,7 +1302,7 @@ def run_abu_dhabi_pipeline(params):
         {
             "id": 11,
             "name": "PostgreSQL NR Index Assignment",
-            "desc": "Assigns Non-RERA index (internal_index_id) sequentially starting from nr468 for all projects [project_name + location_name].",
+            "desc": "Assigns Non-RERA index (index) sequentially starting from nr468 for all projects [project_name + location_name].",
             "status": "pending",
             "detail": "Waiting...",
             "duration": "-"
@@ -1159,7 +1310,7 @@ def run_abu_dhabi_pipeline(params):
         {
             "id": 12,
             "name": "DB Schema Column Alignment",
-            "desc": "Filters and orders columns strictly to Abu Dhabi schema with internal_index_id, Title Case, and project_id purged.",
+            "desc": "Filters and orders columns strictly to Abu Dhabi schema with index as primary field, Title Case, and project_id purged.",
             "status": "pending",
             "detail": "Waiting...",
             "duration": "-"
@@ -1491,12 +1642,12 @@ def run_pipeline_worker(params):
     mode_str = str(mode).strip()
 
     # Route Dubai to dedicated 2-step pipeline (unless Mode 3 Parquet, Mode 4 Upload, or Mode 5 Outlier)
-    if (city_id == 15 or city_key == "dubai") and mode_str not in ["3", "4", "5"]:
+    if (city_id == 15 or city_key == "dubai") and mode_str not in ["3", "4", "5", "6"]:
         run_dubai_pipeline(params)
         return
 
     # Route Abu Dhabi to dedicated workflow (unless Mode 3 Parquet, Mode 4 Upload, or Mode 5 Outlier)
-    if (city_id == 1 or city_key in ["abu_dhabi", "abudhabi", "abu dhabi"]) and mode_str not in ["3", "4", "5"]:
+    if (city_id == 1 or city_key in ["abu_dhabi", "abudhabi", "abu dhabi"]) and mode_str not in ["3", "4", "5", "6"]:
         run_abu_dhabi_pipeline(params)
         return
 
@@ -1547,14 +1698,41 @@ def run_pipeline_worker(params):
     df = None
 
     try:
-        if mode_str == "5":
+        if mode_str == "6":
+            # MODE 6: DATABASE INDEXING & PRODUCTION OPTIMIZATION
+            t0 = time.time()
+            with state_lock:
+                pipeline_state["current_step_id"] = 0
+                pipeline_state["current_step_name"] = "Database Indexing & Production Optimization"
+                pipeline_state["progress"] = 30
+
+            from Database_Indexing.db_indexer import ensure_production_indexes
+            add_log(f"Mode 6: ⚡ Starting Database Indexing on '{selected_db}'...", "info")
+
+            res = ensure_production_indexes(
+                db_params=core.get_db_params(selected_db),
+                log_fn=lambda msg, lvl: add_log(f"Mode 6: {msg}", lvl),
+                is_stopped_fn=lambda: pipeline_state.get("stop_requested", False),
+            )
+
+            dur = f"{time.time() - t0:.2f}s"
+            with state_lock:
+                pipeline_state["state"] = "completed" if res.get("status") == "success" else "warning"
+                pipeline_state["progress"] = 100
+                pipeline_state["current_step_name"] = "Database Indexing Completed!"
+                pipeline_state["output_file"] = f"Database '{selected_db}' Indexed"
+
+            add_log(f"Mode 6: 🎉 Database Indexing finished in {dur}! ({len(res.get('built', []))} built, {len(res.get('skipped', []))} valid)", "success")
+            return
+
+        elif mode_str == "5":
             # MODE 5: OUTLIER DETECTION & DATABASE UPDATE
             t0 = time.time()
             from outlier_update import main as run_outlier_main, normalize_locations
             outlier_loc = params.get("outlier_location") or params.get("location_name")
             norm_locs = normalize_locations(outlier_loc)
 
-            save_outlier_report = params.get("save_outlier_report", False)
+            save_outlier_report = params.get("save_outlier_report", True)
             save_path = None
             if save_outlier_report:
                 if norm_locs:
@@ -1666,38 +1844,21 @@ def run_pipeline_worker(params):
                 pipeline_state["progress"] = 50
 
             from parquet_conersion import convert_csv_to_parquet
+            from city_config import resolve_city_parquet_path
 
-            if city_id == 15 or city_key == "dubai":
-                p_city_name = "Dubai"
-            elif city_id == 1 or city_key in ["abu_dhabi", "abudhabi", "abu dhabi"]:
-                p_city_name = "Abu Dhabi"
-            else:
-                p_city_name = "Pune"
-                try:
-                    conn = psycopg2.connect(**core.DB_PARAMS)
-                    cur = conn.cursor()
-                    cur.execute("SELECT city_name FROM public.dim_city WHERE city_id = %s;", (city_id,))
-                    row = cur.fetchone()
-                    if row and row[0]:
-                        p_city_name = str(row[0]).strip().title()
-                    cur.close()
-                    conn.close()
-                except Exception:
-                    pass
-
-            parquet_base_dir = r"G:\.shortcut-targets-by-id\1oGd6xPdp686p0qW-tzZyy5quOpi82hLA\DB1+DB2\converted_feather_parquet"
-            if not os.path.exists(parquet_base_dir):
-                parquet_base_dir = os.path.join(CURR_DIR, "converted_feather_parquet")
-
-            city_parquet_dir = os.path.join(parquet_base_dir, p_city_name)
+            city_parquet_dir, parquet_target = resolve_city_parquet_path(
+                city_id=city_id,
+                city_key=city_key,
+                target_city_name=city_name,
+            )
             os.makedirs(city_parquet_dir, exist_ok=True)
-            parquet_target = os.path.join(city_parquet_dir, f"{p_city_name}_db1.parquet")
 
             add_log(f"Mode 3: Converting {final_file} -> {parquet_target} ...", "info")
             pq_res = convert_csv_to_parquet(
                 input_file=final_file,
                 output_file=parquet_target,
                 date_cols=["transaction_date", "date_of_agreement_execution"],
+                log_callback=lambda msg, lvl="info": add_log(msg, lvl),
             )
             dur = f"{time.time() - t0:.2f}s"
             row_count = pq_res.get('rows', 0)
@@ -2354,6 +2515,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "input_folder_name": "1. Download Files(Row)",
                 "output_folder_name": "2.Processed Files"
             })
+        elif url_path == "/api/dubai/files":
+            files = get_dubai_drive_files()
+            self.send_json({
+                "city_id": 15,
+                "city_name": "Dubai",
+                "folder_id": "1CyL3ecimjHLcpUv2AfP8d6fJXNbOcVVE",
+                "drive_url": "https://drive.google.com/drive/folders/1CyL3ecimjHLcpUv2AfP8d6fJXNbOcVVE?usp=drive_link",
+                "files": files
+            })
         elif url_path == "/api/abu-dhabi/config":
             last_d = None
             yesterday_d = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -2474,6 +2644,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         # Normalize folder spelling differences to match database naming
                         if "goan" in l_clean.lower():
                             l_clean = l_clean.replace("goan", "gaon").replace("Goan", "Gaon")
+                        # Normalize folder spelling differences (e.g. Mohmadwadi -> Mohammadwadi)
+                        alias_map = {
+                            "mohmadwadi": "Mohammadwadi",
+                            "mohamadwadi": "Mohammadwadi",
+                            "mohammad wadi": "Mohammadwadi",
+                            "mohammed wadi": "Mohammadwadi",
+                            "mohammedwadi": "Mohammadwadi",
+                        }
+                        if l_clean.lower() in alias_map:
+                            l_clean = alias_map[l_clean.lower()]
                         loc_names.add(l_clean)
 
             # Also check dedicated location drive configs for this city (e.g. Bandra in Mumbai)
@@ -2487,6 +2667,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "city_id": city_id,
                 "locations": sorted_locs
             })
+        elif url_path == "/api/indexing/status":
+            try:
+                from Database_Indexing.db_indexer import check_index_health
+                db_param = self.get_query_param("db") or pipeline_state.get("selected_db") or "nilesh"
+                health = check_index_health(db_params=core.get_db_params(db_param))
+                self.send_json(health)
+            except Exception as e:
+                self.send_json({"error": str(e)}, status=500)
+        elif url_path == "/api/indexing/benchmark":
+            try:
+                from Database_Indexing.db_indexer import verify_query_performance
+                db_param = self.get_query_param("db") or pipeline_state.get("selected_db") or "nilesh"
+                bench = verify_query_performance(db_params=core.get_db_params(db_param))
+                self.send_json(bench)
+            except Exception as e:
+                self.send_json({"error": str(e)}, status=500)
         elif url_path == "/email_template.html":
             self.serve_file(os.path.join(WEB_DIR, "email_template.html"), "text/html")
         else:
@@ -2689,7 +2885,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             city_id = data.get("city_id") or pipeline_state.get("city_id", 9)
             location_name = data.get("location_name")
-            save_report = data.get("save_outlier_report", False)
+            save_report = data.get("save_outlier_report", True)
 
             params = {
                 "mode": "5",
@@ -2697,6 +2893,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "outlier_location": location_name,
                 "save_outlier_report": save_report,
                 "database": data.get("database") or pipeline_state.get("selected_db") or "nilesh",
+            }
+            thread = threading.Thread(target=run_pipeline_worker, args=(params,), daemon=True)
+            thread.start()
+            self.send_json({"status": "started", "state": "running"})
+
+        elif self.path == "/api/run-indexing":
+            length = int(self.headers.get("content-length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+
+            if pipeline_state["state"] == "running":
+                self.send_json({"error": "A pipeline run is already in progress."}, status=409)
+                return
+
+            selected_db = data.get("database") or pipeline_state.get("selected_db") or "nilesh"
+            params = {
+                "mode": "6",
+                "database": selected_db,
             }
             thread = threading.Thread(target=run_pipeline_worker, args=(params,), daemon=True)
             thread.start()

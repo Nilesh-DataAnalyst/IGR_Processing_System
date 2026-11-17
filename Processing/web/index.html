@@ -165,6 +165,10 @@
                 <input type="radio" name="pipeline-mode" value="5" id="mode5-radio">
                 <span>Mode 5: Outlier Detection</span>
               </label>
+              <label class="mode-pill" id="mode6-label" style="flex: 1 1 180px; text-align: center; justify-content: center;">
+                <input type="radio" name="pipeline-mode" value="6" id="mode6-radio">
+                <span>Mode 6: Database Indexing</span>
+              </label>
             </div>
           </div>
 
@@ -264,16 +268,32 @@
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                   <span style="font-weight: 600; color: #e0f2fe; font-size: 0.9rem;">⚙️ Step 2: Processing
                     (dld_pipeline.py)</span>
-                  <label class="checkbox-pill" style="padding: 2px 8px; font-size: 0.75rem;">
-                    <input type="checkbox" id="dubai-run-processing" checked>
-                    <span>Enable</span>
-                  </label>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <button type="button" id="btn-refresh-dubai-files" title="Refresh files from 1. Download Files(Row) & local downloads"
+                      style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                      🔄 Refresh Files
+                    </button>
+                    <label class="checkbox-pill" style="padding: 2px 8px; font-size: 0.75rem;">
+                      <input type="checkbox" id="dubai-run-processing" checked>
+                      <span>Enable</span>
+                    </label>
+                  </div>
+                </div>
+                <div style="margin-bottom: 8px;">
+                  <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">Select Raw Scraped File to Process:</label>
+                  <select id="dubai-drive-file-select"
+                    style="padding: 8px 10px; font-size: 0.84rem; background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 4px; color: #fff; width: 100%;">
+                    <option value="">[Auto: latest file in 1. Download Files(Row)]</option>
+                  </select>
                 </div>
                 <div>
-                  <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">Raw CSV Input
-                    File:</label>
+                  <label style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; display: block;">Raw CSV Input File (or manual path):</label>
                   <input type="text" id="dubai-custom-csv" placeholder="[Auto: latest file in 1. Download Files(Row)]"
                     style="padding: 8px 10px; font-size: 0.84rem; background: rgba(30, 41, 59, 0.9); border: 1px solid #334155; border-radius: 4px; color: #fff; width: 100%;">
+                </div>
+                <div id="dubai-file-info-badge"
+                  style="margin-top: 6px; font-size: 0.74rem; color: #38bdf8; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
+                  <span id="dubai-file-info-text">Folder: 1. Download Files(Row)</span>
                 </div>
                 <div
                   style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; flex-wrap: wrap; gap: 6px;">
@@ -637,6 +657,67 @@
             </div>
           </div>
 
+          <!-- MODE 6 DATABASE INDEXING DEDICATED SECTION (Visible in Mode 6) -->
+          <div class="form-group full-width hidden" id="mode6-indexing-container"
+            style="background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(14, 165, 233, 0.25); border-radius: var(--radius-md); padding: 16px 18px;">
+            <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px;">
+              <div>
+                <h3 style="font-size: 0.96rem; font-weight: 600; color: #38bdf8; margin-bottom: 4px;">
+                  ⚡ Mode 6: Production Database Indexing &amp; Optimization
+                </h3>
+                <p style="font-size: 0.8rem; color: #94a3b8; line-height: 1.4;">
+                  Applies Land Identification &amp; Sales Velocity production runbook indexes (5s &rarr; 5ms speedup). Safe concurrent execution with zero downtime.
+                </p>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button type="button" id="btn-refresh-index-health" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;">
+                  🔄 Audit Status
+                </button>
+                <button type="button" id="btn-run-indexing-action" class="btn btn-primary" style="padding: 6px 16px; font-size: 0.8rem; background: #0284c7;">
+                  ⚡ Deploy Missing Indexes
+                </button>
+              </div>
+            </div>
+
+            <!-- Health Summary Stats -->
+            <div style="display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;">
+              <div style="background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 6px; padding: 6px 12px; font-size: 0.8rem;">
+                <span style="color: #94a3b8;">Active DB:</span> <strong style="color: #f8fafc;" id="idx-stat-db">-</strong>
+              </div>
+              <div style="background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 6px; padding: 6px 12px; font-size: 0.8rem;">
+                <span style="color: #94a3b8;">Est. Rows:</span> <strong style="color: #38bdf8;" id="idx-stat-rows">-</strong>
+              </div>
+              <div style="background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 6px; padding: 6px 12px; font-size: 0.8rem;">
+                <span style="color: #94a3b8;">Valid Indexes:</span> <strong style="color: #22c55e;" id="idx-stat-valid">-</strong>
+              </div>
+              <div style="background: rgba(30, 41, 59, 0.7); border: 1px solid #334155; border-radius: 6px; padding: 6px 12px; font-size: 0.8rem;">
+                <span style="color: #94a3b8;">Missing Indexes:</span> <strong style="color: #eab308;" id="idx-stat-missing">-</strong>
+              </div>
+            </div>
+
+            <!-- Index List Table -->
+            <div style="max-height: 260px; overflow-y: auto; border: 1px solid rgba(51, 65, 85, 0.7); border-radius: 6px;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 0.78rem; text-align: left;">
+                <thead>
+                  <tr style="background: rgba(30, 41, 59, 0.9); color: #94a3b8; border-bottom: 1px solid #334155;">
+                    <th style="padding: 7px 10px;">Index Name</th>
+                    <th style="padding: 7px 10px;">Feature</th>
+                    <th style="padding: 7px 10px;">Type</th>
+                    <th style="padding: 7px 10px;">Size</th>
+                    <th style="padding: 7px 10px;">Status</th>
+                  </tr>
+                </thead>
+                <tbody id="idx-table-body">
+                  <tr>
+                    <td colspan="5" style="padding: 10px; text-align: center; color: #64748b;">
+                      Click "Audit Status" to inspect indexes on the active database...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <!-- Output Path (Optional) -->
           <div class="form-group full-width" id="output-path-group">
             <label for="output-path">Final Output Save Path (.xlsx) <span class="badge-optional"
@@ -687,7 +768,7 @@
                 <!-- Option 3: Export Outlier Excel Report -->
                 <label class="adv-card">
                   <div class="adv-card-header">
-                    <input type="checkbox" id="save-outlier-report">
+                    <input type="checkbox" id="save-outlier-report" checked>
                     <span class="adv-card-title">📄 Save Outlier Excel Report</span>
                   </div>
                   <span class="adv-card-desc">Exports detailed spreadsheet (.xlsx) with detected outlier tags into
@@ -730,6 +811,10 @@
               <button type="button" id="btn-run-outlier-manual" class="btn-tool-pill"
                 title="Run outlier detection on database directly">
                 📊 Outlier Detector (Mode 5)
+              </button>
+              <button type="button" id="btn-run-indexing-manual" class="btn-tool-pill"
+                title="Audit & deploy Land Identification and Sales Velocity production indexes">
+                ⚡ Database Indexer (Mode 6)
               </button>
             </div>
           </div>

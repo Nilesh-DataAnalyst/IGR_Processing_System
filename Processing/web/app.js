@@ -256,7 +256,7 @@ const ABU_DHABI_STEPS = [
   {
     id: 12,
     name: "DB Schema Column Alignment",
-    desc: "Filters and orders columns strictly to Abu Dhabi schema with internal_index_id, Title Case, and project_id purged.",
+    desc: "Filters and orders columns strictly to Abu Dhabi schema with index as primary field, Title Case, and project_id purged.",
     status: "pending",
     detail: "Waiting...",
     duration: "-"
@@ -327,6 +327,13 @@ const mode4ActiveDbName = document.getElementById("mode4-active-db-name");
 const btnMode4LaunchTerminal = document.getElementById("btn-mode4-launch-terminal");
 
 // Mode 5 Outlier Detection DOM Elements
+const mode6Radio = document.getElementById("mode6-radio");
+const mode6Label = document.getElementById("mode6-label");
+const mode6IndexingContainer = document.getElementById("mode6-indexing-container");
+const btnRunIndexingManual = document.getElementById("btn-run-indexing-manual");
+const btnRefreshIndexHealth = document.getElementById("btn-refresh-index-health");
+const btnRunIndexingAction = document.getElementById("btn-run-indexing-action");
+
 const mode5LocationContainer = document.getElementById("mode5-location-container");
 const mode5AllLocations = document.getElementById("mode5-all-locations");
 const mode5LocationInput = document.getElementById("mode5-location-input");
@@ -434,6 +441,9 @@ const dubaiFromDate = document.getElementById("dubai-from-date");
 const dubaiToDate = document.getElementById("dubai-to-date");
 const dubaiRunProcessing = document.getElementById("dubai-run-processing");
 const dubaiCustomCsv = document.getElementById("dubai-custom-csv");
+const dubaiDriveFileSelect = document.getElementById("dubai-drive-file-select");
+const btnRefreshDubaiFiles = document.getElementById("btn-refresh-dubai-files");
+const dubaiFileInfoText = document.getElementById("dubai-file-info-text");
 
 // Abu Dhabi ADREC Workflow Elements
 const abuDhabiWorkflowCard = document.getElementById("abu-dhabi-workflow-card");
@@ -693,6 +703,43 @@ function renderStepCards(mode = false) {
 }
 
 // Dubai 2-Step Workflow Controller Functions
+async function fetchDubaiDriveFiles(forceRefresh = false) {
+  if (!dubaiDriveFileSelect) return;
+  try {
+    if (forceRefresh) {
+      dubaiDriveFileSelect.innerHTML = '<option value="">⏳ Scanning files...</option>';
+    }
+    const res = await fetch(`/api/dubai/files`);
+    if (!res.ok) throw new Error("Server returned " + res.status);
+    const data = await res.json();
+    const files = data.files || [];
+    dubaiDriveFileSelect.innerHTML = '<option value="">[Auto: latest file in 1. Download Files(Row)]</option>';
+    files.forEach(f => {
+      const opt = document.createElement("option");
+      opt.value = f.id || f.name;
+      const sizeStr = f.size ? ` (${(f.size / (1024 * 1024)).toFixed(2)} MB)` : "";
+      const sourceTag = f.source ? ` [${f.source.includes("Drive") ? "Drive" : "Local"}]` : "";
+      const dateStr = f.modified ? ` - ${new Date(f.modified).toLocaleDateString()}` : "";
+      opt.textContent = `${f.name}${sizeStr}${sourceTag}${dateStr}`;
+      opt.dataset.size = f.size || "";
+      opt.dataset.link = f.link || "";
+      opt.dataset.modified = f.modified || "";
+      opt.dataset.id = f.id || "";
+      opt.dataset.name = f.name || "";
+      dubaiDriveFileSelect.appendChild(opt);
+    });
+    if (dubaiFileInfoText) {
+      dubaiFileInfoText.textContent = `Found ${files.length} downloaded file(s) available`;
+    }
+    if (forceRefresh) {
+      logToConsole(`[Dubai Drive] Refreshed files list: ${files.length} file(s) found.`, "info");
+    }
+  } catch (err) {
+    console.error("Failed to fetch Dubai drive files:", err);
+    dubaiDriveFileSelect.innerHTML = '<option value="">⚠️ Error loading files</option>';
+  }
+}
+
 async function fetchDubaiConfig(forceRefresh = false) {
   try {
     const activeDb = getSelectedDb();
@@ -735,6 +782,7 @@ function enableDubaiView() {
   if (finalFilePath) finalFilePath.required = false;
 
   fetchDubaiConfig();
+  fetchDubaiDriveFiles();
 
   // If user is already in Mode 3, preserve that mode!
   if (appState.mode === "3") {
@@ -1751,6 +1799,29 @@ function attachEventListeners() {
       runOutlierDetection();
     });
   }
+
+  if (mode6Radio) {
+    mode6Radio.addEventListener("change", () => setMode("6"));
+  }
+
+  if (btnRunIndexingManual) {
+    btnRunIndexingManual.addEventListener("click", () => {
+      setMode("6");
+      runDatabaseIndexing();
+    });
+  }
+
+  if (btnRefreshIndexHealth) {
+    btnRefreshIndexHealth.addEventListener("click", () => {
+      loadIndexHealth();
+    });
+  }
+
+  if (btnRunIndexingAction) {
+    btnRunIndexingAction.addEventListener("click", () => {
+      runDatabaseIndexing();
+    });
+  }
 }
 
 function setMode(mode) {
@@ -1774,6 +1845,8 @@ function setMode(mode) {
       if (finalFileGroup) finalFileGroup.classList.add("hidden");
       if (mode4UploadContainer) mode4UploadContainer.classList.add("hidden");
       if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
+    if (mode6IndexingContainer) mode6IndexingContainer.classList.add("hidden");
+    if (mode6Label) mode6Label.classList.remove("active");
 
       if (!appState.isRunning) {
         if (pauseCard) pauseCard.classList.add("hidden");
@@ -1822,6 +1895,8 @@ function setMode(mode) {
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
     if (mode4UploadContainer) mode4UploadContainer.classList.add("hidden");
     if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
+    if (mode6IndexingContainer) mode6IndexingContainer.classList.add("hidden");
+    if (mode6Label) mode6Label.classList.remove("active");
 
     if (!appState.isRunning) {
       if (pauseCard) pauseCard.classList.add("hidden");
@@ -1860,6 +1935,8 @@ function setMode(mode) {
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
     if (mode4UploadContainer) mode4UploadContainer.classList.add("hidden");
     if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
+    if (mode6IndexingContainer) mode6IndexingContainer.classList.add("hidden");
+    if (mode6Label) mode6Label.classList.remove("active");
 
     if (!appState.isRunning) {
       if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
@@ -1916,11 +1993,14 @@ function setMode(mode) {
     if (mode5Label) mode5Label.classList.remove("active");
 
     if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
+    if (abuDhabiWorkflowCard) abuDhabiWorkflowCard.classList.add("hidden");
     inputFileGroup.classList.add("hidden");
     manualFileGroup.classList.add("hidden");
     if (finalFileGroup) finalFileGroup.classList.remove("hidden");
     if (mode4UploadContainer) mode4UploadContainer.classList.add("hidden");
     if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
+    if (mode6IndexingContainer) mode6IndexingContainer.classList.add("hidden");
+    if (mode6Label) mode6Label.classList.remove("active");
 
     if (!appState.isRunning) {
       if (pauseCard) pauseCard.classList.add("hidden");
@@ -1971,6 +2051,7 @@ function setMode(mode) {
 
   } else if (mode === "4") {
     if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
+    if (abuDhabiWorkflowCard) abuDhabiWorkflowCard.classList.add("hidden");
     if (mode4Label) mode4Label.classList.add("active");
     mode1Label.classList.remove("active");
     mode2Label.classList.remove("active");
@@ -1982,6 +2063,8 @@ function setMode(mode) {
     if (finalFileGroup) finalFileGroup.classList.add("hidden");
     if (mode4UploadContainer) mode4UploadContainer.classList.remove("hidden");
     if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
+    if (mode6IndexingContainer) mode6IndexingContainer.classList.add("hidden");
+    if (mode6Label) mode6Label.classList.remove("active");
 
     if (!appState.isRunning) {
       if (pauseCard) pauseCard.classList.add("hidden");
@@ -2011,6 +2094,7 @@ function setMode(mode) {
 
   } else if (mode === "5") {
     if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
+    if (abuDhabiWorkflowCard) abuDhabiWorkflowCard.classList.add("hidden");
     if (mode5Label) mode5Label.classList.add("active");
     mode1Label.classList.remove("active");
     mode2Label.classList.remove("active");
@@ -2049,6 +2133,50 @@ function setMode(mode) {
         mode5LocationContainer.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }, 120);
+
+  } else if (mode === "6") {
+    if (dubaiWorkflowCard) dubaiWorkflowCard.classList.add("hidden");
+    if (abuDhabiWorkflowCard) abuDhabiWorkflowCard.classList.add("hidden");
+    if (mode6Label) mode6Label.classList.add("active");
+    mode1Label.classList.remove("active");
+    mode2Label.classList.remove("active");
+    if (mode3Label) mode3Label.classList.remove("active");
+    if (mode4Label) mode4Label.classList.remove("active");
+    if (mode5Label) mode5Label.classList.remove("active");
+
+    inputFileGroup.classList.add("hidden");
+    manualFileGroup.classList.add("hidden");
+    if (finalFileGroup) finalFileGroup.classList.add("hidden");
+    if (mode4UploadContainer) mode4UploadContainer.classList.add("hidden");
+    if (mode5LocationContainer) mode5LocationContainer.classList.add("hidden");
+    if (mode6IndexingContainer) mode6IndexingContainer.classList.add("hidden");
+    if (mode6Label) mode6Label.classList.remove("active");
+    if (mode6IndexingContainer) mode6IndexingContainer.classList.remove("hidden");
+
+    if (!appState.isRunning) {
+      if (pauseCard) pauseCard.classList.add("hidden");
+      if (parquetPauseCard) parquetPauseCard.classList.add("hidden");
+    }
+
+    inputFilePath.required = false;
+    manualFilePath.required = false;
+    if (finalFilePath) finalFilePath.required = false;
+    btnRun.innerHTML = '<span class="btn-icon">⚡</span> <span class="btn-text">Run Database Indexing</span>';
+
+    if (stepsSectionTitle) stepsSectionTitle.textContent = "⚡ Mode 6: Production Database Indexing & Optimization";
+    renderStepCards(false);
+
+    for (let i = 1; i <= 17; i++) {
+      updateStepUI(i, "skipped", "Database Indexing Mode", "-");
+    }
+    loadIndexHealth();
+    logToConsole("[Mode] Selected Mode 6: Database Indexing & Production Optimization");
+
+    setTimeout(() => {
+      if (mode6IndexingContainer) {
+        mode6IndexingContainer.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 120);
   }
 }
 
@@ -2059,8 +2187,24 @@ async function startPipeline() {
   const isDubai = cityIdInput && cityIdInput.value === "15";
   const isAbuDhabi = cityIdInput && (cityIdInput.value === "1" || cityIdInput.value.toLowerCase() === "abu_dhabi");
 
-  // Abu Dhabi scraping & file selection workflow
-  if (isAbuDhabi && appState.mode !== "3" && appState.mode !== "4") {
+  // Standalone triggers for Mode 4, Mode 5, and Mode 6 must take precedence
+  if (appState.mode === "4") {
+    launchUploadPipeline();
+    return;
+  }
+
+  if (appState.mode === "5") {
+    runOutlierDetection();
+    return;
+  }
+
+  if (appState.mode === "6") {
+    runDatabaseIndexing();
+    return;
+  }
+
+  // Abu Dhabi scraping & file selection workflow (Mode 1 only)
+  if (isAbuDhabi && (appState.mode === "1" || !appState.mode)) {
     const runScraping = adRunScraping ? adRunScraping.checked : true;
     const runProcessing = adRunProcessing ? adRunProcessing.checked : true;
 
@@ -2146,17 +2290,6 @@ async function startPipeline() {
     return;
   }
 
-  // Standalone triggers for Mode 4 and Mode 5
-  if (appState.mode === "4") {
-    launchUploadPipeline();
-    return;
-  }
-
-  if (appState.mode === "5") {
-    runOutlierDetection();
-    return;
-  }
-
   // Dubai scraping & processing is ONLY run for Mode 1 (or default Dubai mode).
   // If Mode 3 (Parquet conversion) is selected, DO NOT run scraping!
   if (isDubai && appState.mode !== "3") {
@@ -2170,7 +2303,11 @@ async function startPipeline() {
 
     const fromDate = dubaiFromDate ? dubaiFromDate.value.trim() : "";
     const toDate = dubaiToDate ? dubaiToDate.value.trim() : "";
-    const customCsv = dubaiCustomCsv ? dubaiCustomCsv.value.trim() : "";
+    let customCsv = dubaiCustomCsv ? dubaiCustomCsv.value.trim() : "";
+    const selectedOpt = dubaiDriveFileSelect && dubaiDriveFileSelect.selectedIndex > 0 ? dubaiDriveFileSelect.selectedOptions[0] : null;
+    if (selectedOpt && selectedOpt.dataset.id && (!customCsv || customCsv === selectedOpt.dataset.name)) {
+      customCsv = selectedOpt.dataset.id;
+    }
     const dubaiGeocodingCb = document.getElementById("dubai-include-geocoding");
     const includeGeocoding = dubaiGeocodingCb ? dubaiGeocodingCb.checked : true;
 
@@ -2337,20 +2474,23 @@ function startPolling() {
 }
 
 function applyStatusUpdate(status) {
-  // Auto-switch to Dubai 2-Step or Abu Dhabi 13-Step view if active
-  const isDubai2Step = (status.city_id === 15 || status.city_key === "dubai") && (status.mode === "dubai" || (status.steps && status.steps.length === 2));
-  const isAbuDhabiWorkflow = (status.city_id === 1 || status.city_key === "abu_dhabi");
+  // Auto-switch to Dubai 2-Step or Abu Dhabi 13-Step view only if in Mode 1
+  const isDubai2Step = (status.city_id === 15 || status.city_key === "dubai") && (status.mode === "dubai" || status.mode === "1" || (status.steps && status.steps.length === 2));
+  const isAbuDhabiWorkflow = (status.city_id === 1 || status.city_key === "abu_dhabi") && (status.mode === "abu_dhabi" || status.mode === "1" || (status.steps && status.steps.length === 13));
+  const isStandaloneActive = ["3", "4", "5", "6"].includes(String(appState.mode)) || ["3", "4", "5", "6"].includes(String(status.mode));
   const currentCardCount = stepsGrid.querySelectorAll(".step-card").length;
 
-  if (isDubai2Step && currentCardCount !== 2 && appState.mode !== "3" && appState.mode !== "4") {
-    if (cityIdInput && cityIdInput.value !== "15") cityIdInput.value = "15";
-    enableDubaiView();
-  } else if (isAbuDhabiWorkflow && currentCardCount !== 13 && appState.mode !== "3" && appState.mode !== "4") {
-    if (cityIdInput && cityIdInput.value !== "1") cityIdInput.value = "1";
-    enableAbuDhabiView();
-  } else if (!isDubai2Step && !isAbuDhabiWorkflow && (currentCardCount === 2 || currentCardCount === 13) && !appState.isRunning && cityIdInput && cityIdInput.value !== "15" && cityIdInput.value !== "1") {
-    disableDubaiView();
-    disableAbuDhabiView();
+  if (!isStandaloneActive) {
+    if (isDubai2Step && currentCardCount !== 2) {
+      if (cityIdInput && cityIdInput.value !== "15") cityIdInput.value = "15";
+      enableDubaiView();
+    } else if (isAbuDhabiWorkflow && currentCardCount !== 13) {
+      if (cityIdInput && cityIdInput.value !== "1") cityIdInput.value = "1";
+      enableAbuDhabiView();
+    } else if (!isDubai2Step && !isAbuDhabiWorkflow && (currentCardCount === 2 || currentCardCount === 13) && !appState.isRunning && cityIdInput && cityIdInput.value !== "15" && cityIdInput.value !== "1") {
+      disableDubaiView();
+      disableAbuDhabiView();
+    }
   }
 
   // Update progress percentage
@@ -3300,7 +3440,7 @@ async function runOutlierDetection() {
   const cityName = cityIdInput?.selectedOptions[0]?.text.split(" (")[0] || "City";
   const isAll = mode5AllLocations ? mode5AllLocations.checked : true;
   const chosenLoc = isAll ? null : ((mode5LocationInput ? mode5LocationInput.value.trim() : "") || (outlierLocationSelect ? outlierLocationSelect.value.trim() : ""));
-  const saveReport = saveOutlierReportCb ? saveOutlierReportCb.checked : false;
+  const saveReport = saveOutlierReportCb ? saveOutlierReportCb.checked : true;
 
   const scopeMsg = chosenLoc ? `location(s) '${chosenLoc}'` : `ALL locations in ${cityName}`;
   if (!confirm(`Run Outlier Detection for ${scopeMsg} (City ID: ${currentCityId})?`)) return;
@@ -3849,3 +3989,102 @@ function updateStepCounts() {
   }
 }
 
+
+// =========================================================
+// MODE 6: DATABASE INDEXING & OPTIMIZATION FUNCTIONS
+// =========================================================
+async function loadIndexHealth() {
+  const currentDb = getSelectedDb() || "nilesh";
+  const statDb = document.getElementById("idx-stat-db");
+  const statRows = document.getElementById("idx-stat-rows");
+  const statValid = document.getElementById("idx-stat-valid");
+  const statMissing = document.getElementById("idx-stat-missing");
+  const tableBody = document.getElementById("idx-table-body");
+
+  if (statDb) statDb.textContent = currentDb;
+  if (tableBody) {
+    tableBody.innerHTML = `<tr><td colspan="5" style="padding: 12px; text-align: center; color: #38bdf8;">🔄 Auditing database indexes on '${currentDb}'...</td></tr>`;
+  }
+
+  try {
+    const res = await fetch(`/api/indexing/status?db=${encodeURIComponent(currentDb)}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    if (statDb) statDb.textContent = data.database || currentDb;
+    if (statRows) statRows.textContent = (data.estimated_rows || 0).toLocaleString();
+    if (statValid) statValid.textContent = data.summary ? data.summary.valid : "-";
+    if (statMissing) statMissing.textContent = data.summary ? data.summary.missing : "-";
+
+    if (tableBody && data.indexes) {
+      tableBody.innerHTML = data.indexes.map(idx => {
+        let badgeColor = "#22c55e";
+        let badgeBg = "rgba(34, 197, 94, 0.15)";
+        let statusText = "Valid";
+
+        if (idx.status === "missing") {
+          badgeColor = "#eab308";
+          badgeBg = "rgba(234, 179, 8, 0.15)";
+          statusText = "Missing";
+        } else if (idx.status === "invalid") {
+          badgeColor = "#ef4444";
+          badgeBg = "rgba(239, 68, 68, 0.15)";
+          statusText = "INVALID";
+        }
+
+        return `
+          <tr style="border-bottom: 1px solid rgba(51, 65, 85, 0.5);">
+            <td style="padding: 7px 10px; font-family: monospace; color: #f1f5f9;">${idx.name}</td>
+            <td style="padding: 7px 10px; color: #94a3b8;">${idx.feature}</td>
+            <td style="padding: 7px 10px; color: #64748b;">${idx.type}</td>
+            <td style="padding: 7px 10px; color: #94a3b8;">${idx.size_pretty}</td>
+            <td style="padding: 7px 10px;">
+              <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 0.72rem; color: ${badgeColor}; background: ${badgeBg};">
+                ${statusText}
+              </span>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+  } catch (err) {
+    if (tableBody) {
+      tableBody.innerHTML = `<tr><td colspan="5" style="padding: 12px; text-align: center; color: #ef4444;">Error inspecting indexes: ${err.message}</td></tr>`;
+    }
+  }
+}
+
+async function runDatabaseIndexing() {
+  const currentDb = getSelectedDb() || "nilesh";
+  if (!confirm(`Run Database Indexing & Optimization on database '${currentDb}'?\n\nThis will safely verify and build Land Identification and Sales Velocity production indexes CONCURRENTLY with zero table locking.`)) {
+    return;
+  }
+
+  logToConsole(`[Indexing] Requesting Database Indexing for '${currentDb}'...`, "info");
+  try {
+    const res = await fetch("/api/run-indexing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ database: currentDb })
+    });
+    const data = await res.json();
+    if (data.error) {
+      logToConsole(`[Indexing Error] ${data.error}`, "error");
+      alert(`Error: ${data.error}`);
+    } else {
+      logToConsole(`[Indexing] Task launched successfully. Streaming logs below...`, "success");
+      appState.isRunning = true;
+      btnRun.disabled = true;
+      btnStop.disabled = false;
+      btnStop.classList.remove("hidden");
+      startTimer();
+      startPolling();
+      switchDashboardTab("console");
+    }
+  } catch (err) {
+    logToConsole(`[Indexing Request Failed] ${err.message}`, "error");
+  }
+}
+
+window.loadIndexHealth = loadIndexHealth;
+window.runDatabaseIndexing = runDatabaseIndexing;

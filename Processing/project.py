@@ -1273,15 +1273,27 @@ if active_city_key == "dubai" or target_city_id == 15:
 print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
 print(f"{HEADER}{BOLD}   🏗️  DATA PROCESSING PIPELINE - {target_city_name.upper()}{RESET}")
 print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
-print(f"  {CYAN}[1]{RESET} Run from START (Step 1 to Step 20)")
-print(f"  {CYAN}[2]{RESET} Run from STEP 7 (Load manually corrected file directly, Steps 7 to 20)")
+print(f"  {CYAN}[1]{RESET} Run from START (Step 1 to Step 21)")
+print(f"  {CYAN}[2]{RESET} Run from STEP 7 (Load manually corrected file directly, Steps 7 to 21)")
 print(f"  {CYAN}[3]{RESET} Run STEP 18 ONLY (Parquet Conversion directly)")
 print(f"  {CYAN}[4]{RESET} Run STEP 20 ONLY (Outlier Update directly)")
+print(f"  {CYAN}[5]{RESET} Run STEP 21 ONLY (Database Indexing & Runbook Optimization directly)")
 print(f"{HEADER}{'=' * 60}{RESET}")
 
-pipeline_mode = input(f"\n{YELLOW}Select option (1, 2, 3, or 4) [default: 1]: {RESET}").strip()
+pipeline_mode = input(f"\n{YELLOW}Select option (1, 2, 3, 4, or 5) [default: 1]: {RESET}").strip()
 
-if pipeline_mode == "4":
+if pipeline_mode == "5":
+    # STEP 21 ONLY - Direct Database Indexing & Optimization
+    print(f"\n{BLUE}ℹ ⏩ Skipping Steps 1 to 20. Starting directly from STEP 21 (Database Indexing & Runbook Optimization)...{RESET}")
+    try:
+        from Database_Indexing.db_indexer import ensure_production_indexes
+        ensure_production_indexes(db_params=DB_PARAMS)
+        print(f"\n{GREEN}{BOLD}🎉 [STEP 21/21] Database indexing & optimization completed successfully!{RESET}\n")
+    except Exception as ie:
+        print(f"\n{RED}❌ [STEP 21/21] Error executing database indexing: {ie}{RESET}\n")
+    sys.exit(0)
+
+elif pipeline_mode == "4":
     # STEP 20 ONLY - Direct Outlier Update
     print(f"\n{BLUE}ℹ ⏩ Skipping Steps 1 to 19. Starting directly from STEP 20 (Outlier Update)...{RESET}")
 
@@ -2016,10 +2028,13 @@ if proceed_parquet:
     print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
     from parquet_conersion import convert_csv_to_parquet
 
-    city_folder = target_city_name.title()
-    parquet_output_file = (
-        rf"G:\.shortcut-targets-by-id\1oGd6xPdp686p0qW-tzZyy5quOpi82hLA\DB1+DB2\converted_feather_parquet\{city_folder}\{city_folder}_db1.parquet"
+    from city_config import resolve_city_parquet_path
+    city_parquet_dir, parquet_output_file = resolve_city_parquet_path(
+        city_id=target_city_id,
+        city_key=active_city_key,
+        target_city_name=target_city_name,
     )
+    os.makedirs(city_parquet_dir, exist_ok=True)
 
     try:
         print(f"  {CYAN}📥 Input File (Drive) :{RESET} {output_path}")
@@ -2214,6 +2229,20 @@ if not skip_outlier:
         print(f"\n{RED}❌ [STEP 20/20] Error executing outlier update: {oe}{RESET}")
 else:
     print(f"{BLUE}ℹ Outlier update skipped.{RESET}")
+
+# ============================================================
+# STEP 21 - Database Indexing & Optimization (Production Runbooks)
+# ============================================================
+if pipeline_mode not in ["4"]:
+    print(f"\n{HEADER}{BOLD}{'=' * 60}{RESET}")
+    print(f"{HEADER}{BOLD}   ⚡ [STEP 21/21] Database Indexing & Production Optimization...{RESET}")
+    print(f"{HEADER}{BOLD}{'=' * 60}{RESET}")
+    try:
+        from Database_Indexing.db_indexer import ensure_production_indexes
+        ensure_production_indexes(db_params=DB_PARAMS)
+        print(f"\n{GREEN}{BOLD}🎉 [STEP 21/21] Database indexing & optimization completed successfully!{RESET}\n")
+    except Exception as ie:
+        print(f"\n{RED}❌ [STEP 21/21] Error executing database indexing: {ie}{RESET}\n")
 
 
 
